@@ -63,6 +63,7 @@
           <th>No SPM Filename</th>
           <th>No SPM Matching D_K/SP2D</th>
           <th>No SPM Final</th>
+          <th>No SPP</th>
           <th>Status Review</th>
           <th>No DRPP</th>
           <th>No KW/Bukti</th>
@@ -84,6 +85,7 @@
           <td>{{ row.nomor_spm_filename }}</td>
           <td>{{ row.nomor_spm_matching }}</td>
           <td>{{ row.nomor_spm_final }}</td>
+          <td>{{ row.nomor_spp }}</td>
           <td>{{ row.nomor_spm_review_status }}</td>
           <td>{{ row.nomor_drpp }}</td>
           <td>{{ row.no_kw }}</td>
@@ -95,7 +97,7 @@
           <td title="{{ row.notes }}">{{ row.notes|truncatechars:120 }}</td>
         </tr>
         {% empty %}
-        <tr><td colspan="16" class="empty">Tidak ada PDF yang bisa diproses.</td></tr>
+        <tr><td colspan="17" class="empty">Tidak ada PDF yang bisa diproses.</td></tr>
         {% endfor %}
       </tbody>
     </table>

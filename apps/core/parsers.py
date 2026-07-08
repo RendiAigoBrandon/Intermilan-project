@@ -123,6 +123,77 @@ def extract_spm_number(value):
     return match.group(1).upper() if match else text[:100]
 
 
+def _extract_first_number_from_text(text):
+    """Ekstrak nomor pertama (format SPM/SPP) dari teks."""
+    match = re.search(r"(?:NOMOR|NO\.?)\s*[:\-]?\s*([0-9]{3,6}[A-Z]?)", text, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    match = re.search(r"\b([0-9]{4,6}[A-Z]?)\b", text, re.IGNORECASE)
+    return match.group(1).upper() if match else ""
+
+
+def parse_spm_number_from_pages(page_details):
+    """Ekstrak No SPM dan No SPP secara terpisah berdasarkan konteks halaman.
+
+    Aturan:
+    - Halaman yang mengandung "SURAT PERINTAH MEMBAYAR" → No SPM diambil dari halaman ini
+    - Halaman yang mengandung "SURAT PERMINTAAN PEMBAYARAN" atau "NOMOR SPP" → No SPP dari halaman ini
+    - Jika tidak ada konteks per-halaman, fallback ke regex di teks gabungan
+
+    Returns dict: {no_spm, no_spp, spm_pages, spp_pages}
+    """
+    no_spm = ""
+    no_spp = ""
+    spm_page_nums = []
+    spp_page_nums = []
+
+    for page in page_details:
+        page_text = page.get("text") or page.get("extracted_text") or ""
+        upper = page_text.upper()
+        page_num = page.get("page") or page.get("page_number") or "?"
+
+        is_spm_page = "SURAT PERINTAH MEMBAYAR" in upper
+        is_spp_page = (
+            "SURAT PERMINTAAN PEMBAYARAN" in upper
+            or "NOMOR SPP" in upper
+            or "NO SPP" in upper
+            or "NO. SPP" in upper
+        )
+
+        if is_spm_page:
+            spm_page_nums.append(page_num)
+            if not no_spm:
+                # Coba cari label eksplisit SPM dulu
+                spm_match = re.search(
+                    r"(?:NOMOR\s+SPM|SPM\s+NOMOR|NO\.?\s*SPM)\s*[:\-]?\s*([0-9A-Z./-]+)",
+                    upper,
+                )
+                if spm_match:
+                    no_spm = spm_match.group(1).upper()
+                else:
+                    no_spm = _extract_first_number_from_text(upper)
+
+        if is_spp_page:
+            spp_page_nums.append(page_num)
+            if not no_spp:
+                # Cari label SPP eksplisit
+                spp_match = re.search(
+                    r"(?:NOMOR\s+SPP|SPP\s+NOMOR|NO\.?\s*SPP)\s*[:\-]?\s*([0-9A-Z./-]+)",
+                    upper,
+                )
+                if spp_match:
+                    no_spp = spp_match.group(1).upper()
+                else:
+                    no_spp = _extract_first_number_from_text(upper)
+
+    return {
+        "no_spm": no_spm,
+        "no_spp": no_spp,
+        "spm_pages": spm_page_nums,
+        "spp_pages": spp_page_nums,
+    }
+
+
 def parse_month(value):
     text = normalize_text(value).lower()
     if text.isdigit():
@@ -323,11 +394,41 @@ def parse_spm_pdf(file_path, ocr=False):
     extracted = extract_pdf_text(file_path, ocr=ocr)
     text = "\n".join(extracted["pages"])
     upper = text.upper()
-    nomor_match = re.search(r"(?:NOMOR\s+SPM|SPM\s+NOMOR|NO\.?\s*SPM)\s*[:\-]?\s*([0-9A-Z./-]+)", upper)
+
+    # ── Ekstraksi nomor per-halaman (pisahkan SPM dari SPP) ──────────────────
+    page_details = extracted.get("page_details", [])
+    per_page = parse_spm_number_from_pages(page_details)
+    no_spm_per_page = per_page["no_spm"]
+    no_spp_per_page = per_page["no_spp"]
+    spm_page_nums = per_page["spm_pages"]
+    spp_page_nums = per_page["spp_pages"]
+
+    # Fallback ke regex global jika per-halaman tidak menemukan apa-apa
+    nomor_match_global = re.search(
+        r"(?:NOMOR\s+SPM|SPM\s+NOMOR|NO\.?\s*SPM)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
+    )
+    spp_match_global = re.search(
+        r"(?:NOMOR\s+SPP|SPP\s+NOMOR|NO\.?\s*SPP)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
+    )
+
+    # Prioritas: per-halaman > global regex
+    text_spm = no_spm_per_page or (nomor_match_global.group(1) if nomor_match_global else "")
+    text_spp = no_spp_per_page or (spp_match_global.group(1) if spp_match_global else "")
+
+    # Deteksi apakah PDF ini adalah paket gabungan (ada halaman SPM DAN halaman SPP)
+    is_combined_package = bool(spm_page_nums and spp_page_nums)
+
+    # ── Field lain ────────────────────────────────────────────────────────────
     drpp_match = re.search(r"(?:NOMOR\s+DRPP|DRPP\s+NOMOR|NO\.?\s*DRPP)\s*[:\-]?\s*([0-9A-Z./-]+)", upper)
     satker_match = re.search(r"(?:SATKER|KODE\s+SATKER)\s*[:\-]?\s*([0-9]{4,6})", upper)
-    tanggal_spm = parse_date(parse_first_match(text, [r"(?:TANGGAL\s+SPM|TANGGAL)\s*[:\-]?\s*([0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{2,4})", r"\b([0-9]{4}-[0-9]{2}-[0-9]{2})\b"]))
-    jenis_spm = parse_first_match(text, [r"(?:JENIS\s+SPM|JENIS\s+SPP)\s*[:\-]?\s*([A-Z0-9 /._-]{2,80})", r"\b(UP|GUP|TUP|PTUP|LS(?:\s+[A-Z ]{2,40})?)\b"])
+    tanggal_spm = parse_date(parse_first_match(text, [
+        r"(?:TANGGAL\s+SPM|TANGGAL)\s*[:\-]?\s*([0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{2,4})",
+        r"\b([0-9]{4}-[0-9]{2}-[0-9]{2})\b",
+    ]))
+    jenis_spm = parse_first_match(text, [
+        r"(?:JENIS\s+SPM|JENIS\s+SPP)\s*[:\-]?\s*([A-Z0-9 /._-]{2,80})",
+        r"\b(UP|GUP|TUP|PTUP|LS(?:\s+[A-Z ]{2,40})?)\b",
+    ])
     kppn = parse_first_match(text, [r"KPPN\s*[:\-]?\s*([A-Z0-9 ._-]{2,80})"])
     supplier = parse_first_match(text, [r"(?:SUPPLIER|PENERIMA|NAMA\s+PENERIMA)\s*[:\-]?\s*([A-Z0-9 .,'/-]{3,120})"])
     bank = parse_first_match(text, [r"(?:BANK)\s*[:\-]?\s*([A-Z0-9 .,'/-]{2,80})"])
@@ -342,14 +443,44 @@ def parse_spm_pdf(file_path, ocr=False):
     status = parser_status(extracted)
     if extracted["method"] == "failed":
         status = "failed" if not extracted["warnings"] else "needs_manual_review"
+
+    # ── Resolusi nomor SPM ────────────────────────────────────────────────────
     filename_spm = guess_number_from_filename(file_path, "SPM")
-    text_spm = nomor_match.group(1) if nomor_match else ""
     warnings = list(extracted["warnings"])
-    number_decision = resolve_spm_number(filename_spm, text_spm, extracted.get("confidence", 0.0), extracted.get("method", ""))
+
+    # Jika filename cocok dengan No SPP (bukan No SPM), jangan anggap konflik
+    # Contoh: filename "SPM NOMOR 00074T" tapi isi SPM halaman 1 = 00074A,
+    # dan isi halaman SPP = 00074T → filename = no_spp, bukan konflik SPM
+    if filename_spm and text_spp and filename_spm == text_spp and text_spm and text_spm != text_spp:
+        # filename cocok dengan No SPP, bukan No SPM → resolusi dari OCR, tanpa konflik
+        number_decision = resolve_spm_number(
+            "",  # kosongkan filename_spm agar tidak dianggap konflik
+            text_spm,
+            extracted.get("confidence", 0.0),
+            extracted.get("method", ""),
+        )
+        warnings.append(
+            f"Filename ({filename_spm}) cocok dengan No SPP ({text_spp}), bukan No SPM ({text_spm}). "
+            "Filename tidak dipakai sebagai No SPM."
+        )
+    else:
+        number_decision = resolve_spm_number(
+            filename_spm,
+            text_spm,
+            extracted.get("confidence", 0.0),
+            extracted.get("method", ""),
+        )
+
     if number_decision["warning"]:
         warnings.append(number_decision["warning"])
     if total <= 0:
         warnings.append("Parser gagal mengambil nilai SPM dari dokumen.")
+    if is_combined_package:
+        warnings.append(
+            f"PDF gabungan terdeteksi: halaman SPM={spm_page_nums}, halaman SPP={spp_page_nums}. "
+            "No SPM dan No SPP diambil dari halaman yang relevan masing-masing."
+        )
+
     return {
         "file_name": os.path.basename(file_path),
         "page_count": extracted["page_count"],
@@ -357,13 +488,14 @@ def parse_spm_pdf(file_path, ocr=False):
         "best_engine": extracted.get("best_engine", extracted["method"]),
         "status": status,
         "warnings": warnings,
-        "page_details": extracted.get("page_details", []),
+        "page_details": page_details,
         "confidence": extracted.get("confidence", 0.0),
         "engines_tried": extracted.get("engines_tried", []),
         "native_text_length": extracted.get("native_text_length", 0),
         "tesseract_called": extracted.get("tesseract_called", False),
         "tesseract_text_length": extracted.get("tesseract_text_length", 0),
         "tesseract_reason": extracted.get("tesseract_reason", ""),
+        "is_combined_package": is_combined_package,
         "metadata": {
             "nomor_spm": number_decision["final"],
             "nomor_spm_final": number_decision["final"],
@@ -373,6 +505,9 @@ def parse_spm_pdf(file_path, ocr=False):
             "nomor_spm_conflict": number_decision["conflict"],
             "nomor_spm_review_status": number_decision["review_status"],
             "nomor_spm_reason": number_decision["reason"],
+            "nomor_spp": text_spp,
+            "nomor_spp_per_page": no_spp_per_page,
+            "nomor_spp_global": spp_match_global.group(1) if spp_match_global else "",
             "nomor_drpp": drpp_match.group(1) if drpp_match else "",
             "satker_code": satker_match.group(1) if satker_match else "",
             "tanggal_spm": tanggal_spm,
@@ -386,6 +521,8 @@ def parse_spm_pdf(file_path, ocr=False):
             "total_pembayaran": total,
             "jumlah_pengeluaran": jumlah_pengeluaran,
             "jumlah_potongan": jumlah_potongan,
+            "spm_page_nums": spm_page_nums,
+            "spp_page_nums": spp_page_nums,
         },
         "akun_rows": [{"akun": akun, "uraian": "", "nilai": ""} for akun in akun_values[:50]],
         "amount_samples": amount_values[:20],
