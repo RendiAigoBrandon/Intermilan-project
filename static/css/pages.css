@@ -1,0 +1,70 @@
+﻿.login-page {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background: #0a3155;
+}
+.login-page::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background: url("../img/login-building.png") center / cover no-repeat;
+    filter: saturate(1.04) contrast(.98);
+    transform: scale(1.02);
+}
+.login-page::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+        linear-gradient(180deg, rgba(244, 132, 45, .74) 0%, rgba(244, 132, 45, .35) 26%, rgba(18, 63, 92, .22) 54%, rgba(4, 24, 52, .9) 100%),
+        linear-gradient(90deg, rgba(4, 25, 48, .44), rgba(4, 25, 48, .1));
+}
+.login-shell { width: min(460px, 100%); position: relative; z-index: 1; }
+.login-card {
+    background: rgba(255, 255, 255, .92);
+    border-radius: 28px;
+    box-shadow: 0 24px 70px rgba(0,0,0,.20);
+    padding: 32px;
+    border: 1px solid rgba(255,255,255,.5);
+    backdrop-filter: blur(12px);
+}
+.login-logo {
+    width: 112px;
+    height: 112px;
+    object-fit: contain;
+    display: block;
+    margin: 0 auto 16px;
+    border-radius: 20px;
+    border: 3px solid #e7f1fa;
+    padding: 10px;
+    background: transparent;
+}
+.login-card h1 { color: var(--bps-blue-dark); font-size: 30px; text-align: center; margin: 0; }
+.login-card .eyebrow { text-align: center; }
+.login-subtitle { margin-top: 10px; text-align: center; color: var(--muted); line-height: 1.55; }
+.login-form { margin-top: 22px; display: grid; gap: 10px; }
+.login-form label { font-weight: 800; color: var(--bps-blue-dark); font-size: 14px; }
+.login-form input { margin-top: 0; }
+.login-form .primary-btn { margin-top: 8px; }
+.login-error {
+    margin-top: 18px;
+    background: #fff1f0;
+    color: #b42318;
+    border: 1px solid #ffd1cc;
+    padding: 12px 14px;
+    border-radius: 14px;
+    font-weight: 700;
+}
+@media (max-width: 560px) {
+    .login-page { padding: 14px; }
+    .login-card { padding: 22px; border-radius: 22px; }
+    .login-logo { width: 78px !important; height: 78px !important; }
+    .login-card h1 { font-size: 25px !important; }
+}

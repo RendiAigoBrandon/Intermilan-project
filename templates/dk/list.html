@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<section class="card">
+  <div class="toolbar-panel">
+    <div class="toolbar-row">
+      <form class="filter-panel" method="get">
+        <div class="filter-grid">
+          <div class="filter-field filter-search"><label>Cari</label><input name="q" value="{{ filters.q }}" placeholder="Cari SPM, kuitansi, DRPP, deskripsi, akun, satker..."></div>
+          <div class="filter-field"><label>Satker</label><select name="satker"><option value="">Semua satker</option>{% for satker in satker_options %}<option value="{{ satker.satker_code }}" {% if filters.satker == satker.satker_code %}selected{% endif %}>{{ satker.satker_code }} - {{ satker.satker_name|default:"-" }}</option>{% endfor %}</select></div>
+          <div class="filter-field"><label>Bulan</label><select name="bulan"><option value="">Semua bulan</option>{% for value,label in months %}<option value="{{ value }}" {% if filters.bulan == value|stringformat:"s" %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+          <div class="filter-field"><label>Akun</label><select name="akun"><option value="">Semua akun</option>{% for akun in akun_options %}<option value="{{ akun.kode }}" {% if filters.akun == akun.kode %}selected{% endif %}>{{ akun.kode }} - {{ akun.nama_akun }}</option>{% endfor %}</select></div>
+          <div class="filter-field"><label>Status Kelengkapan</label><select name="kelengkapan"><option value="">Semua status</option><option value="lengkap" {% if filters.kelengkapan == "lengkap" %}selected{% endif %}>Lengkap</option><option value="belum" {% if filters.kelengkapan == "belum" %}selected{% endif %}>Belum Lengkap</option></select></div>
+          <div class="filter-field"><label>Data/halaman</label><select name="page_size">{% for option in page_size_options %}<option value="{{ option }}" {% if page_size == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></div>
+          <div class="filter-actions"><button class="btn primary" type="submit">Terapkan Filter</button><a class="btn ghost" href="{% url 'dk:list' %}">Reset</a></div>
+        </div>
+      </form>
+    </div>
+    <div class="toolbar-row">
+      <div class="action-bar">
+        {% if can_export_data %}
+        <button class="btn ghost" type="button">Export Excel</button>
+        <a class="btn ghost" href="{% url 'core:akun_index' %}">Lihat Per Akun</a>
+        <button class="btn ghost" type="button">Export Excel Per Akun</button>
+        {% else %}
+        <span class="badge">Read Only</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="note-box">Gunakan tombol Checklist untuk memeriksa dokumen pendukung transaksi yang membutuhkan verifikasi.</div>
+  <div class="table-wrap wide-table-wrap large mt-small">
+    <table class="data-table compact table-dk dk-full-table">
+      <thead>
+        <tr>
+          <th class="col-no">No</th>
+          <th class="col-status">Sumber Data</th>
+          <th class="col-satker">Satker</th>
+          <th class="col-nama-satker">Nama Satker</th>
+          <th class="col-sp2d">No SP2D</th>
+          <th class="col-akun">Akun</th>
+          <th class="col-bulan">SP2D Bulan</th>
+          <th class="col-cara-bayar">Cara Pembayaran</th>
+          <th class="col-spm">Nomor SPM</th>
+          <th class="col-tanggal">Tanggal SPM</th>
+          <th class="col-jenis">Jenis SPM</th>
+          <th class="col-kuitansi">No. Kuitansi</th>
+          <th class="col-drpp">No. DRPP</th>
+          <th class="col-deskripsi">Deskripsi</th>
+          <th class="col-nominal">Nilai Bruto</th>
+          <th class="col-nominal">Nilai Netto</th>
+          <th class="col-pembebanan">Pembebanan</th>
+          <th class="col-compact">FP</th>
+          <th class="col-nominal">PPh21</th>
+          <th class="col-status">Status Dokumen</th>
+          <th class="col-status">Status Rekonsiliasi</th>
+          <th class="col-status">Aksi</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="col-no">{{ page_start|add:forloop.counter0 }}</td>
+          <td class="col-status"><span class="badge">{{ row.source_data_label }}</span></td>
+          <td class="col-satker">{{ row.satker_code|dash }}</td>
+          <td class="col-nama-satker">{{ row.display_satker_name|dash }}</td>
+          <td class="col-sp2d">{{ row.display_no_sp2d|dash }}</td>
+          <td class="col-akun"><b>{{ row.akun|dash }}</b></td>
+          <td class="col-bulan">{{ row.bulan_sp2d|month_id }}</td>
+          <td class="col-cara-bayar">{{ row.cara_pembayaran|dash }}</td>
+          <td class="col-spm"><b>{{ row.nomor_spm|dash }}</b></td>
+          <td class="col-tanggal">{{ row.tanggal_spm|date:"d F Y"|default:"-" }}</td>
+          <td class="col-jenis">{{ row.jenis_spm|dash }}</td>
+          <td class="col-kuitansi">{{ row.no_kuitansi|dash }}</td>
+          <td class="col-drpp">{{ row.no_drpp|dash }}</td>
+          <td class="col-deskripsi">{{ row.deskripsi|dash }}</td>
+          <td class="col-nominal">{{ row.nilai_bruto|id_number }}</td>
+          <td class="col-nominal">{{ row.nilai_netto|id_number }}</td>
+          <td class="col-pembebanan">{{ row.pembebanan|dash }}</td>
+          <td class="col-compact">{{ row.fp|dash }}</td>
+          <td class="col-nominal">{{ row.pph21|id_number }}</td>
+          <td class="col-status">{{ row.document_status_label|dash }}</td>
+          <td class="col-status">{{ row.reconciliation_status_label|dash }}</td>
+          <td class="col-status action-cell">
+            <a class="btn tiny ghost" href="{% url 'documents:checklist_detail' row.id %}">
+              {% if row.can_edit %}Checklist{% else %}Lihat Checklist{% endif %}
+            </a>
+            {% if row.requires_drpp %}
+              {% if row.has_drpp_record %}
+              <a class="btn tiny ghost" href="{% url 'drpp:list' %}?transaction_id={{ row.id }}">Lihat DRPP</a>
+              {% elif row.can_edit %}
+              <a class="btn tiny primary" href="{% url 'drpp:list' %}?transaction_id={{ row.id }}">Upload DRPP</a>
+              {% endif %}
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="22" class="empty">Belum ada data D_K.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination-wrap">
+    <div class="pagination-info">Menampilkan {{ page_start }}-{{ page_end }} dari {{ paginator.count }} data - {{ page_size }} data/halaman</div>
+    <div class="pagination-controls">
+      {% if page_obj.has_previous %}
+        <a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>
+      {% else %}
+        <span class="page-btn disabled">Previous</span>
+      {% endif %}
+
+      {% for page_number in pagination_window %}
+        {% if page_number == page_obj.number %}
+          <span class="page-btn active">{{ page_number }}</span>
+        {% else %}
+          <a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_number }}">{{ page_number }}</a>
+        {% endif %}
+      {% endfor %}
+
+      {% if page_obj.has_next %}
+        <a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.next_page_number }}">Next</a>
+      {% else %}
+        <span class="page-btn disabled">Next</span>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+

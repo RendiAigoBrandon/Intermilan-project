@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="grid cards-4">
+  <div class="card metric"><span>Hasil Filter</span><b>{{ summary.hasil|default:5359 }}</b><small>Transaksi tampil</small></div>
+  <div class="card metric"><span>Lengkap</span><b>{{ summary.lengkap|default:0 }}</b><small>Dokumen wajib lengkap</small></div>
+  <div class="card metric warn"><span>Belum Lengkap</span><b>{{ summary.belum|default:5359 }}</b><small>Masih kurang dokumen</small></div>
+  <div class="card metric ok"><span>Persentase</span><b>{{ summary.persen|default:"0.0%" }}</b><small>Kelengkapan hasil filter</small></div>
+</section>
+
+<section class="card mt">
+  <form class="filter-panel" method="get">
+    <div class="filter-grid">
+      <div class="filter-field filter-search"><label>Cari</label><input name="q" value="{{ filters.q }}" placeholder="Cari satker, bulan angka, status, realisasi..."></div>
+      <div class="filter-field"><label>Tahun</label><select name="tahun">{% for year in year_options %}<option value="{{ year }}" {% if filters.tahun == year|stringformat:"s" %}selected{% endif %}>{{ year }}</option>{% endfor %}</select></div>
+      <div class="filter-field"><label>Satker</label><select name="satker"><option value="">Semua satker</option>{% for satker in satker_options %}<option value="{{ satker.satker_code }}" {% if filters.satker == satker.satker_code %}selected{% endif %}>{{ satker.satker_code }} - {{ satker.satker_name|default:"-" }}</option>{% endfor %}</select></div>
+      <div class="filter-field"><label>Bulan</label><select name="bulan"><option value="">Semua bulan</option>{% for value,label in months %}<option value="{{ value }}" {% if filters.bulan == value|stringformat:"s" %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+      <div class="filter-field"><label>Status</label><select name="status"><option value="">Semua status</option>{% for status in status_options %}<option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}</select></div>
+      <div class="filter-actions"><button class="btn primary" type="submit">Terapkan Filter</button><a class="btn ghost" href="{% url 'core:monitoring' %}">Reset</a></div>
+    </div>
+  </form>
+  <div class="note-box">Sumber: {{ source_label }}. Data lintas satker tampil sebagai referensi; perubahan dokumen mengikuti hak akses pengguna.</div>
+  <div class="table-wrap wide-table-wrap large mt-small">
+    <table class="data-table compact table-monitoring monitoring-full-table">
+      <thead>
+        <tr>{% for column in columns %}<th>{{ column }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="col-satker">{{ row.bps }}</td>
+          <td class="col-bulan">{{ row.bulan }}</td>
+          <td class="col-nominal">{{ row.fa }}</td>
+          <td class="col-nominal">{{ row.intermilan_bulan }}</td>
+          <td class="col-nominal">{{ row.intermilan_sd }}</td>
+          <td class="col-percent">{{ row.pct_realisasi }}</td>
+          <td class="col-percent">{{ row.pct_dokumen }}</td>
+          <td class="col-percent">{{ row.pct_spj }}</td>
+          <td class="col-status">{{ row.arsip }}</td>
+          <td class="col-tanggal">{{ row.deadline }}</td>
+          <td class="col-status"><span class="badge orange">{{ row.status }}</span></td>
+          <td class="col-percent">{{ row.completed }}</td>
+          <td class="col-percent">{{ row.bar }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="13" class="empty">Belum ada data monitoring.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

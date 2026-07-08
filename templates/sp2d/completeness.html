@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<section class="grid cards-4">
+  <div class="card metric"><span>Total Dicek</span><b>{{ summary.total }}</b><small>SP2D tampil</small></div>
+  <div class="card metric ok"><span>Lengkap</span><b>{{ summary.lengkap }}</b><small>Semua dokumen terdeteksi</small></div>
+  <div class="card metric"><span>Perlu Review</span><b>{{ summary.review }}</b><small>Sebagian bukti terdeteksi</small></div>
+  <div class="card metric warn"><span>Belum Lengkap</span><b>{{ summary.belum }}</b><small>Belum ada bukti cocok</small></div>
+</section>
+
+<section class="card mt">
+  <div class="card-head">
+    <div>
+      <h2>Hasil Cek Kelengkapan</h2>
+      <p class="muted">Matching awal memakai nomor invoice/SPM, satker, nama file, dan metadata DocumentDriveLink.</p>
+    </div>
+    <a class="btn ghost" href="{% url 'sp2d:list' %}">Kembali ke SP2D</a>
+  </div>
+  <form method="get" class="toolbar-panel">
+    <div class="toolbar-row">
+      <div class="filter-grid">
+        <div class="filter-field filter-search"><label>Cari</label><input name="q" value="{{ filters.q }}" placeholder="No SP2D, invoice, SPM, satker, deskripsi..."></div>
+      </div>
+      <div class="page-actions"><button class="btn primary" type="submit">Cari</button><a class="btn ghost" href="{% url 'sp2d:completeness' %}">Reset</a></div>
+    </div>
+  </form>
+  <div class="note-box">Jika belum ada dokumen pendukung yang cocok, upload Paket SPM/DRPP terlebih dahulu. Status ini bersifat pemeriksaan awal dan tidak mengubah data.</div>
+  <div class="table-wrap wide-table-wrap large">
+    <table class="data-table compact">
+      <thead>
+        <tr>
+          <th>No</th><th>Satker</th><th>No SP2D</th><th>No Invoice</th><th>Jenis SPM</th><th class="col-nominal">Nilai SP2D</th><th>SPM</th><th>DRPP</th><th>KW</th><th>Link Drive</th><th>Status</th><th>Catatan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.no }}</td>
+          <td>{{ row.satker }}</td>
+          <td>{{ row.no_sp2d|dash }}</td>
+          <td>{{ row.nomor_invoice|dash }}</td>
+          <td>{{ row.jenis_spm|dash }}</td>
+          <td class="col-nominal">{{ row.nilai_sp2d|id_number }}</td>
+          <td><span class="badge {% if row.spm %}green{% else %}orange{% endif %}">{% if row.spm %}Ada{% else %}Belum{% endif %}</span></td>
+          <td><span class="badge {% if row.drpp %}green{% else %}orange{% endif %}">{% if row.drpp %}Ada{% else %}Belum{% endif %}</span></td>
+          <td><span class="badge {% if row.kw %}green{% else %}orange{% endif %}">{% if row.kw %}Ada{% else %}Belum{% endif %}</span></td>
+          <td><span class="badge {% if row.drive %}green{% else %}orange{% endif %}">{% if row.drive %}Ada{% else %}Belum{% endif %}</span></td>
+          <td><span class="badge {% if row.status == 'Lengkap' %}green{% elif row.status == 'Perlu Review' %}blue{% else %}orange{% endif %}">{{ row.status }}</span></td>
+          <td>{{ row.catatan }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="12" class="empty">Belum ada data SP2D untuk dicek.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

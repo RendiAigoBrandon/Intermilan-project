@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head"><h2>Laporan</h2><span class="muted">Export laporan operasional INTERMILAN.</span></div>
+  <div class="table-wrap"><table class="data-table"><thead><tr><th>Nama Laporan</th><th>Sumber</th><th class="col-status">Status</th><th class="col-status">Aksi</th></tr></thead><tbody><tr><td>Dashboard INTERMILAN</td><td>Dashboard</td><td class="col-status"><span class="badge blue">Perlu implementasi export</span></td><td class="col-status">{% if can_export_data %}<button class="btn ghost" disabled title="Export belum diimplementasikan">Export</button>{% else %}<span class="badge">Read Only</span>{% endif %}</td></tr><tr><td>Detail Keuangan / D_K</td><td>Database D_K</td><td class="col-status"><span class="badge blue">Perlu implementasi export</span></td><td class="col-status">{% if can_export_data %}<button class="btn ghost" disabled title="Export belum diimplementasikan">Export</button>{% else %}<span class="badge">Read Only</span>{% endif %}</td></tr><tr><td>Pisah Per Akun</td><td>Akun Keuangan</td><td class="col-status"><span class="badge {{ status_class }}">{{ status_pisah_akun }}</span></td><td class="col-status">{% if can_export_data %}<button class="btn ghost" disabled title="Export belum diimplementasikan">Export</button>{% else %}<span class="badge">Read Only</span>{% endif %}</td></tr></tbody></table></div>
+</section>
+{% endblock %}

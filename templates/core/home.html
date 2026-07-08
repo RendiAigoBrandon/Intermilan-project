@@ -1,0 +1,51 @@
+﻿{% extends "base.html" %}
+{% load static %}
+
+{% block content %}
+<section class="home-welcome">
+  <div class="welcome-card">
+    <div class="welcome-copy">
+      <p class="eyebrow">Selamat Datang Di</p>
+      <h2>INTERMILAN</h2>
+      <h3>Instrumen Terintegrasi Monitoring Pengelolaan Keuangan</h3>
+      <div class="welcome-actions">
+        <a class="btn primary" href="{% url 'core:dashboard' %}">Buka Dashboard</a>
+        <a class="btn ghost" href="{% url 'sp2d:list' %}">Upload SP2D</a>
+      </div>
+    </div>
+    <div class="welcome-logo">
+      <img src="{% static 'img/bps-logo-new.png' %}" alt="Logo BPS">
+    </div>
+  </div>
+
+  <div class="home-contact-grid">
+    <div class="contact-card">
+      <div>
+        <span class="contact-label">Informasi Lanjut</span>
+        <h3>Hubungi Subtim Keuangan</h3>
+        <p>Klik untuk info lebih lanjut.</p>
+      </div>
+      <a class="whatsapp-card" href="https://wa.me/6285263099380" target="_blank" rel="noopener">
+        <img src="{% static 'img/whatsapp-logo.png' %}" alt="WhatsApp">
+        <span>Buka WhatsApp</span>
+      </a>
+    </div>
+
+    <div class="contact-card address-card">
+      <span class="contact-label">Alamat Kantor</span>
+      <h3>Badan Pusat Statistik Provinsi Sumatera Barat</h3>
+      <p>Jl. Khatib Sulaiman No. 48 Padang, 25137</p>
+      <p>Telp: (0751) 442158-442160</p>
+      <p>Email: <a href="mailto:sumbar@bps.go.id">sumbar@bps.go.id</a></p>
+      <small>Copyright © 2026 Subtim Keuangan</small>
+    </div>
+  </div>
+
+  <div class="home-quick-line">
+    <a href="{% url 'core:peraturan' %}">Peraturan</a>
+    <a href="{% url 'core:template' %}">Template</a>
+    <a href="{% url 'core:panduan' %}">Panduan Aplikasi</a>
+    <a href="{% url 'core:monitoring' %}">Monitoring Dokumen</a>
+  </div>
+</section>
+{% endblock %}

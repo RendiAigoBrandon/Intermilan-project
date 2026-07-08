@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Preview Paket SPM</h2>
+      <p class="muted">Tinjau hasil scan dokumen sebelum commit ke arsip dan D_K.</p>
+    </div>
+  </div>
+
+  {% for warning in parsed.warnings %}<div class="note-box danger">{{ warning }}</div>{% endfor %}
+  {% for note in decision.notes %}<div class="note-box danger">{{ note }}</div>{% endfor %}
+
+  {% if sp2d_context %}
+  <div class="note-box">
+    Konteks Inbox SP2D: <b>{{ sp2d_context.label }}</b>.
+    Jika commit berhasil, detail D_K baru akan terhubung ke SP2D raw ini.
+  </div>
+  {% endif %}
+
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Nama Upload</th>
+          <th>Jumlah File</th>
+          <th>SPM</th>
+          <th>DRPP</th>
+          <th>KW/Item</th>
+          <th class="col-nominal">Total Nilai</th>
+          <th>Status Dokumen</th>
+          <th>Status Rekonsiliasi</th>
+          <th>Keputusan Commit</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>{{ preview_summary.upload_name }}</td>
+          <td>{{ preview_summary.file_count }}</td>
+          <td>{{ preview_summary.spm_count }}</td>
+          <td>{{ preview_summary.drpp_count }}</td>
+          <td>{{ preview_summary.kw_count }}</td>
+          <td class="col-nominal">{{ preview_summary.total|id_number }}</td>
+          <td><span class="status-pill">{{ preview_summary.document_status }}</span></td>
+          <td>{{ preview_summary.reconciliation_status }}</td>
+          <td>{{ preview_summary.commit_label }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="section-title mt">Hasil Scan Dokumen</h3>
+  <div class="table-wrap">
+    <table class="data-table data-table-wide">
+      <thead>
+        <tr>
+          <th>No</th>
+          <th>Nama File</th>
+          <th>Tipe Dokumen</th>
+          <th>No SPM OCR</th>
+          <th>No SPM Filename</th>
+          <th>No SPM Matching D_K/SP2D</th>
+          <th>No SPM Final</th>
+          <th>Status Review</th>
+          <th>No DRPP</th>
+          <th>No KW/Bukti</th>
+          <th>Akun</th>
+          <th class="col-nominal">Nilai</th>
+          <th>Metode OCR</th>
+          <th>Status OCR</th>
+          <th>Status Matching</th>
+          <th>Catatan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in scan_rows %}
+        <tr>
+          <td>{{ row.no }}</td>
+          <td title="{{ row.file_name }}">{{ row.file_name|truncatechars:48 }}</td>
+          <td>{{ row.type }}</td>
+          <td>{{ row.nomor_spm_ocr }}</td>
+          <td>{{ row.nomor_spm_filename }}</td>
+          <td>{{ row.nomor_spm_matching }}</td>
+          <td>{{ row.nomor_spm_final }}</td>
+          <td>{{ row.nomor_spm_review_status }}</td>
+          <td>{{ row.nomor_drpp }}</td>
+          <td>{{ row.no_kw }}</td>
+          <td>{{ row.akun }}</td>
+          <td class="col-nominal">{{ row.nilai|id_number }}</td>
+          <td>{{ row.method }}</td>
+          <td>{{ row.ocr_status }}</td>
+          <td>{{ row.matching_status }}</td>
+          <td title="{{ row.notes }}">{{ row.notes|truncatechars:120 }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="16" class="empty">Tidak ada PDF yang bisa diproses.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if drpp_rows %}
+  <h3 class="section-title mt">DRPP Terbaca</h3>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>No DRPP</th><th>No SPM terkait</th><th>Jumlah KW/Item</th><th class="col-nominal">Total Nilai</th><th>Status</th><th>File Sumber</th></tr></thead>
+      <tbody>
+        {% for row in drpp_rows %}
+        <tr>
+          <td>{{ row.nomor_drpp }}</td>
+          <td>{{ row.nomor_spm }}</td>
+          <td>{{ row.item_count }}</td>
+          <td class="col-nominal">{{ row.total|id_number }}</td>
+          <td>{{ row.status }}</td>
+          <td>{{ row.file_name }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if kw_rows %}
+  <h3 class="section-title mt">Item KW/Bukti</h3>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>No DRPP</th><th>No KW/Bukti</th><th>Akun</th><th class="col-nominal">Jumlah</th><th>Keperluan</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for item in kw_rows %}
+        <tr>
+          <td>{{ item.no_drpp|default:"-" }}</td>
+          <td>{{ item.no_bukti|default:"-" }}</td>
+          <td>{{ item.akun|default:"-" }}</td>
+          <td class="col-nominal">{{ item.jumlah|id_number }}</td>
+          <td title="{{ item.keperluan }}">{{ item.keperluan|truncatechars:140 }}</td>
+          <td>{{ item.status|default:"Terbaca" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <details class="note-box mt">
+    <summary><strong>Detail OCR raw text</strong></summary>
+    {% if parsed.spm %}
+      <h3>SPM - {{ parsed.spm.file_name }}</h3>
+      <p class="muted">
+        Engine dicoba: {{ parsed.spm.engines_tried|join:", "|default:"-" }}{% if parsed.spm.confidence %} - Confidence {{ parsed.spm.confidence|floatformat:0 }}%{% endif %}.
+        Native text: {{ parsed.spm.native_text_length|default:0 }} karakter.
+        Tesseract: {% if parsed.spm.tesseract_called %}dipanggil, {{ parsed.spm.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
+        {{ parsed.spm.tesseract_reason|default:"" }}
+      </p>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Halaman</th><th>Engine</th><th>Status</th><th>Confidence</th><th>Cuplikan Teks</th><th>Warning</th></tr></thead>
+          <tbody>
+            {% for page in parsed.spm.page_details %}
+            <tr>
+              <td>{{ page.page|default:page.page_number }}</td>
+              <td>{{ page.engine|default:page.method }}</td>
+              <td>{{ page.status }}</td>
+              <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
+              <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:160 }}</td>
+              <td>{{ page.warnings|join:"; " }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6" class="empty">Detail OCR SPM belum tersedia.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+    {% for drpp in parsed.drpps %}
+      <h3>DRPP - {{ drpp.file_name }}</h3>
+      <p class="muted">
+        Engine dicoba: {{ drpp.engines_tried|join:", "|default:"-" }}{% if drpp.confidence %} - Confidence {{ drpp.confidence|floatformat:0 }}%{% endif %}.
+        Native text: {{ drpp.native_text_length|default:0 }} karakter.
+        Tesseract: {% if drpp.tesseract_called %}dipanggil, {{ drpp.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
+        {{ drpp.tesseract_reason|default:"" }}
+      </p>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Halaman</th><th>Engine</th><th>Status</th><th>Confidence</th><th>Cuplikan Teks</th><th>Warning</th></tr></thead>
+          <tbody>
+            {% for page in drpp.page_details %}
+            <tr>
+              <td>{{ page.page|default:page.page_number }}</td>
+              <td>{{ page.engine|default:page.method }}</td>
+              <td>{{ page.status }}</td>
+              <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
+              <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:160 }}</td>
+              <td>{{ page.warnings|join:"; " }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6" class="empty">Detail OCR DRPP belum tersedia.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% empty %}
+      {% if parsed.drpp %}
+      <h3>DRPP - {{ parsed.drpp.file_name }}</h3>
+      <p class="muted">
+        Engine dicoba: {{ parsed.drpp.engines_tried|join:", "|default:"-" }}.
+        Native text: {{ parsed.drpp.native_text_length|default:0 }} karakter.
+        Tesseract: {% if parsed.drpp.tesseract_called %}dipanggil, {{ parsed.drpp.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
+        {{ parsed.drpp.tesseract_reason|default:"" }}
+      </p>
+      {% endif %}
+    {% endfor %}
+  </details>
+
+  <form method="post" class="mt" style="display:flex; gap:10px; flex-wrap:wrap;">
+    {% csrf_token %}
+    <button class="btn primary" name="action" value="commit" {% if not can_commit %}disabled{% endif %}>{{ decision.commit_label }}</button>
+    <button class="btn ghost" name="action" value="cancel">Batal</button>
+  </form>
+</section>
+{% endblock %}

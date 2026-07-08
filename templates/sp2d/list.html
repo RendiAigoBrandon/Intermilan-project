@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<section class="card upload-card-top">
+  <div class="card-head"><div><h2>Upload Excel SP2D</h2><p class="muted">Unggah daftar SP2D untuk pencocokan awal transaksi.</p></div></div>
+  <form class="form-grid compact" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <div class="form-field"><label>Tahun</label><input class="form-control" name="tahun" value="2026" required></div>
+    <div class="form-field"><label>Bulan</label><input class="form-control" name="bulan" placeholder="Contoh: 6 atau Juni" required></div>
+    <div class="form-field file-field"><label>File Daftar SP2D (.xlsx)</label><input class="form-control" type="file" name="file_sp2d" accept=".xlsx,.xls" required></div>
+    <div class="form-actions">
+      {% if can_upload_document %}
+      <button class="primary-btn upload-main-btn" type="submit">Upload & Preview</button>
+      {% else %}
+      <button class="btn ghost" type="button" disabled>Read Only</button>
+      {% endif %}
+    </div>
+  </form>
+  <div class="note-box">Inbox SP2D berisi data mentah SP2D dan status pencocokan ke D_K, bukan detail transaksi D_K.</div>
+</section>
+
+<section class="card mt">
+  <div class="card-head"><div><h2>Data Mentah SP2D</h2><p class="muted">Pantau hasil import dan status apakah SP2D sudah memiliki detail D_K.</p></div></div>
+  <div class="toolbar-panel">
+    <div class="toolbar-row">
+      <form class="filter-panel" method="get">
+        <div class="filter-grid">
+          <div class="filter-field filter-search"><label>Cari</label><input name="q" value="{{ filters.q }}" placeholder="Cari No SP2D, invoice, SPM, deskripsi, nama satker..."></div>
+          <div class="filter-field"><label>Satker</label><select name="satker"><option value="">Semua satker</option>{% for satker in satker_options %}<option value="{{ satker.satker_code }}" {% if filters.satker == satker.satker_code %}selected{% endif %}>{{ satker.satker_code }} - {{ satker.satker_name|default:"-" }}</option>{% endfor %}</select></div>
+          <div class="filter-field"><label>Bulan</label><select name="bulan"><option value="">Semua bulan</option>{% for value,label in months %}<option value="{{ value }}" {% if filters.bulan == value|stringformat:"s" %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+          <div class="filter-field"><label>Status Detail</label><select name="status"><option value="">Semua Status</option><option value="sudah" {% if filters.status == "sudah" %}selected{% endif %}>Sudah Ada D_K</option><option value="belum" {% if filters.status == "belum" %}selected{% endif %}>Belum Ada Detail</option></select></div>
+          <div class="filter-actions"><button class="btn primary" type="submit">Terapkan Filter</button><a class="btn ghost" href="{% url 'sp2d:list' %}">Reset</a></div>
+        </div>
+      </form>
+      <div class="page-actions">
+        <a class="btn ghost" href="{% url 'sp2d:completeness' %}">Cek Kelengkapan</a>
+        {% if can_upload_document %}<a class="btn primary" href="{% url 'paket_spm:list' %}">Upload Paket SPM PDF/ZIP</a>{% endif %}
+        {% if can_export_data %}<button class="btn ghost" type="button">Export Excel</button>{% else %}<span class="badge">Read Only</span>{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="table-wrap wide-table-wrap large">
+    <table class="data-table compact table-sp2d raw-full-table">
+      <thead>
+        <tr>
+          <th class="col-no">No</th>
+          <th class="col-satker">Satker</th>
+          <th class="col-nama-satker">Nama Satker</th>
+          <th class="col-sp2d">No. SP2D</th>
+          <th class="col-tanggal">Tanggal Selesai SP2D</th>
+          <th class="col-tanggal">Tgl SP2D</th>
+          <th class="col-compact">Mata Uang</th>
+          <th class="col-nominal">Nilai SPM</th>
+          <th class="col-nominal">Potongan</th>
+          <th class="col-nominal">Nilai SP2D</th>
+          <th class="col-invoice">Nomor Invoice</th>
+          <th class="col-tanggal">Tanggal Invoice</th>
+          <th class="col-jenis">Jenis SPM</th>
+          <th class="col-jenis">Jenis SP2D</th>
+          <th class="col-deskripsi">Deskripsi</th>
+          <th class="col-status">Status Detail</th>
+          <th class="col-aksi">Aksi</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="col-no">{{ page_start|add:forloop.counter0 }}</td>
+          <td class="col-satker">{% if row.satker_code and row.satker_name %}{{ row.satker_code }} - {{ row.satker_name }}{% elif row.satker_code %}{{ row.satker_code }}{% elif row.satker_name %}{{ row.satker_name }}{% else %}-{% endif %}</td>
+          <td class="col-nama-satker">{{ row.satker_name|dash }}</td>
+          <td class="col-sp2d">{{ row.no_sp2d|dash }}</td>
+          <td class="col-tanggal">{{ row.tanggal_selesai_sp2d|date:"Y-m-d"|default:"-" }}</td>
+          <td class="col-tanggal">{{ row.tgl_sp2d|date:"Y-m-d"|default:"-" }}</td>
+          <td class="col-compact">{{ row.mata_uang|dash }}</td>
+          <td class="col-nominal">{{ row.nilai_spm|id_number }}</td>
+          <td class="col-nominal">{{ row.potongan|id_number }}</td>
+          <td class="col-nominal">{{ row.nilai_sp2d|id_number }}</td>
+          <td class="col-invoice">{{ row.nomor_invoice|dash }}</td>
+          <td class="col-tanggal">{{ row.tanggal_invoice|date:"Y-m-d"|default:"-" }}</td>
+          <td class="col-jenis">{{ row.jenis_spm|dash }}</td>
+          <td class="col-jenis">{{ row.jenis_sp2d|dash }}</td>
+          <td class="col-deskripsi">{{ row.deskripsi|dash }}</td>
+          <td class="col-status"><span class="badge {% if row.has_dk_detail %}green{% else %}orange{% endif %}">{{ row.status_detail_label }}</span></td>
+          <td class="col-aksi">{% if row.has_dk_detail %}<a class="btn tiny ghost" href="{% url 'dk:list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %}<a class="btn tiny primary" href="{% url 'sp2d:inbox_detail' row.id %}">Inbox</a>{% endif %}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="17" class="empty">Belum ada data mentah SP2D.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination-wrap">
+    <div class="pagination-info">Menampilkan {{ page_start }}-{{ page_end }} dari {{ paginator.count }} data • {{ page_size }} data/halaman</div>
+    <div class="pagination-controls">
+      {% if page_obj.has_previous %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>{% else %}<span class="page-btn disabled">Previous</span>{% endif %}
+      {% for page_number in pagination_window %}{% if page_number == page_obj.number %}<span class="page-btn active">{{ page_number }}</span>{% else %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_number }}">{{ page_number }}</a>{% endif %}{% endfor %}
+      {% if page_obj.has_next %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.next_page_number }}">Next</a>{% else %}<span class="page-btn disabled">Next</span>{% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}

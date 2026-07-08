@@ -1,0 +1,59 @@
+# === Python & Django ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# === Virtual Environment ===
+.venv/
+venv/
+env/
+
+# === Environment & Secrets ===
+.env
+.env.*
+!.env.example
+*.env
+
+# === Database ===
+db.sqlite3
+*.db
+*.backup.*
+
+# === Media & Upload ===
+media/tmp/
+media/archive/
+media/uploads/*
+!media/uploads/.gitkeep
+
+# === Django Collected Static ===
+staticfiles/
+
+# === Credentials & Keys ===
+*service_account*.json
+*credentials*.json
+*token*.json
+*.pem
+*.key
+
+# === Backup & Scratch ===
+backups/
+scratch/
+*.zip
+*.tar.gz
+*.tar.bz2
+
+# === IDE & OS ===
+.pytest_cache/
+.coverage
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# === Logs ===
+*.log
+logs/

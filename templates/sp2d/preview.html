@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<section class="card upload-card-top">
+  <div class="card-head">
+    <div>
+      <h2>Preview Data SP2D</h2>
+      <p class="muted">Tinjau data SP2D yang akan diimport sebelum disimpan ke database.</p>
+    </div>
+  </div>
+  
+  <div class="grid cards-4">
+    <div class="card soft metric"><span>File</span><b>{{ import_data.original_filename }}</b><small>Excel SP2D</small></div>
+    <div class="card soft metric"><span>Periode</span><b>{{ import_data.bulan }} {{ import_data.tahun }}</b><small>Bulan / Tahun import</small></div>
+    <div class="card soft metric"><span>Jumlah Data</span><b>{{ total_rows }}</b><small>baris valid</small></div>
+    <div class="card soft metric {% if can_commit %}ok{% endif %}"><span>Status</span><b>{% if can_commit %}Siap diimport{% else %}Belum valid{% endif %}</b><small>{% if can_commit %}File berhasil dibaca{% else %}Perlu perbaikan{% endif %}</small></div>
+  </div>
+
+  {% if can_commit %}
+    <div class="note-box success">File berhasil dibaca dan siap diimport.</div>
+  {% else %}
+    <div class="note-box danger">{{ parse_result.error|default:"File berhasil dibaca, tetapi tidak ada data SP2D valid yang ditemukan." }}</div>
+  {% endif %}
+
+  <details class="note-box mt-small">
+    <summary><strong>Detail Teknis</strong></summary>
+    <div class="mt-small">
+      <p><strong>Sheet:</strong> {{ parse_result.sheet|default:"-" }}</p>
+      <p><strong>Header row:</strong> {{ parse_result.header_row|default:"-" }}</p>
+      <p><strong>Baris mentah:</strong> {{ raw_rows }}</p>
+      <p><strong>Baris valid:</strong> {{ total_rows }}</p>
+      <p><strong>Kolom asli:</strong> {{ columns|join:", " }}</p>
+      <p><strong>Mapping kolom:</strong></p>
+      {% for original, field in parse_result.mapping.items %}
+        <span class="badge blue">{{ original }} -> {{ field }}</span>
+      {% empty %}
+        <span class="muted">Tidak ada mapping kolom.</span>
+      {% endfor %}
+    </div>
+  </details>
+
+  <div class="note-box mt-small">
+    Menampilkan {{ preview_start_index }}–{{ preview_end_index }} dari {{ total_rows }} data.
+  </div>
+
+  <div class="table-wrap wide-table-wrap large mt-small">
+    <table class="data-table compact table-sp2d">
+      <thead>
+        <tr>
+          <th>No</th>
+          <th>Nama Satker</th>
+          <th>No SP2D</th>
+          <th>Tanggal SP2D</th>
+          <th>Nilai SPM</th>
+          <th>Potongan</th>
+          <th>Nilai SP2D</th>
+          <th>No Invoice</th>
+          <th>Jenis SPM</th>
+          <th>Jenis SP2D</th>
+          <th>Deskripsi</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in preview_rows %}
+        <tr>
+          <td>{{ forloop.counter0|add:preview_start_index }}</td>
+          <td>{% if row.satker_name %}{{ row.satker_name }}{% else %}{{ row.satker_code|default:"-" }}{% endif %}</td>
+          <td>{{ row.no_sp2d }}</td>
+          <td>{{ row.tgl_sp2d }}</td>
+          <td class="col-nominal">{{ row.nilai_spm|id_number }}</td>
+          <td class="col-nominal">{{ row.potongan|id_number }}</td>
+          <td>{{ row.nilai_sp2d|id_number }}</td>
+          <td>{{ row.nomor_invoice }}</td>
+          <td>{{ row.jenis_spm }}</td>
+          <td>{{ row.jenis_sp2d }}</td>
+          <td title="{{ row.deskripsi }}">{{ row.deskripsi|truncatechars:80 }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="11" class="empty">File berhasil dibaca, tetapi tidak ada data SP2D valid yang ditemukan.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if preview_page_obj %}
+  <div class="pagination-wrap">
+    <div class="pagination-info">Menampilkan {{ preview_start_index }}–{{ preview_end_index }} dari {{ total_rows }} data</div>
+    <div class="pagination-controls">
+      {% if preview_page_obj.has_previous %}<a class="page-btn" href="?page={{ preview_page_obj.previous_page_number }}">Previous</a>{% else %}<span class="page-btn disabled">Previous</span>{% endif %}
+      <span class="page-btn active">{{ preview_page_obj.number }}</span>
+      {% if preview_page_obj.has_next %}<a class="page-btn" href="?page={{ preview_page_obj.next_page_number }}">Next</a>{% else %}<span class="page-btn disabled">Next</span>{% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <form method="post" class="mt-small" style="display: flex; gap: 10px;">
+    {% csrf_token %}
+    <button type="submit" name="action" value="commit" class="btn primary" {% if not can_commit %}disabled{% else %}onclick="return confirm('Anda akan mengimport {{ total_rows }} data SP2D ke database. Lanjutkan?')"{% endif %}>Commit Import</button>
+    <button type="submit" name="action" value="cancel" class="btn ghost">Batal</button>
+  </form>
+</section>
+{% endblock %}

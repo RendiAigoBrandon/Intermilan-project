@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<section class="page-heading compact-heading">
+  <div>
+    <div class="breadcrumb">
+      <a href="{% url 'core:akun_index' %}">Akun Keuangan</a> / Detail {{ kode }}
+    </div>
+    <h2>Detail Transaksi Akun {{ kode }}</h2>
+    <p class="page-subtitle">Daftar transaksi untuk kode akun {{ kode }} sesuai hak akses pengguna.</p>
+  </div>
+</section>
+
+<section class="card mt">
+  <div class="toolbar-panel">
+    <form class="filter-panel" method="get">
+      <div class="filter-grid">
+        <div class="filter-field filter-search"><label>Cari</label><input name="q" value="{{ filters.q }}" placeholder="Cari SPM, kuitansi, DRPP, deskripsi..."></div>
+        <div class="filter-actions"><button class="btn primary" type="submit">Cari</button><a class="btn ghost" href="{% url 'core:akun_detail' kode %}">Reset</a></div>
+      </div>
+    </form>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Tanggal</th>
+          <th>Satker</th>
+          <th>Nomor SPM</th>
+          <th>Akun</th>
+          <th>Nilai Netto</th>
+          <th>Status Dokumen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.tanggal_spm|date:"d M Y" }}</td>
+          <td>{{ row.satker_code }}</td>
+          <td>{{ row.nomor_spm }}</td>
+          <td>{{ row.akun }}</td>
+          <td>Rp {{ row.nilai_netto|id_number }}</td>
+          <td>{{ row.status_dokumen|default:"-" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="empty">Belum ada transaksi untuk akun ini.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination-wrap mt-small">
+    <div class="pagination-info">Menampilkan {{ page_start }}-{{ page_end }} dari {{ paginator.count }} data - {{ page_size }} data/halaman</div>
+    <div class="pagination-controls">
+      {% if page_obj.has_previous %}
+        <a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>
+      {% else %}
+        <span class="page-btn disabled">Previous</span>
+      {% endif %}
+
+      {% for page_number in pagination_window %}
+        {% if page_number == page_obj.number %}
+          <span class="page-btn active">{{ page_number }}</span>
+        {% else %}
+          <a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_number }}">{{ page_number }}</a>
+        {% endif %}
+      {% endfor %}
+
+      {% if page_obj.has_next %}
+        <a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.next_page_number }}">Next</a>
+      {% else %}
+        <span class="page-btn disabled">Next</span>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}

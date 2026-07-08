@@ -1,0 +1,92 @@
+﻿{% load static %}
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if page_title %}{{ page_title }} | {% endif %}INTERMILAN</title>
+  <link rel="stylesheet" href="{% static 'css/base.css' %}?v=12">
+  <link rel="stylesheet" href="{% static 'css/layout.css' %}?v=12">
+  <link rel="stylesheet" href="{% static 'css/components.css' %}?v=12">
+  <link rel="stylesheet" href="{% static 'css/pages.css' %}?v=12">
+</head>
+<body>
+  <div class="app-shell">
+  <header class="topbar clean-topbar app-header">
+    <button id="sidebarToggle" class="sidebar-toggle-button" type="button" aria-label="Buka atau tutup menu samping" aria-controls="sidebarPanel" aria-expanded="true" data-sidebar-toggle>
+      <span></span><span></span><span></span>
+    </button>
+    <div class="brand clean-brand">
+      <img src="{% static 'img/bps-logo-new.png' %}" alt="Logo BPS">
+      <div>
+        <h1>INTERMILAN</h1>
+        <p>Instrumen Terintegrasi Monitoring Pengelolaan Keuangan</p>
+      </div>
+    </div>
+    <button id="sidebarToggleMobile" class="mobile-menu-button" type="button" aria-label="Buka menu" aria-controls="sidebarPanel" aria-expanded="false" data-sidebar-toggle>Menu</button>
+    <div class="top-actions">
+      <div class="user-pill user-pill-clean">
+        <div>
+          <b>Administrator Lokal</b>
+          <span>{{ request.user.username|default:"admin" }} | {{ user_scope|default:"Semua Satker" }}</span>
+        </div>
+        <small class="user-time">{{ current_time_label|default:"30/06/2026 12:05" }}</small>
+      </div>
+    </div>
+  </header>
+
+  <div class="mobile-nav-overlay" data-sidebar-close></div>
+
+  <div class="content-shell page-container">
+    <nav id="sidebarPanel" class="navstrip sidebar-nav app-sidebar" aria-label="Menu utama">
+      <div class="mobile-drawer-head">
+        <b>Menu</b>
+        <button class="mobile-menu-close" type="button" aria-label="Tutup menu" data-sidebar-close>&times;</button>
+      </div>
+      <div class="menu-title"><span>Menu</span></div>
+      <a href="{% url 'core:home' %}" class="navlink {% if request.resolver_match.url_name == 'home' %}active{% endif %}">Home</a>
+      <a href="{% url 'core:dashboard' %}" class="navlink {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">Dashboard</a>
+      {% if request.user.is_superuser or request.user.profile.is_admin_pusat %}
+      <a href="{% url 'core:audit_data' %}" class="navlink {% if request.resolver_match.url_name == 'audit_data' %}active{% endif %}">Review Data</a>
+      {% endif %}
+      <a href="{% url 'sp2d:list' %}" class="navlink {% if request.resolver_match.app_name == 'sp2d' %}active{% endif %}">Upload & Inbox SP2D</a>
+      <a href="{% url 'paket_spm:list' %}" class="navlink {% if request.resolver_match.app_name == 'paket_spm' %}active{% endif %}">Upload Paket SPM</a>
+      <a href="{% url 'core:monitoring' %}" class="navlink {% if request.resolver_match.url_name == 'monitoring' %}active{% endif %}">Monitoring</a>
+      <a href="{% url 'dk:list' %}" class="navlink {% if request.resolver_match.app_name == 'dk' %}active{% endif %}">Detail Keuangan</a>
+      <a href="{% url 'core:akun_index' %}" class="navlink {% if request.resolver_match.url_name == 'akun_index' %}active{% endif %}">Akun Keuangan</a>
+      <a href="{% url 'core:master_akun' %}" class="navlink {% if request.resolver_match.url_name == 'master_akun' %}active{% endif %}">Master Akun</a>
+      <a href="{% url 'core:peraturan' %}" class="navlink {% if request.resolver_match.url_name == 'peraturan' %}active{% endif %}">Peraturan</a>
+      <a href="{% url 'core:template' %}" class="navlink {% if request.resolver_match.url_name == 'template' %}active{% endif %}">Template</a>
+      <a href="{% url 'core:panduan' %}" class="navlink {% if request.resolver_match.url_name == 'panduan' %}active{% endif %}">Panduan Aplikasi</a>
+      <a href="{% url 'reports:index' %}" class="navlink {% if request.resolver_match.app_name == 'reports' %}active{% endif %}">Laporan</a>
+      <form method="post" action="{% url 'accounts:logout' %}">
+        {% csrf_token %}
+        <button type="submit" class="navlink logout-side">Logout</button>
+      </form>
+    </nav>
+
+    <main class="main layout-wide app-main">
+      {% if not hide_page_heading %}
+      <section class="page-heading compact-heading">
+        <div>
+          <h2>{{ page_title|default:"INTERMILAN" }}</h2>
+          {% if page_subtitle %}<p class="page-subtitle">{{ page_subtitle }}</p>{% endif %}
+        </div>
+      </section>
+      {% endif %}
+
+      {% if messages %}
+        <div class="flash-wrap">
+          {% for message in messages %}<div class="flash {{ message.tags }}">{{ message }}</div>{% endfor %}
+        </div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <footer>INTERMILAN | BPS Provinsi Sumatera Barat</footer>
+  </div>
+  <script src="{% static 'js/layout.js' %}?v=11"></script>
+</body>
+</html>

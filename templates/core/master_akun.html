@@ -1,0 +1,5 @@
+﻿{% extends "base.html" %}
+
+{% block content %}
+<section class="card"><div class="card-head"><h2>Master Akun</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th class="col-no">No</th><th class="col-akun">Kode Akun</th><th>Nama Akun</th><th>Kategori Otomatis</th></tr></thead><tbody>{% for kode,nama,kategori in rows %}<tr><td class="col-no">{{ forloop.counter }}</td><td class="col-akun"><b>{{ kode }}</b></td><td>{{ nama }}</td><td>{{ kategori }}</td></tr>{% endfor %}</tbody></table></div><div class="pagination-wrap"><div class="pagination-info">Menampilkan 1-20 dari 52 data • 20 data/halaman</div><div class="pagination-controls"><span class="page-btn disabled">Previous</span><span class="page-btn active">1</span><span class="page-btn">2</span><span class="page-btn">3</span><span class="page-btn">Next</span></div></div></section>
+{% endblock %}

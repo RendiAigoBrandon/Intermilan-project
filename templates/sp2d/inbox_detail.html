@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<div class="page-actions mt-small">
+  <a class="btn ghost" href="{% url 'sp2d:list' %}">Kembali ke Inbox</a>
+  <a class="btn ghost" href="{% url 'paket_spm:list' %}?sp2d_raw_id={{ row.id }}">Upload Dokumen / Paket SPM PDF/ZIP</a>
+  {% if has_dk_detail %}
+    <a class="btn primary" href="{% url 'dk:list' %}?q={{ row.nomor_spm_extracted|default:row.nomor_invoice|urlencode }}">Lihat D_K</a>
+  {% endif %}
+</div>
+
+<section class="grid two-col">
+  <div class="card soft">
+    <h2>Data SP2D Mentah</h2>
+    <p class="muted">Data awal dari inbox SP2D sebagai pembanding sebelum dibuat menjadi Detail D_K.</p>
+    <dl class="info-list mt-small">
+      <dt>No. SP2D</dt><dd>{{ row.no_sp2d|dash }}</dd>
+      <dt>Nomor Invoice</dt><dd>{{ row.nomor_invoice|dash }}</dd>
+      <dt>No. SPM Otomatis</dt><dd><b>{{ row.nomor_spm_extracted|dash }}</b></dd>
+      <dt>Satker</dt><dd>{% if row.satker_code and row.satker_name %}{{ row.satker_code }} - {{ row.satker_name }}{% else %}{{ row.satker_code|default:row.satker_name|dash }}{% endif %}</dd>
+      <dt>Tahun/Bulan</dt><dd>{{ row.import_batch.tahun|default:"-" }} / {{ row.bulan_sp2d|month_id }}</dd>
+      <dt>Jenis SPM</dt><dd>{{ row.jenis_spm|dash }}</dd>
+      <dt>Jenis SP2D</dt><dd>{{ row.jenis_sp2d|dash }}</dd>
+      <dt>Nilai SPM</dt><dd>{{ row.nilai_spm|id_number }}</dd>
+      <dt>Potongan</dt><dd>{{ row.potongan|id_number }}</dd>
+      <dt>Nilai SP2D</dt><dd>{{ row.nilai_sp2d|id_number }}</dd>
+      <dt>Status</dt><dd>{{ status_detail_label }}</dd>
+      <dt class="wide">Deskripsi</dt><dd>{{ row.deskripsi|dash }}</dd>
+    </dl>
+
+    <div class="note-box mt-small">
+      Upload dokumen dari halaman ini akan membawa konteks SP2D mentah #{{ row.id }} agar hasil OCR/commit bisa dikaitkan tanpa membuat duplikat.
+    </div>
+  </div>
+
+  <div class="card">
+    {% if has_dk_detail %}
+      <div class="card-head">
+        <div>
+          <h2>Detail D_K Terkait</h2>
+          <p class="muted">SP2D ini sudah memiliki detail akun. Gunakan tombol Lihat D_K atau Checklist untuk melanjutkan.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table compact">
+          <thead>
+            <tr><th>Akun</th><th>No SPM</th><th>No KW</th><th>No DRPP</th><th class="col-nominal">Nilai</th><th>Aksi</th></tr>
+          </thead>
+          <tbody>
+            {% for detail in detail_rows %}
+            <tr>
+              <td>{{ detail.akun|dash }}</td>
+              <td>{{ detail.nomor_spm|dash }}</td>
+              <td>{{ detail.no_kuitansi|dash }}</td>
+              <td>{{ detail.no_drpp|dash }}</td>
+              <td class="col-nominal">{{ detail.nilai_netto|id_number }}</td>
+              <td><a class="btn tiny ghost" href="{% url 'documents:checklist_detail' detail.id %}">Checklist</a></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="6" class="empty">Belum ada detail D_K.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <h2>Input Detail D_K</h2>
+      <p class="muted">Pecah data SP2D mentah menjadi database D_K web berdasarkan akun.</p>
+      <form method="post" class="form-grid mt-small">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="save_detail">
+
+        <div class="form-field full">
+          <label>Akun</label>
+          <select class="form-control" name="akun" required {% if not can_upload_document %}disabled{% endif %}>
+            <option value="">Pilih akun...</option>
+            {% for akun in akun_options %}
+              <option value="{{ akun.kode }}">{{ akun.kode }} - {{ akun.nama_akun }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label>No. SPM</label>
+          <input class="form-control" name="nomor_spm" value="{{ manual_defaults.nomor_spm|default:'' }}" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field">
+          <label>Tanggal SPM</label>
+          <input class="form-control" type="date" name="tanggal_spm" value="{{ manual_defaults.tanggal_spm|date:'Y-m-d' }}" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field">
+          <label>Bulan SP2D</label>
+          <select class="form-control" name="bulan_sp2d" {% if not can_upload_document %}disabled{% endif %}>
+            <option value="">Pilih bulan...</option>
+            {% for value,label in months %}
+              <option value="{{ value }}" {% if manual_defaults.bulan_sp2d == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label>Cara Pembayaran</label>
+          <input class="form-control" name="cara_pembayaran" value="{{ manual_defaults.cara_pembayaran|default:'' }}" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field">
+          <label>Jenis SPM</label>
+          <input class="form-control" name="jenis_spm" value="{{ manual_defaults.jenis_spm|default:'' }}" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field">
+          <label>No. Kuitansi</label>
+          <input class="form-control" name="no_kuitansi" placeholder="Isi manual kalau ada" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field">
+          <label>No. DRPP</label>
+          <input class="form-control" name="no_drpp" placeholder="Isi manual kalau ada" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field full">
+          <label>Deskripsi Detail</label>
+          <textarea class="form-control" name="deskripsi" rows="3" {% if not can_upload_document %}disabled{% endif %}>{{ manual_defaults.deskripsi|default:'' }}</textarea>
+        </div>
+        <div class="form-field">
+          <label>Nilai Bruto</label>
+          <input class="form-control" name="nilai_bruto" value="{{ manual_defaults.nilai_bruto|floatformat:2 }}" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field">
+          <label>Nilai Netto</label>
+          <input class="form-control" name="nilai_netto" value="{{ manual_defaults.nilai_netto|floatformat:2 }}" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field">
+          <label>Pembebanan</label>
+          <input class="form-control" name="pembebanan" placeholder="Contoh: DIPA/POK" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field">
+          <label>FP</label>
+          <input class="form-control" name="fp" placeholder="Nomor faktur pajak jika ada" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-field full">
+          <label>PPh21</label>
+          <input class="form-control" name="pph21" value="0" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+        <div class="form-actions full">
+          {% if can_upload_document %}
+            <button class="primary-btn" type="submit">Simpan Detail &amp; Generate Checklist</button>
+          {% else %}
+            <button class="btn ghost" type="button" disabled>Read Only</button>
+          {% endif %}
+        </div>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card mt">
+  <div class="card-head">
+    <div>
+      <h2>Upload Dokumen Pendukung</h2>
+      <p class="muted">SPM saja, DRPP saja, KW saja, PDF, atau ZIP lengkap tetap diterima dan akan diberi status dokumen sesuai hasil OCR.</p>
+    </div>
+    <a class="btn primary" href="{% url 'paket_spm:list' %}?sp2d_raw_id={{ row.id }}">Upload Paket SPM PDF/ZIP</a>
+  </div>
+  <div class="note-box">
+    Untuk SPM GUP, minimal dokumen lengkap adalah SPM, DRPP, dan KW/Bukti pengeluaran. Jika salah satu belum ada, file tetap disimpan dan status dokumen menjadi Belum Lengkap.
+  </div>
+</section>
+{% endblock %}

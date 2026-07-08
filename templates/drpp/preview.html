@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Preview DRPP</h2>
+      <p class="muted">Upload belum masuk database sampai tombol Commit ditekan.</p>
+    </div>
+  </div>
+  <div class="grid cards-4">
+    <div class="card soft metric"><span>File</span><b>{{ parsed.file_name }}</b><small>{{ parsed.page_count }} halaman</small></div>
+    <div class="card soft metric"><span>OCR</span><b>{{ parsed.best_engine|default:parsed.method }}</b><small>{{ parsed.status }}{% if parsed.confidence %} - {{ parsed.confidence|floatformat:0 }}%{% endif %}</small></div>
+    <div class="card soft metric"><span>No. DRPP</span><b>{{ parsed.metadata.nomor_drpp|default:"-" }}</b><small>No. SPM {{ parsed.metadata.nomor_spm|default:"-" }}</small></div>
+    <div class="card soft metric"><span>Total</span><b>{{ parsed.metadata.total|id_number }}</b><small>{{ parsed.items|length }} item</small></div>
+  </div>
+  {% for warning in parsed.warnings %}<div class="note-box danger">{{ warning }}</div>{% endfor %}
+  {% if parsed_drpps %}
+  <div class="table-wrap mt-small">
+    <table class="data-table compact">
+      <thead><tr><th>No</th><th>No DRPP</th><th>No SPM</th><th>Status</th><th>Engine</th><th class="col-nominal">Total</th><th>Item</th></tr></thead>
+      <tbody>
+        {% for drpp in parsed_drpps %}
+        <tr>
+          <td>{{ forloop.counter }}</td>
+          <td>{{ drpp.metadata.nomor_drpp|default:"-" }}</td>
+          <td>{{ drpp.metadata.nomor_spm|default:"-" }}</td>
+          <td>{{ drpp.status }}</td>
+          <td>{{ drpp.best_engine|default:drpp.method }}</td>
+          <td class="col-nominal">{{ drpp.metadata.total|id_number }}</td>
+          <td>{{ drpp.items|length }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  <details class="note-box mt-small">
+    <summary><strong>Detail OCR</strong></summary>
+    <p class="muted">
+      Engine dicoba: {{ parsed.engines_tried|join:", "|default:"-" }}.
+      Native text: {{ parsed.native_text_length|default:0 }} karakter.
+      Tesseract: {% if parsed.tesseract_called %}dipanggil, {{ parsed.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
+      {{ parsed.tesseract_reason|default:"" }}
+    </p>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Halaman</th><th>Engine</th><th>Status</th><th>Confidence</th><th>Cuplikan Teks</th><th>Warning</th></tr></thead>
+        <tbody>
+          {% for page in parsed.page_details %}
+          <tr>
+            <td>{{ page.page|default:page.page_number }}</td>
+            <td>{{ page.engine|default:page.method }}</td>
+            <td>{{ page.status }}</td>
+            <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
+            <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:180 }}</td>
+            <td>{{ page.warnings|join:"; " }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="empty">Detail OCR belum tersedia.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  <div class="table-wrap mt-small">
+    <table class="data-table">
+      <thead><tr><th>No</th><th>No Bukti/KW</th><th>Akun</th><th class="col-nominal">Jumlah</th><th>Keperluan</th></tr></thead>
+      <tbody>
+        {% for item in parsed.items %}
+        <tr><td>{{ item.no_urut }}</td><td>{{ item.no_bukti }}</td><td>{{ item.akun }}</td><td class="col-nominal">{{ item.jumlah|id_number }}</td><td>{{ item.keperluan }}</td></tr>
+        {% empty %}
+        <tr><td colspan="5" class="empty">Belum ada item yang terbaca. Commit dinonaktifkan jika metadata juga kosong.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <form method="post" class="mt-small" style="display:flex; gap:10px;">
+    {% csrf_token %}
+    <button class="btn primary" name="action" value="commit" {% if not can_commit %}disabled{% endif %}>Commit DRPP</button>
+    <button class="btn ghost" name="action" value="cancel">Batal</button>
+  </form>
+</section>
+{% endblock %}

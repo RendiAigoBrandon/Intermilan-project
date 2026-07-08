@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Ringkasan Audit</h2>
+      <p class="muted">Seluruh data di halaman ini hanya untuk review dan tidak mengubah database.</p>
+    </div>
+  </div>
+  <div class="toolbar-panel">
+    <div class="toolbar-row">
+      <div class="page-actions">
+      <a class="btn ghost" href="{% url 'core:audit_data_export' %}">Export CSV</a>
+      <button class="btn ghost" type="button" disabled>Belum Aktif - Menunggu Persetujuan</button>
+      </div>
+    </div>
+  </div>
+  <div class="grid cards-4">
+    <div class="card soft metric"><span>SP2D Batch</span><b>{{ audit_totals.sp2d_batch }}</b><small>Batch import</small></div>
+    <div class="card soft metric"><span>SP2D Raw</span><b>{{ audit_totals.sp2d }}</b><small>Data mentah SP2D</small></div>
+    <div class="card soft metric"><span>D_K</span><b>{{ audit_totals.dk }}</b><small>TransactionDetail</small></div>
+    <div class="card soft metric"><span>Master Akun</span><b>{{ audit_totals.master_akun }}</b><small>Referensi akun</small></div>
+    <div class="card soft metric"><span>Checklist Template</span><b>{{ audit_totals.checklist_template }}</b><small>Template dokumen</small></div>
+    <div class="card soft metric"><span>Checklist Status</span><b>{{ audit_totals.checklist_status }}</b><small>Status transaksi</small></div>
+    <div class="card soft metric"><span>DocumentDriveLink</span><b>{{ audit_totals.document_links }}</b><small>Metadata link</small></div>
+    <div class="card soft metric ok"><span>Status</span><b>Read-only</b><small>Tidak ada cleanup</small></div>
+  </div>
+  <div class="note-box">DRPP upload/item/match: {{ audit_totals.drpp_upload }} / {{ audit_totals.drpp_item }} / {{ audit_totals.drpp_match }}.</div>
+  {% if audit_is_clean %}
+  <div class="note-box success">Database testing sudah bersih. Silakan upload SP2D/DRPP/dokumen untuk mulai pengujian.</div>
+  {% endif %}
+</section>
+
+{% if not audit_is_clean %}
+<section class="card mt">
+  <div class="card-head"><div><h2>D_K Perlu Review</h2><p class="muted">Tambahan non-legacy dan kandidat duplikat belum diperbaiki otomatis.</p></div></div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Item</th><th class="col-nominal">Jumlah</th><th>Detail</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Cocok SQLite legacy</td><td class="col-nominal">{{ audit_findings.dk_legacy }}</td><td>Baris cocok dengan database legacy.</td><td><span class="badge green">Tercatat</span></td></tr>
+        <tr><td>Tambahan non-legacy</td><td class="col-nominal">{{ audit_findings.dk_extra }}</td><td>Kemungkinan dari Excel seed/manual.</td><td><span class="badge orange">Review</span></td></tr>
+        <tr><td>Baris tanpa SPM/kuitansi/DRPP</td><td class="col-nominal">{{ audit_findings.dk_blank_keys }}</td><td>Perlu validasi sumber baris.</td><td><span class="badge orange">Review</span></td></tr>
+        <tr><td>Kandidat duplikat</td><td class="col-nominal">{{ audit_findings.dk_duplicate_groups }} grup</td><td>Satker 1376, SPM 00085A, KW 00085A, DRPP kosong, akun 522112, bruto/netto 37.407, jumlah 2.</td><td><span class="badge orange">Review</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="grid two-col mt">
+  <div class="card">
+    <div class="card-head"><div><h2>Master Akun</h2><p class="muted">Tambahan akun belum diputuskan.</p></div></div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>Item</th><th class="col-nominal">Jumlah</th><th>Catatan</th></tr></thead><tbody>
+        <tr><td>Total saat ini</td><td class="col-nominal">{{ audit_findings.master_akun_total }}</td><td>Master akun Django.</td></tr>
+        <tr><td>Legacy</td><td class="col-nominal">{{ audit_findings.master_akun_legacy }}</td><td>Jumlah dari sumber legacy.</td></tr>
+        <tr><td>Tambahan</td><td class="col-nominal">{{ audit_findings.master_akun_extra }}</td><td>Perlu keputusan valid sebagai agregat/placeholder.</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><div><h2>Checklist</h2><p class="muted">Relasi status valid, template masih perlu review struktur.</p></div></div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>Item</th><th class="col-nominal">Jumlah</th><th>Status</th></tr></thead><tbody>
+        <tr><td>ChecklistTemplate</td><td class="col-nominal">{{ checklist_summary.template_total }}</td><td>Perlu review normalisasi.</td></tr>
+        <tr><td>Distinct nama_dokumen</td><td class="col-nominal">{{ checklist_summary.distinct_names }}</td><td>Master nama dokumen.</td></tr>
+        <tr><td>ChecklistStatus</td><td class="col-nominal">{{ checklist_summary.status_total }}</td><td>Validasi relasi.</td></tr>
+        <tr><td>ADA / BELUM / TIDAK_PERLU</td><td class="col-nominal">{{ checklist_summary.ada }} / {{ checklist_summary.belum }} / {{ checklist_summary.tidak_perlu }}</td><td>Breakdown status.</td></tr>
+        <tr><td>Orphan / duplikat pair</td><td class="col-nominal">{{ checklist_summary.orphan }} / {{ checklist_summary.duplicate_pairs }}</td><td>Tidak ditemukan.</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+</section>
+
+<section class="grid two-col mt">
+  <div class="card">
+    <div class="card-head"><div><h2>DocumentDriveLink</h2><p class="muted">Link dokumen tetap metadata-only.</p></div></div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>Item</th><th class="col-nominal">Jumlah</th><th>Detail</th></tr></thead><tbody>
+        <tr><td>Total</td><td class="col-nominal">{{ drive_summary.total }}</td><td>Metadata link dokumen.</td></tr>
+        <tr><td>Matched</td><td class="col-nominal">{{ drive_summary.matched }}</td><td>Terhubung ke TransactionDetail.</td></tr>
+        <tr><td>Belum matched</td><td class="col-nominal">{{ drive_summary.unmatched }}</td><td>Perlu review manual.</td></tr>
+        <tr><td>Invalid sample</td><td class="col-nominal">{{ drive_summary.invalid_sample }}</td><td>ID {{ drive_summary.invalid_id }}, satker {{ drive_summary.invalid_satker }}, SPM {{ drive_summary.invalid_spm }}.</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><div><h2>SP2D Perlu Review</h2><p class="muted">No SP2D belum aman sebagai unique key tunggal.</p></div></div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>Item</th><th class="col-nominal">Jumlah</th><th>Catatan</th></tr></thead><tbody>
+        <tr><td>Total SP2D raw</td><td class="col-nominal">{{ audit_totals.sp2d }}</td><td>Data mentah SP2D.</td></tr>
+        <tr><td>no_sp2d kosong</td><td class="col-nominal">{{ sp2d_review.empty_no_sp2d }}</td><td>Perlu review sumber.</td></tr>
+        <tr><td>Duplikat no_sp2d</td><td class="col-nominal">{{ sp2d_review.duplicate_groups }} grup</td><td>Non-empty no_sp2d.</td></tr>
+        <tr><td>nomor_spm_extracted kosong</td><td class="col-nominal">{{ audit_findings.sp2d_empty_extracted_spm }}</td><td>Lengkap pada audit.</td></tr>
+        <tr><td>nilai_sp2d &lt;= 0</td><td class="col-nominal">{{ sp2d_review.invalid_value }}</td><td>Perlu validasi.</td></tr>
+        <tr><td>tanggal_sp2d null</td><td class="col-nominal">{{ sp2d_review.null_date }}</td><td>Perlu validasi.</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+</section>
+
+<section class="grid two-col mt">
+  <div class="card">
+    <div class="card-head"><div><h2>Warning Tanggal Excel</h2><p class="muted">Tanggal invalid belum diperbaiki otomatis.</p></div></div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>Workbook</th><th>Sheet</th><th>Cell</th><th>Kolom</th><th>Nilai</th></tr></thead><tbody>
+        <tr><td>{{ audit_findings.invalid_date_workbook }}</td><td>{{ audit_findings.invalid_date_sheet }}</td><td>{{ audit_findings.invalid_date_cells }}</td><td>{{ audit_findings.invalid_date_column }}</td><td>{{ audit_findings.invalid_date_values }}</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><div><h2>Data Test/Sample</h2><p class="muted">Keyword ditemukan dan hanya ditandai untuk review.</p></div></div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>Lokasi</th><th>Keyword</th><th class="col-nominal">Jumlah</th><th>Status</th></tr></thead><tbody>
+        <tr><td>TransactionDetail.deskripsi</td><td>test</td><td class="col-nominal">{{ dummy_summary.transaction_test }}</td><td><span class="badge orange">Review</span></td></tr>
+        <tr><td>SP2DRaw.deskripsi</td><td>test</td><td class="col-nominal">{{ dummy_summary.sp2d_test }}</td><td><span class="badge orange">Review</span></td></tr>
+      </tbody></table>
+    </div>
+    <div class="note-box">Tidak ada tombol cleanup, merge, atau fix otomatis yang aktif.</div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

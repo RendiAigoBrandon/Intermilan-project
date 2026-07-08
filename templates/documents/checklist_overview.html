@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% load intermilan_format %}
+
+{% block content %}
+<section class="grid two-col">
+  <div class="card soft">
+    <h2>Ringkasan Transaksi</h2>
+    <dl class="info-list">
+      <dt>Satker</dt><dd>{{ transaction.satker_code|dash }}</dd>
+      <dt>Nama Satker</dt><dd>{{ transaction.display_satker_name|dash }}</dd>
+      <dt>No. SPM</dt><dd>{{ transaction.nomor_spm|dash }}</dd>
+      <dt>No. SP2D</dt><dd>{{ transaction.sp2d_raw.no_sp2d|dash }}</dd>
+      <dt>Status Rekonsiliasi</dt><dd>{{ reconciliation_status }}</dd>
+      <dt>Jenis</dt><dd>{{ transaction.jenis_spm|dash }}</dd>
+      <dt>No. DRPP</dt><dd>{{ transaction.no_drpp|dash }}</dd>
+      <dt>Akun</dt><dd>{{ transaction.akun|dash }}</dd>
+      <dt>Kategori</dt><dd>{{ transaction.kategori|dash }}</dd>
+      <dt>Nilai Netto</dt><dd>{{ transaction.nilai_netto|id_number }}</dd>
+      <dt class="wide">Deskripsi</dt><dd>{{ transaction.deskripsi|dash }}</dd>
+    </dl>
+    <div class="progress-wrap">
+      <div class="progress-label"><b>Kelengkapan</b><span>{{ completion_percent|floatformat:2 }}%</span></div>
+      <div class="progress"><span style="width:{{ completion_percent }}%"></span></div>
+    </div>
+    <a class="btn ghost mt-small" href="{% url 'dk:list' %}">Kembali ke D_K</a>
+  </div>
+  <div class="card">
+    <h2>Upload / Link Dokumen</h2>
+    <form class="form-grid mt-small js-upload-progress-form" method="post" enctype="multipart/form-data">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="upload_document">
+      <div class="form-field">
+        <label>Jenis Dokumen</label>
+        <select class="form-control" name="document_type" {% if not can_upload_document %}disabled{% endif %}>
+          {% for option in document_type_options %}
+            <option value="{{ option }}">{{ option }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-field file-field full">
+        <label>Upload File PDF/ZIP</label>
+        <div class="upload-dropzone js-upload-dropzone">
+          <strong>Tarik file ke sini atau pilih file</strong>
+          <span>Bisa upload PDF banyak sekaligus, folder, atau ZIP.</span>
+          <input class="form-control js-upload-files" name="document_files" type="file" multiple accept=".pdf,.zip,.jpg,.jpeg,.png" {% if not can_upload_document %}disabled{% endif %}>
+        </div>
+      </div>
+      <div class="form-field file-field full">
+        <label>Upload Folder</label>
+        <input class="form-control js-upload-folder" name="document_files" type="file" multiple webkitdirectory directory {% if not can_upload_document %}disabled{% endif %}>
+      </div>
+      <div class="form-field">
+        <label>Atau Link Google Drive</label>
+        <input class="form-control" name="manual_link" placeholder="https://drive.google.com/..." {% if not can_upload_document %}disabled{% endif %}>
+      </div>
+      <label class="form-check full">
+        <input type="checkbox" name="use_ocr" value="1" {% if not can_upload_document %}disabled{% endif %}>
+        <span>Gunakan OCR untuk scan buram/lama</span>
+      </label>
+      <div class="note-box full js-upload-progress" hidden>
+        <strong class="js-upload-progress-title">File sedang diupload...</strong>
+        <div class="progress mt-small"><span class="js-upload-progress-bar" style="width:12%"></span></div>
+        <p class="muted js-upload-progress-text">Menunggu upload</p>
+        <p class="muted js-upload-progress-count">Memproses 0 dari 0 file</p>
+        <ul class="upload-result-list js-upload-result-list"></ul>
+      </div>
+      <div class="form-actions full">{% if can_upload_document %}<button class="primary-btn" type="submit">Simpan Dokumen</button>{% else %}<button class="btn ghost" type="button" disabled>Read Only</button>{% endif %}</div>
+    </form>
+    <div class="note-box">Upload file menjadi prioritas: sistem otomatis membuat link Google Drive/local archive. Input link manual hanya cadangan.</div>
+    {% if reconciliation_status == "Belum ada SP2D pembanding" %}
+      <div class="note-box danger">Belum ada SP2D pembanding. Dokumen tetap bisa disimpan dan akan diberi status rekonsiliasi perlu review.</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card mt">
+  <div class="card-head"><h2>Dokumen Sudah Tersimpan</h2><span class="muted">Daftar file dan tautan pendukung transaksi.</span></div>
+  <div class="table-wrap">
+    <table class="data-table compact table-documents">
+      <thead><tr><th>Jenis</th><th>Nama File / Link</th><th>Status</th><th>Catatan</th><th>Waktu</th></tr></thead>
+      <tbody>
+        {% for link in drive_links %}
+        <tr>
+          <td>{{ link.jenis_dokumen|dash }}</td>
+          <td>
+            {% if link.google_drive_url %}
+              <a href="{{ link.google_drive_url }}" target="_blank" rel="noopener">{{ link.nama_file|dash }}</a>
+            {% else %}
+              {{ link.nama_file|dash }}
+            {% endif %}
+          </td>
+          <td>{{ link.get_status_display }}</td>
+          <td>{{ link.catatan|truncatechars:140 }}</td>
+          <td>{{ link.created_at|date:"Y-m-d H:i" }}</td>
+        </tr>
+        {% endfor %}
+        {% for upload in uploads %}
+        <tr><td>{{ upload.document_type|dash }}</td><td>{{ upload.original_filename|dash }}</td><td>File tersimpan</td><td>Uploader: {{ upload.uploaded_by|default:"-" }}</td><td>{{ upload.uploaded_at|date:"Y-m-d H:i" }}</td></tr>
+        {% empty %}
+          {% if not drive_links %}<tr><td colspan="5" class="empty">Belum ada dokumen diupload.</td></tr>{% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card mt">
+  <div class="card-head"><h2>Daftar Checklist</h2><span class="muted">Status dokumen transaksi.</span></div>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="save_checklist">
+  <div class="table-wrap">
+    <table class="data-table compact table-documents">
+      <thead><tr><th>Dokumen</th><th class="col-status">Wajib</th><th class="col-status">Status</th><th>Catatan</th></tr></thead>
+      <tbody>
+        {% for item in checklist_rows %}
+        <tr>
+          <td>{{ item.nama_dokumen }}</td>
+          <td class="col-status">{% if item.wajib %}Ya{% else %}Opsional{% endif %}</td>
+          <td class="col-status">
+            <select class="form-control" name="checklist_status_{{ item.id }}" {% if not can_upload_document or not item.id %}disabled{% endif %}>
+              <option value="BELUM" {% if item.status == "BELUM" %}selected{% endif %}>Belum Ada</option>
+              <option value="ADA" {% if item.status == "ADA" %}selected{% endif %}>Ada</option>
+              <option value="TIDAK_PERLU" {% if item.status == "TIDAK_PERLU" %}selected{% endif %}>Tidak Perlu</option>
+            </select>
+          </td>
+          <td><input class="form-control" placeholder="Catatan verifikator" {% if not can_upload_document %}disabled{% endif %}></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if can_upload_document %}<button class="primary-btn mt-small" type="submit">Simpan Checklist</button>{% else %}<button class="btn ghost mt-small" type="button" disabled>Read Only</button>{% endif %}
+  </form>
+</section>
+<script>
+  document.querySelectorAll(".js-upload-dropzone").forEach(function (zone) {
+    var input = zone.querySelector(".js-upload-files");
+    if (!input) return;
+    ["dragenter", "dragover"].forEach(function (eventName) {
+      zone.addEventListener(eventName, function (event) {
+        event.preventDefault();
+        zone.classList.add("is-dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach(function (eventName) {
+      zone.addEventListener(eventName, function (event) {
+        event.preventDefault();
+        zone.classList.remove("is-dragover");
+      });
+    });
+    zone.addEventListener("drop", function (event) {
+      if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length) {
+        input.files = event.dataTransfer.files;
+      }
+    });
+  });
+  document.querySelectorAll(".js-upload-progress-form").forEach(function (form) {
+    form.addEventListener("submit", function () {
+      var box = form.querySelector(".js-upload-progress");
+      var title = form.querySelector(".js-upload-progress-title");
+      var text = form.querySelector(".js-upload-progress-text");
+      var bar = form.querySelector(".js-upload-progress-bar");
+      var count = form.querySelector(".js-upload-progress-count");
+      var list = form.querySelector(".js-upload-result-list");
+      if (!box || !title || !text || !bar) return;
+      box.hidden = false;
+      var selected = 0;
+      form.querySelectorAll("input[type='file']").forEach(function (input) { selected += input.files ? input.files.length : 0; });
+      var steps = [
+        ["File sedang diupload...", "Menyimpan file sementara", "12%"],
+        ["Sedang mengklasifikasi dokumen...", "File diterima", "28%"],
+        ["Dokumen sedang discan OCR...", "Sedang scan/OCR dokumen", "44%"],
+        ["SPM sedang dibaca...", "Sedang membaca SPM/DRPP/KW", "58%"],
+        ["KW sedang dikelompokkan...", "Memisahkan DRPP dan KW", "70%"],
+        ["Dokumen sedang disimpan ke arsip...", "Sedang upload ke Drive/local archive", "84%"],
+        ["Checklist sedang diperbarui...", "Checklist diperbarui", "94%"]
+      ];
+      var index = 0;
+      function tick() {
+        var step = steps[Math.min(index, steps.length - 1)];
+        title.textContent = step[0];
+        text.textContent = step[1];
+        bar.style.width = step[2];
+        if (count) count.textContent = "Memproses " + Math.min(index + 1, Math.max(selected, 1)) + " dari " + Math.max(selected, 1) + " file";
+        if (list && index === 0) {
+          list.innerHTML = "";
+          form.querySelectorAll("input[type='file']").forEach(function (input) {
+            Array.prototype.forEach.call(input.files || [], function (file) {
+              var item = document.createElement("li");
+              item.textContent = file.name + " - menunggu proses";
+              list.appendChild(item);
+            });
+          });
+        }
+        index += 1;
+        if (index < steps.length) window.setTimeout(tick, 1200);
+      }
+      tick();
+    });
+  });
+</script>
+{% endblock %}

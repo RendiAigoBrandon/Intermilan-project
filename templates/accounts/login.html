@@ -1,0 +1,32 @@
+﻿{% load static %}
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login INTERMILAN</title>
+  <link rel="stylesheet" href="{% static 'css/base.css' %}?v=4">
+  <link rel="stylesheet" href="{% static 'css/components.css' %}?v=4">
+  <link rel="stylesheet" href="{% static 'css/pages.css' %}?v=4">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-card">
+      <img src="{% static 'img/bps-logo-new.png' %}" alt="BPS" class="login-logo">
+      <p class="eyebrow">BPS Provinsi Sumatera Barat</p>
+      <h1>INTERMILAN</h1>
+      <p class="login-subtitle">Web internal untuk memindahkan workbook INTERMILAN dan KK_13xx ke alur kerja terpusat.</p>
+      {% if form.errors %}<div class="login-error">Username atau password tidak sesuai.</div>{% endif %}
+      <form method="post" class="login-form">
+        {% csrf_token %}
+        <label for="{{ form.username.id_for_label }}">Username</label>
+        {{ form.username }}
+        <label for="{{ form.password.id_for_label }}">Password</label>
+        {{ form.password }}
+        <input type="hidden" name="next" value="{{ next }}">
+        <button type="submit" class="primary-btn">Login</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

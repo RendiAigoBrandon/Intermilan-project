@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Upload Paket SPM</h2>
+      <p class="muted">Upload 1 PDF, banyak PDF, folder, atau ZIP Paket SPM.</p>
+    </div>
+    <div class="page-actions"><a class="btn ghost" href="{% url 'dk:list' %}">Lihat D_K</a></div>
+  </div>
+
+  {% if sp2d_context %}
+  <div class="note-box">
+    Melengkapi Inbox SP2D: <b>{{ sp2d_context.label }}</b>.
+    Setelah commit berhasil, D_K akan terhubung ke SP2D raw ini.
+  </div>
+  {% endif %}
+
+  <form class="form-grid" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {% if sp2d_context %}<input type="hidden" name="sp2d_raw_id" value="{{ sp2d_context.sp2d_raw_id }}">{% endif %}
+
+    <div class="form-field"><label>Satker</label><input class="form-control" name="satker_code" value="{{ sp2d_context.satker_code|default:'' }}" placeholder="Contoh: 1300"></div>
+    <div class="form-field"><label>Tahun</label><input class="form-control" name="tahun" value="{{ sp2d_context.tahun|default:'2026' }}"></div>
+    <div class="form-field"><label>Bulan SP2D</label><input class="form-control" name="bulan" value="{{ sp2d_context.bulan|default:'' }}" placeholder="Contoh: Juni"></div>
+
+    <div class="form-field file-field full">
+      <label>Paket SPM</label>
+      <div class="upload-dropzone js-upload-dropzone">
+        <strong>Pilih File / Folder</strong>
+        <span>Upload 1 PDF, banyak PDF, folder, atau ZIP Paket SPM.</span>
+        <input class="form-control js-upload-files" type="file" name="file_paket" multiple accept=".pdf,.zip,application/zip,application/pdf">
+      </div>
+      <input class="js-folder-files" type="file" name="document_files" multiple webkitdirectory directory hidden>
+      <p class="muted mt-small">Untuk folder, klik area upload sambil tahan tombol <b>Shift</b> atau drag folder langsung ke area ini jika browser mendukung.</p>
+    </div>
+
+    <label class="checkline"><input type="checkbox" name="use_ocr"> Mode akurasi tinggi untuk scan buram (lebih lama)</label>
+
+    <div class="note-box full js-upload-progress" hidden>
+      <strong class="js-upload-progress-title">File sedang diupload...</strong>
+      <div class="progress mt-small"><span class="js-upload-progress-bar" style="width:12%"></span></div>
+      <p class="muted js-upload-progress-text">Menunggu upload</p>
+      <p class="muted js-upload-progress-count">Memproses 0 dari 0 file</p>
+    </div>
+
+    <div class="form-actions">
+      {% if can_upload_document %}
+      <button class="primary-btn" type="submit">Baca Paket & Buat Preview D_K</button>
+      {% else %}
+      <button class="btn ghost" type="button" disabled>Read Only</button>
+      {% endif %}
+    </div>
+  </form>
+
+  <div class="note-box">
+    Batas upload Paket SPM: {{ max_zip_size_mb|default:2048 }} MB. File besar diproses melalui temporary upload dan fast preview.
+  </div>
+</section>
+
+<section class="card mt">
+  <div class="card-head">
+    <div>
+      <h2>Preview D_K Paket SPM</h2>
+      <p class="muted">Belum ada preview.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Helper</th><th class="col-akun">Akun</th><th class="col-spm">Nomor SPM</th><th class="col-kuitansi">No. Kuitansi</th><th class="col-drpp">No. DRPP</th><th class="col-nominal">Nilai Bruto</th><th class="col-nominal">Nilai Netto</th><th class="col-status">Status</th></tr></thead>
+      <tbody><tr><td colspan="8" class="empty">Upload paket untuk melihat preview D_K.</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+  document.querySelectorAll(".js-upload-dropzone").forEach(function (zone) {
+    var input = zone.querySelector(".js-upload-files");
+    var folderInput = zone.parentElement.querySelector(".js-folder-files");
+    if (!input) return;
+    zone.addEventListener("click", function (event) {
+      if (event.shiftKey && folderInput) {
+        event.preventDefault();
+        folderInput.click();
+      }
+    });
+    ["dragenter", "dragover"].forEach(function (eventName) {
+      zone.addEventListener(eventName, function (event) {
+        event.preventDefault();
+        zone.classList.add("is-dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach(function (eventName) {
+      zone.addEventListener(eventName, function (event) {
+        event.preventDefault();
+        zone.classList.remove("is-dragover");
+      });
+    });
+    zone.addEventListener("drop", function (event) {
+      if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length) {
+        input.files = event.dataTransfer.files;
+      }
+    });
+  });
+
+  document.querySelectorAll("form[enctype='multipart/form-data']").forEach(function (form) {
+    form.addEventListener("submit", function () {
+      var box = form.querySelector(".js-upload-progress");
+      if (!box) return;
+      var title = box.querySelector(".js-upload-progress-title");
+      var text = box.querySelector(".js-upload-progress-text");
+      var bar = box.querySelector(".js-upload-progress-bar");
+      var count = box.querySelector(".js-upload-progress-count");
+      var selected = 0;
+      form.querySelectorAll("input[type='file']").forEach(function (input) {
+        selected += input.files ? input.files.length : 0;
+      });
+      var steps = [
+        ["File sedang diupload...", "Menyimpan file sementara", "12%"],
+        ["Sedang mengklasifikasi dokumen...", "File diterima", "30%"],
+        ["Dokumen sedang discan OCR...", "Sedang scan/OCR dokumen", "48%"],
+        ["SPM/DRPP/KW sedang dibaca...", "KW sedang dikelompokkan", "66%"],
+        ["Dokumen sedang disimpan ke arsip...", "Google Drive/local archive", "82%"],
+        ["Checklist sedang diperbarui...", "Selesai / Perlu Review OCR", "94%"]
+      ];
+      box.hidden = false;
+      var i = 0;
+      function tick() {
+        var step = steps[Math.min(i, steps.length - 1)];
+        title.textContent = step[0];
+        text.textContent = step[1];
+        bar.style.width = step[2];
+        if (count) count.textContent = "Memproses " + Math.min(i + 1, Math.max(selected, 1)) + " dari " + Math.max(selected, 1) + " file";
+        i += 1;
+        if (i < steps.length) window.setTimeout(tick, 1200);
+      }
+      tick();
+    });
+  });
+</script>
+{% endblock %}

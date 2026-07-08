@@ -1,0 +1,97 @@
+﻿{% extends "base.html" %}
+
+{% load intermilan_format %}
+
+{% block content %}
+<section class="grid cards-4">
+  <div class="card metric"><span>Total SP2D Raw</span><b>{{ stats.sp2d }}</b><small>Upload Daftar SP2D</small></div>
+  <div class="card metric warn"><span>Perlu Detail Akun</span><b>{{ stats.perlu_detail }}</b><small>SP2D belum cocok Detail Keuangan</small></div>
+  <div class="card metric"><span>Detail Keuangan</span><b>{{ stats.dk }}</b><small>Transaksi detail akun</small></div>
+  <div class="card metric ok"><span>DRPP Terupload</span><b>{{ stats.drpp }}</b><small>File/rincian DRPP masuk</small></div>
+</section>
+<div class="dashboard-card-scope">{{ card_scope_label }}. {{ card_scope_note }}</div>
+
+<section class="card mt mom-card excel-mom-card">
+  <div class="mom-filter-head">
+    <div class="mom-title">
+      <h2>MoM Monitoring Pengelolaan Administrasi Keuangan BPS Prov/Kab/Kota Tahun {{ dashboard_filters.tahun }} di Sumatera Barat</h2>
+      <p>{{ scope_label }}. {{ scope_note }}</p>
+    </div>
+    <form class="mom-filter-form form-grid compact" method="get">
+      <div class="form-field"><label>Tahun</label><select class="form-control" name="tahun">{% for year in year_options %}<option value="{{ year }}" {% if dashboard_filters.tahun == year %}selected{% endif %}>{{ year }}</option>{% endfor %}</select></div>
+      <div class="form-field"><label>Bulan SP2D / Bulan Fokus</label><select class="form-control" name="bulan">{% for value,label in months %}<option value="{{ value }}" {% if dashboard_filters.bulan == value|stringformat:"s" %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+      <div class="form-field"><label>Jenis SPM</label><select class="form-control" name="jenis_spm"><option value="">Semua jenis</option>{% for jenis in jenis_spm_options %}<option value="{{ jenis }}" {% if dashboard_filters.jenis_spm == jenis %}selected{% endif %}>{{ jenis }}</option>{% endfor %}</select></div>
+      <div class="form-actions"><button class="btn primary" type="submit">Tampilkan</button><a class="btn secondary" href="{% url 'core:dashboard' %}">Reset</a></div>
+    </form>
+  </div>
+  <div class="dashboard-scope-note">
+    <span>{{ data_window_note }}</span>
+    <span>{{ fa16_note }}</span>
+    <span>Sumber: {{ summary_source_label }}. Terakhir diperbarui: {{ last_refreshed_label }}</span>
+  </div>
+  <div class="dashboard-focus-grid">
+    <div><span>Bulan Fokus</span><b>{{ focus_summary.month }}</b></div>
+    <div><span>Transaksi D_K</span><b>{{ focus_summary.transaction_count }}</b></div>
+    <div><span>Realisasi Intermilan</span><b>Rp {{ focus_summary.intermilan_value }}</b></div>
+  </div>
+  <div class="excel-mom-legend">
+    <span><i class="legend-dot green"></i> Persentase Realisasi Intermilan terhadap FA 16 Detail (Max 100%)</span>
+    <span><i class="legend-dot yellow"></i> Realisasi Intermilan s.d Bulan Ini</span>
+    <span><i class="legend-dot red"></i> Realisasi Intermilan Bulan ini</span>
+    <span><i class="legend-dot blue"></i> Realisasi FA 16 Detail Bulan ini (di isi satker)</span>
+  </div>
+  <div class="excel-chart-scroll">
+    <div class="excel-chart">
+      <div class="excel-axis"><span>2.000.000.000</span><span>1.500.000.000</span><span>1.000.000.000</span><span>500.000.000</span><span>0</span></div>
+      <div class="excel-plot">
+        <div class="excel-grid-line gl-100"></div><div class="excel-grid-line gl-75"></div><div class="excel-grid-line gl-50"></div><div class="excel-grid-line gl-25"></div>
+        {% for r in mom_rows %}
+        <div class="excel-group" data-chart-satker="{{ r.satker }}">
+          <div class="excel-pct-label">{{ r.pct }}</div>
+          <div class="excel-bars">
+            <div class="excel-bar-wrap"><div class="excel-bar blue" style="height:{{ r.fa }}%"></div><span class="chart-tooltip"><b>{{ r.satker }}</b><br>{{ r.month }} {{ dashboard_filters.tahun }}<br>FA16 bulan ini: Rp {{ r.fa_label }}</span></div>
+            <div class="excel-bar-wrap"><div class="excel-bar red" style="height:{{ r.bulan }}%"></div><span class="chart-tooltip"><b>{{ r.satker }}</b><br>{{ r.month }} {{ dashboard_filters.tahun }}<br>Intermilan bulan ini: Rp {{ r.bulan_label }}</span></div>
+            <div class="excel-bar-wrap"><div class="excel-bar yellow" style="height:{{ r.sd }}%"></div><span class="chart-tooltip"><b>{{ r.satker }}</b><br>{{ r.month }} {{ dashboard_filters.tahun }}<br>Intermilan s.d bulan ini: Rp {{ r.sd_label }}</span></div>
+            <div class="excel-bar-wrap"><div class="excel-bar green" style="height:{{ r.pct_height }}%"></div><span class="chart-tooltip"><b>{{ r.satker }}</b><br>{{ r.month }} {{ dashboard_filters.tahun }}<br>Persentase terhadap FA16: {{ r.pct_label }}</span></div>
+          </div>
+          <div class="excel-x-label">{{ r.satker }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  <div class="source-pill">Sumber dashboard: <b>{{ dashboard_table_source }}</b></div>
+</section>
+
+<section class="card mt">
+  <div class="card-head"><h2>Tabel Dashboard INTERMILAN</h2><span class="muted">Kolom mengikuti sheet Dashboard Excel; data lengkap tetap dibuka dari D_K.</span></div>
+  <div class="table-wrap wide-table-wrap dashboard-table-wrap">
+    <table class="data-table compact table-dashboard dashboard-excel-table strict-excel-table">
+      <thead><tr><th>Satker</th><th>Nama Satker</th>{% for column in dashboard_columns %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in dashboard_rows %}<tr><td>{{ row.satker_code }}</td><td>{{ row.satker_name }}</td>{% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}</tr>{% empty %}<tr><td colspan="{{ dashboard_columns|length|add:'2' }}" class="empty">Belum ada data Dashboard untuk filter ini.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+
+<section class="grid two-col mt">
+  <div class="card">
+    <div class="card-head"><h2>Shortcut Kerja</h2><span class="muted">Akses cepat menu utama</span></div>
+    <div class="shortcut-grid"><a href="{% url 'sp2d:list' %}">Upload<small>Satker upload ke database satker masing-masing</small></a><a href="{% url 'dk:list' %}">Detail Keuangan<small>Cek transaksi dan filter data</small></a><a href="{% url 'core:monitoring' %}">Monitoring<small>Pantau lintas satker</small></a><a href="{% url 'core:akun_index' %}">Akun Keuangan<small>Kelompok 521xxx, 522xxx, dst.</small></a><a href="{% url 'reports:index' %}">Export Excel<small>Download hasil per akun</small></a></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Cari Akun</h2><a href="{% url 'core:akun_index' %}">Lihat semua akun</a></div>
+    <div class="filter-panel">
+      <div class="filter-grid">
+        <div class="filter-field filter-search"><label>Cari Akun</label><input placeholder="Cari kode/nama akun, contoh: 521111, listrik, perjalanan..."></div>
+        <div class="filter-actions"><button class="btn primary">Cari</button></div>
+      </div>
+    </div>
+    <p class="muted">Ketik kode atau nama akun untuk langsung menuju halaman akun seperti memilih sheet di KK satker.</p>
+  </div>
+</section>
+
+<section class="grid two-col mt">
+  <div class="card"><div class="card-head"><h2>Upload SP2D Terakhir</h2><a href="{% url 'sp2d:list' %}">Upload baru</a></div><div class="table-wrap"><table><thead><tr><th>File</th><th>Bulan</th><th>Rows</th><th>Waktu</th></tr></thead><tbody><tr><td>Daftar SP2D Satker (Detail).xlsx</td><td>Juni</td><td>90</td><td>2026-06-25 12:04</td></tr><tr><td>Daftar SP2D Satker.xlsx</td><td>Juni</td><td>90</td><td>2026-06-25 11:20</td></tr></tbody></table></div></div>
+  <div class="card"><div class="card-head"><h2>SP2D Belum Punya Detail Akun</h2><a href="{% url 'sp2d:list' %}">Lihat semua</a></div><div class="table-wrap"><table><thead><tr><th>No. SP2D</th><th>No. SPM</th><th>Nilai</th><th>Status</th></tr></thead><tbody><tr><td>260100000014012</td><td>00080T</td><td>23.443.500</td><td><span class="badge blue">Lengkapi</span></td></tr></tbody></table></div></div>
+</section>
+{% endblock %}
