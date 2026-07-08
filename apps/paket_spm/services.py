@@ -74,6 +74,8 @@ def package_metadata(parsed):
         "nomor_spm_reason": spm_meta.get("nomor_spm_reason", ""),
         "nomor_spm_matching": "",
         "nomor_spp": normalize_key(spm_meta.get("nomor_spp")),
+        "nomor_sp2d": normalize_key(spm_meta.get("nomor_sp2d")),
+        "nomor_invoice": normalize_key(spm_meta.get("nomor_invoice")),
         "nomor_drpp": ", ".join(drpp_numbers)[:100] or normalize_key(spm_meta.get("nomor_drpp")),
         "nomor_drpp_list": drpp_numbers,
         "satker_code": str(spm_meta.get("satker_code") or drpp_meta.get("satker_code") or "").strip(),

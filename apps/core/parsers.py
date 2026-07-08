@@ -133,19 +133,23 @@ def _extract_first_number_from_text(text):
 
 
 def parse_spm_number_from_pages(page_details):
-    """Ekstrak No SPM dan No SPP secara terpisah berdasarkan konteks halaman.
+    """Ekstrak No SPM, No SPP, nilai keuangan secara terpisah berdasarkan konteks halaman.
 
     Aturan:
-    - Halaman yang mengandung "SURAT PERINTAH MEMBAYAR" → No SPM diambil dari halaman ini
-    - Halaman yang mengandung "SURAT PERMINTAAN PEMBAYARAN" atau "NOMOR SPP" → No SPP dari halaman ini
-    - Jika tidak ada konteks per-halaman, fallback ke regex di teks gabungan
+    - Halaman "SURAT PERINTAH MEMBAYAR" → No SPM + nilai pengeluaran/potongan/total dari halaman ini
+    - Halaman "SURAT PERMINTAAN PEMBAYARAN" atau "NOMOR SPP" → No SPP dari halaman ini
+    - Jika tidak ada konteks per-halaman, fallback ke regex global
 
-    Returns dict: {no_spm, no_spp, spm_pages, spp_pages}
+    Returns dict: {no_spm, no_spp, spm_pages, spp_pages,
+                   jumlah_pengeluaran, jumlah_potongan, total_pembayaran}
     """
     no_spm = ""
     no_spp = ""
     spm_page_nums = []
     spp_page_nums = []
+    jumlah_pengeluaran = Decimal("0")
+    jumlah_potongan = Decimal("0")
+    total_pembayaran = Decimal("0")
 
     for page in page_details:
         page_text = page.get("text") or page.get("extracted_text") or ""
@@ -163,7 +167,6 @@ def parse_spm_number_from_pages(page_details):
         if is_spm_page:
             spm_page_nums.append(page_num)
             if not no_spm:
-                # Coba cari label eksplisit SPM dulu
                 spm_match = re.search(
                     r"(?:NOMOR\s+SPM|SPM\s+NOMOR|NO\.?\s*SPM)\s*[:\-]?\s*([0-9A-Z./-]+)",
                     upper,
@@ -173,10 +176,23 @@ def parse_spm_number_from_pages(page_details):
                 else:
                     no_spm = _extract_first_number_from_text(upper)
 
+            # Ambil nilai keuangan dari halaman SPM (bukan halaman SPP)
+            if jumlah_pengeluaran <= 0:
+                jumlah_pengeluaran = parse_money_from_text(
+                    upper, ["JUMLAH PENGELUARAN", "NILAI PENGELUARAN", "NILAI SPM"]
+                )
+            if jumlah_potongan <= 0:
+                jumlah_potongan = parse_money_from_text(
+                    upper, ["JUMLAH POTONGAN", "TOTAL POTONGAN", "POTONGAN"]
+                )
+            if total_pembayaran <= 0:
+                total_pembayaran = parse_money_from_text(
+                    upper, ["TOTAL PEMBAYARAN", "JUMLAH YANG DIBAYARKAN", "NETO"]
+                )
+
         if is_spp_page:
             spp_page_nums.append(page_num)
             if not no_spp:
-                # Cari label SPP eksplisit
                 spp_match = re.search(
                     r"(?:NOMOR\s+SPP|SPP\s+NOMOR|NO\.?\s*SPP)\s*[:\-]?\s*([0-9A-Z./-]+)",
                     upper,
@@ -191,6 +207,9 @@ def parse_spm_number_from_pages(page_details):
         "no_spp": no_spp,
         "spm_pages": spm_page_nums,
         "spp_pages": spp_page_nums,
+        "jumlah_pengeluaran": jumlah_pengeluaran,
+        "jumlah_potongan": jumlah_potongan,
+        "total_pembayaran": total_pembayaran,
     }
 
 
@@ -395,30 +414,43 @@ def parse_spm_pdf(file_path, ocr=False):
     text = "\n".join(extracted["pages"])
     upper = text.upper()
 
-    # ── Ekstraksi nomor per-halaman (pisahkan SPM dari SPP) ──────────────────
+    # ── Ekstraksi nomor + nilai per-halaman (pisahkan SPM dari SPP) ──────────
     page_details = extracted.get("page_details", [])
     per_page = parse_spm_number_from_pages(page_details)
     no_spm_per_page = per_page["no_spm"]
     no_spp_per_page = per_page["no_spp"]
     spm_page_nums = per_page["spm_pages"]
     spp_page_nums = per_page["spp_pages"]
+    jumlah_pengeluaran_per_page = per_page["jumlah_pengeluaran"]
+    jumlah_potongan_per_page = per_page["jumlah_potongan"]
+    total_pembayaran_per_page = per_page["total_pembayaran"]
 
-    # Fallback ke regex global jika per-halaman tidak menemukan apa-apa
+    # Deteksi apakah PDF ini adalah paket gabungan
+    is_combined_package = bool(spm_page_nums and spp_page_nums)
+
+    # ── Fallback regex global ────────────────────────────────────────────
     nomor_match_global = re.search(
         r"(?:NOMOR\s+SPM|SPM\s+NOMOR|NO\.?\s*SPM)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
     )
     spp_match_global = re.search(
         r"(?:NOMOR\s+SPP|SPP\s+NOMOR|NO\.?\s*SPP)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
     )
+    # No SP2D – dari dalam dokumen (biasanya di lampiran / footer)
+    sp2d_match = re.search(
+        r"(?:NO\.?\s*SP2D|NOMOR\s+SP2D|SP2D\s+NOMOR)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
+    )
+    # No Invoice – bisa label NOMOR INVOICE, NO. INVOICE, INVOICE NO
+    invoice_match = re.search(
+        r"(?:NOMOR\s+INVOICE|NO\.?\s*INVOICE|INVOICE\s+NO\.?)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
+    )
 
-    # Prioritas: per-halaman > global regex
+    # Prioritas nomor: per-halaman > global regex
     text_spm = no_spm_per_page or (nomor_match_global.group(1) if nomor_match_global else "")
     text_spp = no_spp_per_page or (spp_match_global.group(1) if spp_match_global else "")
+    text_sp2d = sp2d_match.group(1) if sp2d_match else ""
+    text_invoice = invoice_match.group(1) if invoice_match else ""
 
-    # Deteksi apakah PDF ini adalah paket gabungan (ada halaman SPM DAN halaman SPP)
-    is_combined_package = bool(spm_page_nums and spp_page_nums)
-
-    # ── Field lain ────────────────────────────────────────────────────────────
+    # ── Field lain ─────────────────────────────────────────────────────
     drpp_match = re.search(r"(?:NOMOR\s+DRPP|DRPP\s+NOMOR|NO\.?\s*DRPP)\s*[:\-]?\s*([0-9A-Z./-]+)", upper)
     satker_match = re.search(r"(?:SATKER|KODE\s+SATKER)\s*[:\-]?\s*([0-9]{4,6})", upper)
     tanggal_spm = parse_date(parse_first_match(text, [
@@ -437,30 +469,44 @@ def parse_spm_pdf(file_path, ocr=False):
     uraian = parse_first_match(text, [r"(?:URAIAN|KEPERLUAN)\s*[:\-]?\s*(.{10,300})"])
     akun_values = sorted(set(re.findall(r"\b(5[0-9]{5})\b", upper)))
     amount_values = re.findall(r"\b\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?\b", text)
-    total = parse_money_from_text(upper, ["JUMLAH PENGELUARAN", "TOTAL PEMBAYARAN", "NILAI SPM", "JUMLAH"])
-    jumlah_pengeluaran = parse_money_from_text(upper, ["JUMLAH PENGELUARAN"])
-    jumlah_potongan = parse_money_from_text(upper, ["JUMLAH POTONGAN", "POTONGAN"])
+
+    # ── Nilai keuangan ──────────────────────────────────────────────────
+    # Prioritas: nilai dari halaman SPM > nilai global dari semua halaman
+    jumlah_pengeluaran = jumlah_pengeluaran_per_page or parse_money_from_text(
+        upper, ["JUMLAH PENGELUARAN", "NILAI PENGELUARAN", "NILAI SPM"]
+    )
+    jumlah_potongan = jumlah_potongan_per_page or parse_money_from_text(
+        upper, ["JUMLAH POTONGAN", "TOTAL POTONGAN", "POTONGAN"]
+    )
+    total_pembayaran = total_pembayaran_per_page or parse_money_from_text(
+        upper, ["TOTAL PEMBAYARAN", "JUMLAH YANG DIBAYARKAN", "NETO"]
+    )
+    # total fallback: pengeluaran - potongan, atau dari label generic
+    if total_pembayaran <= 0 and jumlah_pengeluaran > 0 and jumlah_potongan > 0:
+        total_pembayaran = jumlah_pengeluaran - jumlah_potongan
+    if total_pembayaran <= 0:
+        total_pembayaran = parse_money_from_text(
+            upper, ["JUMLAH PENGELUARAN", "NILAI SPM", "JUMLAH"]
+        )
+
     status = parser_status(extracted)
     if extracted["method"] == "failed":
         status = "failed" if not extracted["warnings"] else "needs_manual_review"
 
-    # ── Resolusi nomor SPM ────────────────────────────────────────────────────
+    # ── Resolusi nomor SPM ───────────────────────────────────────────────────
     filename_spm = guess_number_from_filename(file_path, "SPM")
     warnings = list(extracted["warnings"])
 
     # Jika filename cocok dengan No SPP (bukan No SPM), jangan anggap konflik
-    # Contoh: filename "SPM NOMOR 00074T" tapi isi SPM halaman 1 = 00074A,
-    # dan isi halaman SPP = 00074T → filename = no_spp, bukan konflik SPM
     if filename_spm and text_spp and filename_spm == text_spp and text_spm and text_spm != text_spp:
-        # filename cocok dengan No SPP, bukan No SPM → resolusi dari OCR, tanpa konflik
         number_decision = resolve_spm_number(
-            "",  # kosongkan filename_spm agar tidak dianggap konflik
+            "",
             text_spm,
             extracted.get("confidence", 0.0),
             extracted.get("method", ""),
         )
         warnings.append(
-            f"Filename ({filename_spm}) cocok dengan No SPP ({text_spp}), bukan No SPM ({text_spm}). "
+            f"Info: Filename ({filename_spm}) cocok dengan No SPP ({text_spp}), bukan No SPM ({text_spm}). "
             "Filename tidak dipakai sebagai No SPM."
         )
     else:
@@ -473,8 +519,8 @@ def parse_spm_pdf(file_path, ocr=False):
 
     if number_decision["warning"]:
         warnings.append(number_decision["warning"])
-    if total <= 0:
-        warnings.append("Parser gagal mengambil nilai SPM dari dokumen.")
+    if total_pembayaran <= 0:
+        warnings.append("Parser gagal mengambil nilai total pembayaran SPM dari dokumen.")
     if is_combined_package:
         warnings.append(
             f"PDF gabungan terdeteksi: halaman SPM={spm_page_nums}, halaman SPP={spp_page_nums}. "
@@ -508,6 +554,8 @@ def parse_spm_pdf(file_path, ocr=False):
             "nomor_spp": text_spp,
             "nomor_spp_per_page": no_spp_per_page,
             "nomor_spp_global": spp_match_global.group(1) if spp_match_global else "",
+            "nomor_sp2d": text_sp2d,
+            "nomor_invoice": text_invoice,
             "nomor_drpp": drpp_match.group(1) if drpp_match else "",
             "satker_code": satker_match.group(1) if satker_match else "",
             "tanggal_spm": tanggal_spm,
@@ -518,7 +566,7 @@ def parse_spm_pdf(file_path, ocr=False):
             "rekening": rekening,
             "npwp_nik": npwp_nik,
             "uraian": uraian,
-            "total_pembayaran": total,
+            "total_pembayaran": total_pembayaran,
             "jumlah_pengeluaran": jumlah_pengeluaran,
             "jumlah_potongan": jumlah_potongan,
             "spm_page_nums": spm_page_nums,

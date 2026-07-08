@@ -64,11 +64,15 @@
           <th>No SPM Matching D_K/SP2D</th>
           <th>No SPM Final</th>
           <th>No SPP</th>
+          <th>No SP2D</th>
+          <th>No Invoice</th>
           <th>Status Review</th>
           <th>No DRPP</th>
           <th>No KW/Bukti</th>
           <th>Akun</th>
-          <th class="col-nominal">Nilai</th>
+          <th class="col-nominal">Pengeluaran</th>
+          <th class="col-nominal">Potongan</th>
+          <th class="col-nominal">Total Pembayaran</th>
           <th>Metode OCR</th>
           <th>Status OCR</th>
           <th>Status Matching</th>
@@ -86,10 +90,14 @@
           <td>{{ row.nomor_spm_matching }}</td>
           <td>{{ row.nomor_spm_final }}</td>
           <td>{{ row.nomor_spp }}</td>
+          <td>{{ row.nomor_sp2d }}</td>
+          <td>{{ row.nomor_invoice }}</td>
           <td>{{ row.nomor_spm_review_status }}</td>
           <td>{{ row.nomor_drpp }}</td>
           <td>{{ row.no_kw }}</td>
           <td>{{ row.akun }}</td>
+          <td class="col-nominal">{{ row.jumlah_pengeluaran|id_number }}</td>
+          <td class="col-nominal">{{ row.jumlah_potongan|id_number }}</td>
           <td class="col-nominal">{{ row.nilai|id_number }}</td>
           <td>{{ row.method }}</td>
           <td>{{ row.ocr_status }}</td>
@@ -97,7 +105,7 @@
           <td title="{{ row.notes }}">{{ row.notes|truncatechars:120 }}</td>
         </tr>
         {% empty %}
-        <tr><td colspan="17" class="empty">Tidak ada PDF yang bisa diproses.</td></tr>
+        <tr><td colspan="21" class="empty">Tidak ada PDF yang bisa diproses.</td></tr>
         {% endfor %}
       </tbody>
     </table>
