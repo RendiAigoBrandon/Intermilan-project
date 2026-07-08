@@ -132,6 +132,13 @@ def _extract_first_number_from_text(text):
     return match.group(1).upper() if match else ""
 
 
+def is_valid_doc_number(val):
+    if not val:
+        return False
+    val = val.strip().upper()
+    return any(c.isdigit() for c in val)
+
+
 def parse_spm_number_from_pages(page_details):
     """Ekstrak No SPM, No SPP, nilai keuangan secara terpisah berdasarkan konteks halaman.
 
@@ -172,8 +179,10 @@ def parse_spm_number_from_pages(page_details):
                     upper,
                 )
                 if spm_match:
-                    no_spm = spm_match.group(1).upper()
-                else:
+                    cand = spm_match.group(1).upper()
+                    if is_valid_doc_number(cand):
+                        no_spm = cand
+                if not no_spm:
                     no_spm = _extract_first_number_from_text(upper)
 
             # Ambil nilai keuangan dari halaman SPM (bukan halaman SPP)
@@ -198,8 +207,10 @@ def parse_spm_number_from_pages(page_details):
                     upper,
                 )
                 if spp_match:
-                    no_spp = spp_match.group(1).upper()
-                else:
+                    cand = spp_match.group(1).upper()
+                    if is_valid_doc_number(cand):
+                        no_spp = cand
+                if not no_spp:
                     no_spp = _extract_first_number_from_text(upper)
 
     return {
@@ -445,8 +456,17 @@ def parse_spm_pdf(file_path, ocr=False):
     )
 
     # Prioritas nomor: per-halaman > global regex
-    text_spm = no_spm_per_page or (nomor_match_global.group(1) if nomor_match_global else "")
-    text_spp = no_spp_per_page or (spp_match_global.group(1) if spp_match_global else "")
+    text_spm = no_spm_per_page
+    if not text_spm and nomor_match_global:
+        cand = nomor_match_global.group(1)
+        if is_valid_doc_number(cand):
+            text_spm = cand
+            
+    text_spp = no_spp_per_page
+    if not text_spp and spp_match_global:
+        cand = spp_match_global.group(1)
+        if is_valid_doc_number(cand):
+            text_spp = cand
     text_sp2d = sp2d_match.group(1) if sp2d_match else ""
     text_invoice = invoice_match.group(1) if invoice_match else ""
 
@@ -497,8 +517,20 @@ def parse_spm_pdf(file_path, ocr=False):
     filename_spm = guess_number_from_filename(file_path, "SPM")
     warnings = list(extracted["warnings"])
 
-    # Jika filename cocok dengan No SPP (bukan No SPM), jangan anggap konflik
-    if filename_spm and text_spp and filename_spm == text_spp and text_spm and text_spm != text_spp:
+    # Jika filename cocok dengan No SPP, atau memiliki angka utama yang sama dengan No SPM (00074T vs 00074A)
+    # maka jangan anggap sebagai konflik SPM
+    is_spp_package = False
+    if filename_spm and text_spm and filename_spm != text_spm:
+        if text_spp and filename_spm == text_spp:
+            is_spp_package = True
+        else:
+            m_file = re.search(r"(\d{3,6})", filename_spm)
+            m_spm = re.search(r"(\d{3,6})", text_spm)
+            if m_file and m_spm and m_file.group(1) == m_spm.group(1):
+                is_spp_package = True
+                text_spp = filename_spm  # Jadikan filename sebagai No SPP
+
+    if is_spp_package:
         number_decision = resolve_spm_number(
             "",
             text_spm,
@@ -506,8 +538,8 @@ def parse_spm_pdf(file_path, ocr=False):
             extracted.get("method", ""),
         )
         warnings.append(
-            f"Info: Filename ({filename_spm}) cocok dengan No SPP ({text_spp}), bukan No SPM ({text_spm}). "
-            "Filename tidak dipakai sebagai No SPM."
+            f"Info: Filename ({filename_spm}) dianggap sebagai nama paket/No SPP. "
+            "Tidak dipakai sebagai No SPM sehingga tidak ada konflik."
         )
     else:
         number_decision = resolve_spm_number(

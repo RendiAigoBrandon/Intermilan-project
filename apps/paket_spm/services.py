@@ -199,6 +199,22 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
     elif matched_sp2d and matched_sp2d.nomor_spm_extracted:
         meta["nomor_spm_matching"] = normalize_key(matched_sp2d.nomor_spm_extracted)
 
+    # Resolusi konflik SPM otomatis jika cocok dengan D_K/SP2D
+    if meta.get("nomor_spm_conflict") and meta.get("nomor_spm_ocr") and meta.get("nomor_spm_matching"):
+        if meta["nomor_spm_ocr"] == meta["nomor_spm_matching"]:
+            meta["nomor_spm_conflict"] = False
+            meta["nomor_spm_review_status"] = "OK"
+            meta["nomor_spm_final"] = meta["nomor_spm_ocr"]
+            meta["nomor_spm_reason"] = "Konflik OCR vs Filename otomatis diselesaikan karena cocok dengan D_K/SP2D."
+            if "spm" in parsed and "metadata" in parsed["spm"]:
+                parsed["spm"]["metadata"]["nomor_spm_conflict"] = False
+                parsed["spm"]["metadata"]["nomor_spm_review_status"] = "OK"
+                parsed["spm"]["metadata"]["nomor_spm_reason"] = meta["nomor_spm_reason"]
+                if "warnings" in parsed["spm"]:
+                    parsed["spm"]["warnings"] = [w for w in parsed["spm"]["warnings"] if "berbeda" not in w.lower()]
+            # Update ulang document status
+            document_status, notes = evaluate_document_status(parsed)
+
     if duplicate:
         return {
             "document_status": STATUS_DUPLIKAT,

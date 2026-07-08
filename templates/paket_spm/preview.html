@@ -96,9 +96,9 @@
           <td>{{ row.nomor_drpp }}</td>
           <td>{{ row.no_kw }}</td>
           <td>{{ row.akun }}</td>
-          <td class="col-nominal">{{ row.jumlah_pengeluaran|id_number }}</td>
-          <td class="col-nominal">{{ row.jumlah_potongan|id_number }}</td>
-          <td class="col-nominal">{{ row.nilai|id_number }}</td>
+          <td class="col-nominal" title="{{ row.jumlah_pengeluaran|id_number }}">{{ row.jumlah_pengeluaran|id_number }}</td>
+          <td class="col-nominal" title="{{ row.jumlah_potongan|id_number }}">{{ row.jumlah_potongan|id_number }}</td>
+          <td class="col-nominal" title="{{ row.nilai|id_number }}">{{ row.nilai|id_number }}</td>
           <td>{{ row.method }}</td>
           <td>{{ row.ocr_status }}</td>
           <td>{{ row.matching_status }}</td>
