@@ -208,16 +208,38 @@ def paket_spm_preview(request):
             parsed["spm"]["metadata"]["nomor_sp2d"] = paket.nomor_sp2d
             parsed["spm"]["metadata"]["nomor_invoice"] = paket.nomor_invoice
             parsed["spm"]["metadata"]["satker_code"] = paket.satker_code
+            parsed["spm"]["metadata"]["nomor_drpp"] = request.POST.get("nomor_drpp", parsed["spm"]["metadata"].get("nomor_drpp", ""))
+            
+            # Update keterangan / notes user if provided
+            keterangan = request.POST.get("keterangan", "")
+            if keterangan:
+                if "notes" not in decision: decision["notes"] = []
+                # Simple replacement for demonstration since user can just re-type it
+                decision["notes"].insert(0, keterangan)
             
             akun_str = request.POST.get("akun", "")
             if akun_str:
                 parsed["spm"]["metadata"]["akun_pengeluaran"] = [a.strip() for a in akun_str.split(",") if a.strip()]
             
-            nilai_str = request.POST.get("nilai_total", "")
+            nilai_str = request.POST.get("nilai_total", "").replace(".", "").replace(",", ".")
             if nilai_str:
                 try:
                     parsed["spm"]["metadata"]["total_pembayaran"] = Decimal(nilai_str)
                     paket.nilai_spm = Decimal(nilai_str)
+                except:
+                    pass
+                    
+            pengeluaran_str = request.POST.get("jumlah_pengeluaran", "").replace(".", "").replace(",", ".")
+            if pengeluaran_str:
+                try:
+                    parsed["spm"]["metadata"]["jumlah_pengeluaran"] = Decimal(pengeluaran_str)
+                except:
+                    pass
+                    
+            potongan_str = request.POST.get("jumlah_potongan", "").replace(".", "").replace(",", ".")
+            if potongan_str:
+                try:
+                    parsed["spm"]["metadata"]["jumlah_potongan"] = Decimal(potongan_str)
                 except:
                     pass
             
@@ -449,6 +471,7 @@ def build_scan_rows(parsed, decision):
                 "notes": "; ".join(all_warnings) or "-",
                 "notes_user": user_keterangan,
                 "warnings_technical": warnings_technical,
+                "satker": row_meta.get("satker_code") or meta.get("satker_code") or "Perlu Review",
             }
         )
     if not rows and parsed.get("spm"):
