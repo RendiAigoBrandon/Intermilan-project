@@ -13,6 +13,30 @@ import pandas as pd
 from apps.core.ocr import extract_document_text, extract_pdf_pages
 
 
+# ─── Regex SP2D 15-digit (contoh: 260100000013375) ───────────────────────────
+# SP2D KPPN biasanya 15 digit numerik murni, atau bisa ada label eksplisit
+_RE_SP2D_LABELED = re.compile(
+    r"(?:NO\.?\s*SP2D|NOMOR\s+SP2D|SP2D\s+NOMOR)\s*[:\-]?\s*([0-9]{5,20}[A-Z0-9./\-]*)",
+    re.IGNORECASE,
+)
+# Bare 15-digit — hanya dalam konteks halaman SP2D/detail pengeluaran
+_RE_SP2D_BARE = re.compile(r"\b(2[0-9]{14})\b")  # dimulai dengan 2, 15 digit
+
+# ─── Regex Invoice/SPP-SPM format: 00074T/019937/2026 ────────────────────────
+_RE_INVOICE = re.compile(
+    r"(?:NOMOR\s+INVOICE|NO\.?\s*INVOICE|INVOICE\s+NO\.?|NO\.?\s*SPP[-/]SPM|SPP[-/]SPM)\s*[:\-]?\s*"
+    r"([0-9]{3,6}[A-Z]?/[0-9]{3,9}/[0-9]{4})",
+    re.IGNORECASE,
+)
+# Fallback bare pola tanpa label — format: digit(A)/digit/4digit
+_RE_INVOICE_BARE = re.compile(r"\b([0-9]{3,6}[A-Z]/[0-9]{3,9}/[0-9]{4})\b")
+
+# ─── Regex pembebanan/COA 16-segmen: AAAA.BBB.CCC.DDD.EEEEEE ────────────────
+_RE_PEMBEBANAN = re.compile(
+    r"\b([0-9]{3,6}\.[0-9A-Z]{2,6}\.[0-9A-Z]{2,6}\.[0-9A-Z]{2,6}\.[0-9]{3,6})\b"
+)
+
+
 MONTHS = {
     "januari": 1,
     "februari": 2,
@@ -340,6 +364,8 @@ def extract_pdf_text(file_path, ocr=False):
         "tesseract_called": extracted.get("tesseract_called", False),
         "tesseract_text_length": extracted.get("tesseract_text_length", 0),
         "tesseract_reason": extracted.get("tesseract_reason", ""),
+        "paddleocr_called": extracted.get("paddleocr_called", False),
+        "paddleocr_text_length": extracted.get("paddleocr_text_length", 0),
     }
 
 
@@ -446,14 +472,43 @@ def parse_spm_pdf(file_path, ocr=False):
     spp_match_global = re.search(
         r"(?:NOMOR\s+SPP|SPP\s+NOMOR|NO\.?\s*SPP)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
     )
-    # No SP2D – dari dalam dokumen (biasanya di lampiran / footer)
-    sp2d_match = re.search(
-        r"(?:NO\.?\s*SP2D|NOMOR\s+SP2D|SP2D\s+NOMOR)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
+    # No SP2D — coba labeled dulu, lalu bare 15-digit dalam konteks halaman SP2D/detail
+    sp2d_labeled = _RE_SP2D_LABELED.search(upper)
+    sp2d_bare = None
+    if not sp2d_labeled:
+        # Cari di halaman yang terklasifikasi sebagai sp2d atau di teks full
+        for page in page_details:
+            page_class = page.get("page_classification", "")
+            page_text_upper = (page.get("text") or page.get("extracted_text") or "").upper()
+            if page_class == "sp2d" or "DETAIL PENGELUARAN" in page_text_upper or "DAFTAR SP2D" in page_text_upper:
+                m = _RE_SP2D_BARE.search(page_text_upper)
+                if m:
+                    sp2d_bare = m
+                    break
+        if not sp2d_bare:
+            sp2d_bare = _RE_SP2D_BARE.search(upper)
+    text_sp2d = (
+        sp2d_labeled.group(1) if sp2d_labeled
+        else (sp2d_bare.group(1) if sp2d_bare else "")
     )
-    # No Invoice – bisa label NOMOR INVOICE, NO. INVOICE, INVOICE NO
-    invoice_match = re.search(
-        r"(?:NOMOR\s+INVOICE|NO\.?\s*INVOICE|INVOICE\s+NO\.?)\s*[:\-]?\s*([0-9A-Z./-]+)", upper
+
+    # No Invoice/SPP-SPM — labeled dulu, lalu bare
+    invoice_labeled = _RE_INVOICE.search(upper)
+    invoice_bare = _RE_INVOICE_BARE.search(upper) if not invoice_labeled else None
+    text_invoice = (
+        invoice_labeled.group(1) if invoice_labeled
+        else (invoice_bare.group(1) if invoice_bare else "")
     )
+
+    # No Invoice fallback: jika tidak ada label, cari pola di halaman SP2D
+    if not text_invoice:
+        for page in page_details:
+            page_text_upper = (page.get("text") or page.get("extracted_text") or "").upper()
+            if "DETAIL PENGELUARAN" in page_text_upper or "DAFTAR SP2D" in page_text_upper:
+                m = _RE_INVOICE_BARE.search(page_text_upper)
+                if m:
+                    text_invoice = m.group(1)
+                    break
 
     # Prioritas nomor: per-halaman > global regex
     text_spm = no_spm_per_page
@@ -461,17 +516,16 @@ def parse_spm_pdf(file_path, ocr=False):
         cand = nomor_match_global.group(1)
         if is_valid_doc_number(cand):
             text_spm = cand
-            
+
     text_spp = no_spp_per_page
     if not text_spp and spp_match_global:
         cand = spp_match_global.group(1)
         if is_valid_doc_number(cand):
             text_spp = cand
-    text_sp2d = sp2d_match.group(1) if sp2d_match else ""
-    text_invoice = invoice_match.group(1) if invoice_match else ""
 
     # ── Field lain ─────────────────────────────────────────────────────
     drpp_match = re.search(r"(?:NOMOR\s+DRPP|DRPP\s+NOMOR|NO\.?\s*DRPP)\s*[:\-]?\s*([0-9A-Z./-]+)", upper)
+
     satker_match = re.search(r"(?:SATKER|KODE\s+SATKER)\s*[:\-]?\s*([0-9]{4,6})", upper)
     tanggal_spm = parse_date(parse_first_match(text, [
         r"(?:TANGGAL\s+SPM|TANGGAL)\s*[:\-]?\s*([0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{2,4})",
@@ -489,6 +543,8 @@ def parse_spm_pdf(file_path, ocr=False):
     uraian = parse_first_match(text, [r"(?:URAIAN|KEPERLUAN)\s*[:\-]?\s*(.{10,300})"])
     akun_values = sorted(set(re.findall(r"\b(5[0-9]{5})\b", upper)))
     amount_values = re.findall(r"\b\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?\b", text)
+    # Pembebanan/COA 16-segmen: AAAA.BBB.CCC.DDD.XXXXXX
+    pembebanan_values = sorted(set(_RE_PEMBEBANAN.findall(upper)))
 
     # ── Nilai keuangan ──────────────────────────────────────────────────
     # Prioritas: nilai dari halaman SPM > nilai global dari semua halaman
@@ -573,6 +629,8 @@ def parse_spm_pdf(file_path, ocr=False):
         "tesseract_called": extracted.get("tesseract_called", False),
         "tesseract_text_length": extracted.get("tesseract_text_length", 0),
         "tesseract_reason": extracted.get("tesseract_reason", ""),
+        "paddleocr_called": extracted.get("paddleocr_called", False),
+        "paddleocr_text_length": extracted.get("paddleocr_text_length", 0),
         "is_combined_package": is_combined_package,
         "metadata": {
             "nomor_spm": number_decision["final"],
@@ -603,8 +661,14 @@ def parse_spm_pdf(file_path, ocr=False):
             "jumlah_potongan": jumlah_potongan,
             "spm_page_nums": spm_page_nums,
             "spp_page_nums": spp_page_nums,
+            "pembebanan_list": pembebanan_values[:30],
         },
-        "akun_rows": [{"akun": akun, "uraian": "", "nilai": ""} for akun in akun_values[:50]],
+        "akun_rows": [
+            {"akun": akun, "uraian": "", "nilai": "", "pembebanan": next(
+                (p for p in pembebanan_values if p.endswith(akun)), ""
+            )}
+            for akun in akun_values[:50]
+        ],
         "amount_samples": amount_values[:20],
         "text_sample": text[:2000],
     }
@@ -799,12 +863,12 @@ def classify_document(file_name, text=""):
 
 
 def pdf_page_count(file_path):
-    fitz = optional_import("fitz")
-    if not fitz:
-        return 0
     try:
+        import fitz  # PyMuPDF
         doc = fitz.open(file_path)
-        return doc.page_count
+        count = doc.page_count
+        doc.close()
+        return count
     except Exception:
         return 0
 

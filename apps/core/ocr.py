@@ -7,6 +7,51 @@ from dataclasses import dataclass, field
 from PIL import Image, ImageOps, ImageFilter
 
 
+# ─── Klasifikasi halaman dokumen ─────────────────────────────────────────────
+PAGE_CLASS_KEYWORDS = {
+    "spm": [
+        "SURAT PERINTAH MEMBAYAR",
+        "NOMOR SPM",
+        "SPM NOMOR",
+    ],
+    "spp": [
+        "SURAT PERMINTAAN PEMBAYARAN",
+        "NOMOR SPP",
+        "NO SPP",
+        "NO. SPP",
+    ],
+    "sp2d": [
+        "DETAIL PENGELUARAN DAN POTONGAN",
+        "DAFTAR SP2D",
+        "NO SP2D",
+        "NO. SP2D",
+        "NOMOR SP2D",
+    ],
+    "drpp": [
+        "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN",
+        "BUKTI PENGELUARAN",
+        "NO BUKTI",
+    ],
+    "kw": [
+        "KUITANSI",
+        "TERBILANG",
+    ],
+    "coa": [
+        "KODE AKUN",
+        "COA",
+        "PEMBEBANAN",
+        "SEGMEN",
+    ],
+    "lampiran_spm": [
+        "LAMPIRAN SPM",
+        "LAMPIRAN SURAT PERINTAH",
+    ],
+    "lampiran_spp": [
+        "LAMPIRAN SPP",
+        "LAMPIRAN SURAT PERMINTAAN",
+    ],
+}
+
 DOCUMENT_KEYWORDS = {
     "spm": [
         "SURAT PERINTAH MEMBAYAR",
@@ -49,6 +94,7 @@ class OCRPage:
     status: str
     confidence: float = 0.0
     warnings: list = field(default_factory=list)
+    page_classification: str = ""
 
     @property
     def method(self):
@@ -69,6 +115,19 @@ class EngineResult:
     def confidence(self):
         values = [page.confidence for page in self.pages if page.confidence]
         return round(sum(values) / len(values), 2) if values else 0.0
+
+
+def classify_page(text):
+    """Klasifikasikan satu halaman berdasarkan keyword yang ditemukan."""
+    upper = (text or "").upper()
+    scores = {}
+    for page_type, keywords in PAGE_CLASS_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw in upper)
+        if score > 0:
+            scores[page_type] = score
+    if not scores:
+        return "lampiran"
+    return max(scores, key=scores.get)
 
 
 def optional_import(module_name):
@@ -150,13 +209,20 @@ def has_usable_text(result, document_type=None):
     if not text.strip():
         return False
     normalized = " ".join(text.split())
-    if len(normalized) >= int(os.getenv("OCR_NATIVE_MIN_CHARS", "120")):
+    min_chars = int(os.getenv("OCR_TESSERACT_MIN_TEXT_LENGTH", os.getenv("OCR_NATIVE_MIN_CHARS", "120")))
+    if len(normalized) >= min_chars:
         return True
     return result_score(result, document_type) >= float(os.getenv("OCR_NATIVE_MIN_SCORE", "18"))
 
 
 def result_score(result, document_type=None):
     return score_text(result.combined_text, document_type, result.confidence)
+
+
+def is_low_confidence(result):
+    """Cek apakah confidence hasil OCR di bawah threshold."""
+    threshold = float(os.getenv("OCR_TESSERACT_MIN_CONFIDENCE", "60"))
+    return result.confidence < threshold
 
 
 def page_dict(page):
@@ -170,10 +236,12 @@ def page_dict(page):
         "confidence": page.confidence,
         "status": page.status,
         "warnings": page.warnings,
+        "page_classification": page.page_classification,
     }
 
 
-def build_public_result(best, warnings=None, engines_tried=None, status=None):
+def build_public_result(best, warnings=None, engines_tried=None, status=None,
+                        paddleocr_called=False, paddleocr_text_length=0):
     warnings = warnings or []
     engines_tried = engines_tried or []
     combined_text = best.combined_text if best else ""
@@ -200,6 +268,8 @@ def build_public_result(best, warnings=None, engines_tried=None, status=None):
         "warnings": all_warnings,
         "engines_tried": engines_tried,
         "page_count": len(pages),
+        "paddleocr_called": paddleocr_called,
+        "paddleocr_text_length": paddleocr_text_length,
     }
 
 
@@ -215,7 +285,9 @@ def extract_text_native(file_path):
             pages = []
             for index, page in enumerate(doc, start=1):
                 text = page.get_text("text") or ""
-                pages.append(OCRPage(index, "text", text, "parsed_text" if text.strip() else "empty", 100.0 if text.strip() else 0.0))
+                page_class = classify_page(text)
+                pages.append(OCRPage(index, "text", text, "parsed_text" if text.strip() else "empty",
+                                     100.0 if text.strip() else 0.0, [], page_class))
             doc.close()
             candidates.append(EngineResult("text", pages, []))
         except Exception as exc:
@@ -233,7 +305,9 @@ def extract_text_native(file_path):
                 pages = []
                 for index, page in enumerate(pdf.pages, start=1):
                     text = page.extract_text() or ""
-                    pages.append(OCRPage(index, "text", text, "parsed_text" if text.strip() else "empty", 95.0 if text.strip() else 0.0))
+                    page_class = classify_page(text)
+                    pages.append(OCRPage(index, "text", text, "parsed_text" if text.strip() else "empty",
+                                         95.0 if text.strip() else 0.0, [], page_class))
             candidates.append(EngineResult("text", pages, []))
         except Exception as exc:
             warning = f"pdfplumber text gagal: {exc}"
@@ -250,7 +324,9 @@ def extract_text_native(file_path):
             pages = []
             for index, page in enumerate(reader.pages, start=1):
                 text = page.extract_text() or ""
-                pages.append(OCRPage(index, "text", text, "parsed_text" if text.strip() else "empty", 90.0 if text.strip() else 0.0))
+                page_class = classify_page(text)
+                pages.append(OCRPage(index, "text", text, "parsed_text" if text.strip() else "empty",
+                                     90.0 if text.strip() else 0.0, [], page_class))
             candidates.append(EngineResult("text", pages, []))
         except Exception as exc:
             warning = f"pypdf/PyPDF2 text gagal: {exc}"
@@ -325,19 +401,22 @@ def tesseract_page_text(pytesseract, image):
     return "", 0.0, warnings
 
 
-def extract_tesseract(file_path):
+def extract_tesseract(file_path, images=None):
+    """Jalankan Tesseract. Jika images sudah disediakan (dari render sebelumnya), gunakan langsung."""
     warnings = []
     pytesseract = optional_import("pytesseract")
     if not pytesseract:
         return EngineResult("tesseract", [], ["package pytesseract tidak ada di environment Python aktif."])
     if not shutil.which("tesseract"):
         return EngineResult("tesseract", [], ["tesseract.exe tidak ditemukan di PATH Windows. Install Tesseract OCR binary terpisah."])
-    try:
-        images = render_pdf_pages(file_path)
-    except Exception as exc:
-        warning = f"PDF scan gagal render: {exc}"
-        ocr_log(warning)
-        return EngineResult("tesseract", [], [warning])
+
+    if images is None:
+        try:
+            images = render_pdf_pages(file_path)
+        except Exception as exc:
+            warning = f"PDF scan gagal render: {exc}"
+            ocr_log(warning)
+            return EngineResult("tesseract", [], [warning])
 
     pages = []
     for index, image in enumerate(images, start=1):
@@ -345,15 +424,16 @@ def extract_tesseract(file_path):
         try:
             text, confidence, page_warnings = tesseract_page_text(pytesseract, preprocess_image(image))
             status = "parsed_ocr" if text.strip() else "empty"
-            pages.append(OCRPage(index, "tesseract", text, status, confidence, page_warnings))
+            page_class = classify_page(text)
+            pages.append(OCRPage(index, "tesseract", text, status, confidence, page_warnings, page_class))
         except Exception as exc:
-            pages.append(OCRPage(index, "tesseract", "", "failed", 0.0, [f"Tesseract halaman {index} gagal: {exc}"]))
+            pages.append(OCRPage(index, "tesseract", "", "failed", 0.0, [f"Tesseract halaman {index} gagal: {exc}"], ""))
     if not any(page.extracted_text.strip() for page in pages):
         warnings.append("OCR kosong: Tesseract tidak menghasilkan teks yang cukup untuk dipakai.")
     return EngineResult("tesseract", pages, warnings)
 
 
-def extract_paddleocr(file_path):
+def extract_paddleocr(file_path, images=None):
     if not parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
         return EngineResult("paddleocr", [], ["PaddleOCR dilewati karena OCR_ENABLE_PADDLEOCR=false."])
     try:
@@ -361,7 +441,8 @@ def extract_paddleocr(file_path):
         if not paddleocr_module:
             return EngineResult("paddleocr", [], ["PaddleOCR belum terpasang."])
         ocr = paddleocr_module.PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
-        images = render_pdf_pages(file_path)
+        if images is None:
+            images = render_pdf_pages(file_path)
     except Exception as exc:
         return EngineResult("paddleocr", [], [f"PaddleOCR gagal disiapkan: {exc}"])
 
@@ -379,9 +460,11 @@ def extract_paddleocr(file_path):
                             confidences.append(float(row[1][1]) * 100)
             text = "\n".join(lines)
             confidence = round(sum(confidences) / len(confidences), 2) if confidences else 0.0
-            pages.append(OCRPage(index, "paddleocr", text, "parsed_ocr" if text.strip() else "empty", confidence, []))
+            page_class = classify_page(text)
+            pages.append(OCRPage(index, "paddleocr", text, "parsed_ocr" if text.strip() else "empty",
+                                 confidence, [], page_class))
         except Exception as exc:
-            pages.append(OCRPage(index, "paddleocr", "", "failed", 0.0, [f"PaddleOCR halaman {index} gagal: {exc}"]))
+            pages.append(OCRPage(index, "paddleocr", "", "failed", 0.0, [f"PaddleOCR halaman {index} gagal: {exc}"], ""))
     return EngineResult("paddleocr", pages, [])
 
 
@@ -431,74 +514,148 @@ def check_ocr_environment():
         "tesseract_binary_available": bool(tesseract_path),
         "tesseract_version": tesseract_version,
         "paddleocr_available": bool(paddleocr),
+        "paddleocr_enabled": parse_bool_env("OCR_ENABLE_PADDLEOCR", False),
+        "force_image_for_scanned": parse_bool_env("OCR_FORCE_IMAGE_FOR_SCANNED_DOCS", True),
+        "tesseract_min_confidence": float(os.getenv("OCR_TESSERACT_MIN_CONFIDENCE", "60")),
+        "tesseract_min_text_length": int(os.getenv("OCR_TESSERACT_MIN_TEXT_LENGTH", "50")),
         "warnings": warnings,
     }
 
 
 def extract_document_text(file_path, document_type=None):
+    """Engine terpusat OCR.
+
+    Alur:
+    1. Text extraction cepat (Level 1) — hanya untuk cek ada tidaknya text layer.
+    2. Selalu render PDF ke image karena dokumen INTERMILAN hampir pasti scan kertas.
+       Dikontrol oleh OCR_FORCE_IMAGE_FOR_SCANNED_DOCS (default: true).
+    3. Tesseract (Level 2) sebagai engine utama.
+    4. PaddleOCR (Level 3) jika Tesseract kosong/confidence rendah dan PaddleOCR aktif.
+    5. Pilih hasil terbaik.
+    """
     warnings = []
     tried = []
     candidates = []
+    native_result = None
+    tesseract_result = None
+    paddleocr_result = None
+    force_image = parse_bool_env("OCR_FORCE_IMAGE_FOR_SCANNED_DOCS", True)
+    tesseract_min_confidence = float(os.getenv("OCR_TESSERACT_MIN_CONFIDENCE", "60"))
     log_file_diagnostics(file_path, "start")
 
-    for engine in engine_order():
-        if engine == "text":
-            tried.append("text")
-            result = extract_text_native(file_path)
-            warnings.extend(result.warnings)
-            ocr_log(f"engine=text raw_text_length={len(result.combined_text)}")
-            if result.combined_text.strip():
-                candidates.append(result)
-                if has_usable_text(result, document_type):
-                    output = build_public_result(result, warnings, tried)
-                    output["native_text_length"] = len(result.combined_text)
-                    output["tesseract_called"] = False
-                    output["tesseract_text_length"] = 0
-                    output["tesseract_reason"] = "Native text cukup; Tesseract tidak dipanggil."
-                    log_file_diagnostics(file_path, "done", f"best=text raw_text_length={len(output.get('combined_text', ''))}")
-                    return output
+    # ── Step 1: Text extraction cepat ────────────────────────────────────────
+    if "text" in engine_order():
+        tried.append("text")
+        native_result = extract_text_native(file_path)
+        warnings.extend(native_result.warnings)
+        native_text_len = len(native_result.combined_text)
+        ocr_log(f"engine=text raw_text_length={native_text_len}")
+
+        # Jika tidak force image DAN native text cukup baik, gunakan text saja
+        if not force_image and native_result.combined_text.strip() and has_usable_text(native_result, document_type):
+            candidates.append(native_result)
+            output = build_public_result(native_result, warnings, tried,
+                                         paddleocr_called=False, paddleocr_text_length=0)
+            output["native_text_length"] = native_text_len
+            output["tesseract_called"] = False
+            output["tesseract_text_length"] = 0
+            output["tesseract_reason"] = "Native text cukup dan OCR_FORCE_IMAGE_FOR_SCANNED_DOCS=false; Tesseract tidak dipanggil."
+            log_file_diagnostics(file_path, "done", f"best=text raw_text_length={native_text_len}")
+            return output
+
+        if native_result.combined_text.strip():
+            candidates.append(native_result)
+            if force_image:
                 warnings.append(
-                    f"Native text terlalu pendek ({len(result.combined_text)} karakter); fallback Tesseract dipanggil."
+                    f"Native text ditemukan ({native_text_len} karakter) tetapi OCR_FORCE_IMAGE_FOR_SCANNED_DOCS=true; "
+                    "Tesseract tetap dijalankan karena dokumen kemungkinan hasil scan."
                 )
-        elif engine == "tesseract":
-            tried.append("tesseract")
-            result = extract_tesseract(file_path)
-            warnings.extend(result.warnings)
-            ocr_log(f"engine=tesseract raw_text_length={len(result.combined_text)}")
-            if result.combined_text.strip():
-                candidates.append(result)
-        elif engine == "paddleocr":
-            tried.append("paddleocr")
-            result = extract_paddleocr(file_path)
-            warnings.extend(result.warnings)
-            if result.combined_text.strip():
-                candidates.append(result)
-        elif engine in {"cloud", "google_document_ai", "azure_document_intelligence"}:
+            else:
+                warnings.append(
+                    f"Native text terlalu pendek ({native_text_len} karakter); fallback Tesseract dipanggil."
+                )
+
+    # ── Step 2: Pre-render PDF ke image (agar tidak render 2x) ───────────────
+    rendered_images = None
+    if "tesseract" in engine_order() or (parse_bool_env("OCR_ENABLE_PADDLEOCR", False) and "paddleocr" in engine_order()):
+        try:
+            rendered_images = render_pdf_pages(file_path)
+        except Exception as exc:
+            warning = f"PDF render gagal: {exc}. OCR tidak bisa dijalankan."
+            warnings.append(warning)
+            ocr_log(warning)
+
+    # ── Step 3: Tesseract (Level 2) ───────────────────────────────────────────
+    if "tesseract" in engine_order() and rendered_images is not None:
+        tried.append("tesseract")
+        tesseract_result = extract_tesseract(file_path, images=rendered_images)
+        warnings.extend(tesseract_result.warnings)
+        tesseract_text_len = len(tesseract_result.combined_text)
+        ocr_log(f"engine=tesseract raw_text_length={tesseract_text_len}")
+        if tesseract_result.combined_text.strip():
+            candidates.append(tesseract_result)
+
+    # ── Step 4: PaddleOCR (Level 3) — jika Tesseract gagal atau confidence rendah ───
+    should_try_paddle = False
+    if "paddleocr" in engine_order() and parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
+        if tesseract_result is None:
+            should_try_paddle = True  # Tesseract tidak dijalankan
+        elif not tesseract_result.combined_text.strip():
+            should_try_paddle = True  # Tesseract kosong
+        elif is_low_confidence(tesseract_result):
+            should_try_paddle = True  # Confidence rendah
+            warnings.append(
+                f"Tesseract confidence rendah ({tesseract_result.confidence:.1f}% < {tesseract_min_confidence}%); "
+                "PaddleOCR dijalankan sebagai fallback."
+            )
+
+    paddle_called = False
+    paddle_text_len = 0
+    if should_try_paddle and rendered_images is not None:
+        tried.append("paddleocr")
+        paddleocr_result = extract_paddleocr(file_path, images=rendered_images)
+        warnings.extend(paddleocr_result.warnings)
+        paddle_called = True
+        paddle_text_len = len(paddleocr_result.combined_text)
+        ocr_log(f"engine=paddleocr raw_text_length={paddle_text_len}")
+        if paddleocr_result.combined_text.strip():
+            candidates.append(paddleocr_result)
+    elif "paddleocr" in engine_order() and not parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
+        tried.append("paddleocr")
+        warnings.append("PaddleOCR dilewati karena OCR_ENABLE_PADDLEOCR=false.")
+
+    # ── Step 5: Cloud OCR ─────────────────────────────────────────────────────
+    for engine in engine_order():
+        if engine in {"cloud", "google_document_ai", "azure_document_intelligence"}:
             tried.append(engine)
             result = extract_cloud_ocr(file_path)
             warnings.extend(result.warnings)
             if result.combined_text.strip():
                 candidates.append(result)
 
+    # ── Pilih hasil terbaik ───────────────────────────────────────────────────
+    native_len = len(native_result.combined_text) if native_result else 0
+    tesseract_len = len(tesseract_result.combined_text) if tesseract_result else 0
+
     if not candidates:
         status = "needs_manual_review" if tried else "failed"
-        output = build_public_result(EngineResult("failed", [], warnings), warnings, tried, status=status)
-        output["native_text_length"] = 0
+        output = build_public_result(EngineResult("failed", [], warnings), warnings, tried, status=status,
+                                     paddleocr_called=paddle_called, paddleocr_text_length=paddle_text_len)
+        output["native_text_length"] = native_len
         output["tesseract_called"] = "tesseract" in tried
-        output["tesseract_text_length"] = 0
-        output["tesseract_reason"] = "Tesseract dipanggil tetapi teks kosong." if "tesseract" in tried else "Tesseract tidak dipanggil karena engine order tidak memuat tesseract."
+        output["tesseract_text_length"] = tesseract_len
+        output["tesseract_reason"] = "Tesseract dipanggil tetapi teks kosong." if "tesseract" in tried else "Tesseract tidak dipanggil."
         log_file_diagnostics(file_path, "done", f"best=failed raw_text_length=0 errors={'; '.join(warnings[-5:])}")
         return output
 
     best = max(candidates, key=lambda result: result_score(result, document_type))
-    output = build_public_result(best, warnings, tried)
-    native_candidate = next((item for item in candidates if item.engine == "text"), None)
-    tesseract_candidate = next((item for item in candidates if item.engine == "tesseract"), None)
-    output["native_text_length"] = len(native_candidate.combined_text) if native_candidate else 0
+    output = build_public_result(best, warnings, tried,
+                                 paddleocr_called=paddle_called, paddleocr_text_length=paddle_text_len)
+    output["native_text_length"] = native_len
     output["tesseract_called"] = "tesseract" in tried
-    output["tesseract_text_length"] = len(tesseract_candidate.combined_text) if tesseract_candidate else 0
+    output["tesseract_text_length"] = tesseract_len
     output["tesseract_reason"] = (
-        "Native text kosong/pendek; Tesseract dipanggil."
+        "Native text kosong/pendek atau force_image aktif; Tesseract dipanggil."
         if "tesseract" in tried
         else "Native text cukup; Tesseract tidak dipanggil."
     )

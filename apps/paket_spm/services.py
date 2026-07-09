@@ -12,6 +12,8 @@ STATUS_LENGKAP = "Lengkap"
 STATUS_BELUM_LENGKAP = "Belum Lengkap"
 STATUS_REVIEW_OCR = "Perlu Review OCR"
 STATUS_REVIEW_NOMOR = "Perlu Review Nomor"
+STATUS_REVIEW_FIELD = "Perlu Review Field"
+STATUS_REVIEW_JENIS = "Perlu Review Jenis SPM"
 STATUS_DUPLIKAT = "Duplikat"
 STATUS_GAGAL = "Gagal Diproses"
 
@@ -36,7 +38,24 @@ def money_value(value):
 
 def is_gup(jenis_spm):
     text = normalize_key(jenis_spm)
-    return "GUP" in text or "GU" in text
+    return bool(text) and ("GUP" in text or ("GU" in text and "TUP" not in text))
+
+
+def is_tup(jenis_spm):
+    text = normalize_key(jenis_spm)
+    return bool(text) and "TUP" in text
+
+
+def is_ls(jenis_spm):
+    text = normalize_key(jenis_spm)
+    return bool(text) and text.startswith("LS")
+
+
+def requires_drpp_kw(jenis_spm):
+    """GU/GUP/TUP wajib DRPP+KW. LS tidak wajib. Jenis kosong = belum diketahui."""
+    if not jenis_spm or not jenis_spm.strip():
+        return None  # belum diketahui
+    return is_gup(jenis_spm) or is_tup(jenis_spm)
 
 
 def parsed_is_filename_only(parsed):
@@ -179,15 +198,55 @@ def evaluate_document_status(parsed):
         return STATUS_REVIEW_OCR, ["Hanya metadata filename yang terbaca; perlu review OCR/manual."]
     if not meta["has_spm"] and not meta["has_drpp"]:
         return STATUS_REVIEW_OCR, ["OCR belum membaca SPM/DRPP secara memadai."]
-    if is_gup(meta["jenis_spm"]) and (not meta["has_drpp"] or not meta["kw_count"]):
-        return STATUS_BELUM_LENGKAP, ["SPM GUP membutuhkan DRPP dan KW/Bukti pengeluaran."]
+
+    jenis_spm = meta["jenis_spm"]
+    drpp_kw_required = requires_drpp_kw(jenis_spm)
+
+    # Jika jenis SPM belum terbaca dan tidak bisa dipastikan
+    if drpp_kw_required is None and meta["has_spm"] and not meta["has_drpp"]:
+        return STATUS_REVIEW_JENIS, [
+            "Jenis SPM belum terbaca. Tidak bisa memastikan apakah DRPP/KW diperlukan. "
+            "Periksa jenis SPM (GU/GUP/TUP atau LS) dari dokumen asli."
+        ]
+
+    # GU/GUP/TUP: wajib DRPP dan KW
+    if drpp_kw_required and (not meta["has_drpp"] or not meta["kw_count"]):
+        keterangan = f"SPM {jenis_spm} membutuhkan DRPP dan KW/Bukti pengeluaran."
+        if is_gup(jenis_spm):
+            keterangan = f"SPM GUP ({jenis_spm}) membutuhkan DRPP dan KW/Bukti pengeluaran."
+        elif is_tup(jenis_spm):
+            keterangan = f"SPM TUP ({jenis_spm}) membutuhkan DRPP dan KW/Bukti pengeluaran."
+        return STATUS_BELUM_LENGKAP, [keterangan]
+
     if meta["total"] <= 0:
         return STATUS_REVIEW_OCR, ["Nilai total belum terbaca."]
     if not meta["akun_count"]:
         return STATUS_REVIEW_OCR, ["Akun/COA atau item pengeluaran belum terbaca."]
-    # Hanya SPM saja yang diupload — DRPP dan KW belum ada
+
+    # LS: tidak wajib DRPP/KW, tapi cek field penting
+    if is_ls(jenis_spm) or drpp_kw_required is False:
+        # Cek apakah field penting terbaca
+        spm_meta = (parsed.get("spm") or {}).get("metadata", {})
+        missing_fields = []
+        if not spm_meta.get("nomor_sp2d") and not meta.get("nomor_sp2d"):
+            missing_fields.append("No SP2D")
+        if not spm_meta.get("nomor_invoice") and not meta.get("nomor_invoice"):
+            missing_fields.append("No Invoice/SPP-SPM")
+        if missing_fields:
+            return STATUS_REVIEW_FIELD, [
+                f"SPM {jenis_spm}: field berikut belum terbaca dari dokumen: {', '.join(missing_fields)}. "
+                "Periksa lampiran Detail Pengeluaran dan Potongan."
+            ]
+        return STATUS_LENGKAP, notes
+
+    # GU/GUP/TUP dengan DRPP dan KW: cek field tambahan
+    if drpp_kw_required and meta["has_drpp"] and meta["kw_count"]:
+        return STATUS_LENGKAP, notes
+
+    # Hanya SPM saja yang diupload (bukan LS, dan bukan sudah Lengkap)
     if meta["has_spm"] and not meta["has_drpp"] and not meta["kw_count"]:
         return STATUS_BELUM_LENGKAP, ["SPM berhasil dibaca. DRPP dan KW/Bukti pengeluaran belum diupload."]
+
     return STATUS_LENGKAP, notes
 
 
