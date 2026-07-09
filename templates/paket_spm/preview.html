@@ -172,19 +172,18 @@
       {% if row.warnings_technical %}
       <div style="margin-bottom:8px;">
         <strong>{{ row.file_name|truncatechars:60 }}</strong> &mdash;
-        {% for w in row.warnings_technical %}<span class="muted">{{ w }}</span>{% if not forloop.last %}; {% endif %}{%
-        endfor %}
+        {% for w in row.warnings_technical %}
+          <span class="muted">{{ w }}</span>{% if not forloop.last %}; {% endif %}
+        {% endfor %}
       </div>
       {% endif %}
       {% endfor %}
       {% if parsed.spm %}
       <h3 style="margin-top:16px;">SPM &mdash; {{ parsed.spm.file_name }}</h3>
       <p class="muted">
-        Engine dicoba: {{ parsed.spm.engines_tried|join:", "|default:"-" }}{% if parsed.spm.confidence %} &mdash;
-        Confidence {{ parsed.spm.confidence|floatformat:0 }}%{% endif %}.<br>
+        Engine dicoba: {{ parsed.spm.engines_tried|join:", "|default:"-" }}{% if parsed.spm.confidence %} &mdash; Confidence {{ parsed.spm.confidence|floatformat:0 }}%{% endif %}.<br>
         Native text: {{ parsed.spm.native_text_length|default:0 }} karakter.
-        Tesseract: {% if parsed.spm.tesseract_called %}dipanggil, {{ parsed.spm.tesseract_text_length|default:0 }}
-        karakter{% else %}tidak dipanggil{% endif %}.
+        Tesseract: {% if parsed.spm.tesseract_called %}dipanggil, {{ parsed.spm.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
         {{ parsed.spm.tesseract_reason|default:"" }}
       </p>
       <details style="margin-left:12px;">
@@ -208,8 +207,7 @@
                 <td>{{ page.engine|default:page.method }}</td>
                 <td>{{ page.status }}</td>
                 <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
-                <td title="{{ page.text|default:page.extracted_text }}">{{
-                  page.text|default:page.extracted_text|truncatechars:160 }}</td>
+                <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:160 }}</td>
                 <td>{{ page.warnings|join:"; " }}</td>
               </tr>
               {% empty %}
@@ -259,11 +257,9 @@
       {% for drpp in parsed.drpps %}
       <h3 style="margin-top:16px;">DRPP &mdash; {{ drpp.file_name }}</h3>
       <p class="muted">
-        Engine dicoba: {{ drpp.engines_tried|join:", "|default:"-" }}{% if drpp.confidence %} &mdash; Confidence {{
-        drpp.confidence|floatformat:0 }}%{% endif %}.<br>
+        Engine dicoba: {{ drpp.engines_tried|join:", "|default:"-" }}{% if drpp.confidence %} &mdash; Confidence {{ drpp.confidence|floatformat:0 }}%{% endif %}.<br>
         Native text: {{ drpp.native_text_length|default:0 }} karakter.
-        Tesseract: {% if drpp.tesseract_called %}dipanggil, {{ drpp.tesseract_text_length|default:0 }} karakter{% else
-        %}tidak dipanggil{% endif %}.
+        Tesseract: {% if drpp.tesseract_called %}dipanggil, {{ drpp.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
         {{ drpp.tesseract_reason|default:"" }}
       </p>
       <details style="margin-left:12px;">
@@ -287,8 +283,7 @@
                 <td>{{ page.engine|default:page.method }}</td>
                 <td>{{ page.status }}</td>
                 <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
-                <td title="{{ page.text|default:page.extracted_text }}">{{
-                  page.text|default:page.extracted_text|truncatechars:160 }}</td>
+                <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:160 }}</td>
                 <td>{{ page.warnings|join:"; " }}</td>
               </tr>
               {% empty %}
@@ -370,8 +365,7 @@
 
     <div style="margin-bottom: 8px;">
       <label style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
-        <input type="radio" name="commit_choice" value="create_from_package" {% if not decision.matched_transaction
-          %}checked{% endif %}>
+        <input type="radio" name="commit_choice" value="create_from_package" {% if not decision.matched_transaction %}checked{% endif %}>
         <strong>Buat D_K Baru dari Hasil Scan</strong>
       </label>
     </div>
