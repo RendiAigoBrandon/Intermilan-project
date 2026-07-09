@@ -1026,3 +1026,24 @@ def parse_paket_spm_zip(zip_path, ocr=False):
         "kw_items": kw_items[:200],
         "warnings": fatal_errors,
     }
+
+def make_json_safe(data):
+    """
+    Recursively converts non-serializable objects (datetime, date, Decimal, set, tuple)
+    into JSON-safe primitive types.
+    """
+    import datetime
+    from decimal import Decimal
+    
+    if isinstance(data, dict):
+        return {str(k): make_json_safe(v) for k, v in data.items()}
+    elif isinstance(data, (list, tuple, set)):
+        return [make_json_safe(v) for v in data]
+    elif isinstance(data, (datetime.datetime, datetime.date)):
+        return data.isoformat()
+    elif isinstance(data, Decimal):
+        return float(data)
+    elif hasattr(data, '__dict__'):
+        return str(data)
+    else:
+        return data

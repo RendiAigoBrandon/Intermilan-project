@@ -114,26 +114,88 @@ def package_metadata(parsed):
     }
 
 
-def find_matching_transaction(meta):
+def analyze_matching_transactions(meta):
     query = TransactionDetail.objects.all()
     conditions = Q()
-    if meta["nomor_spm"]:
+    if meta.get("nomor_spm"):
         conditions |= Q(nomor_spm__iexact=meta["nomor_spm"])
-    if meta["nomor_drpp"]:
-        for no_drpp in meta.get("nomor_drpp_list") or [meta["nomor_drpp"]]:
-            conditions |= Q(no_drpp__iexact=no_drpp)
+    if meta.get("nomor_drpp_list"):
+        for no_drpp in meta.get("nomor_drpp_list"):
+            if no_drpp:
+                conditions |= Q(no_drpp__iexact=no_drpp)
+    if meta.get("total") and money_value(meta["total"]) > 0:
+        conditions |= Q(nilai_bruto=money_value(meta["total"])) | Q(nilai_netto=money_value(meta["total"]))
+
     if not conditions:
-        return None
-    query = query.filter(conditions)
-    if meta["satker_code"]:
-        satker_match = query.filter(satker_code=meta["satker_code"]).first()
-        if satker_match:
-            return satker_match
-    if meta["total"]:
-        total_match = query.filter(Q(nilai_bruto=meta["total"]) | Q(nilai_netto=meta["total"])).first()
-        if total_match:
-            return total_match
-    return query.first()
+        return None, []
+
+    candidates = []
+    nomor_spm_clean = normalize_key(meta.get("nomor_spm"))
+    satker_clean = normalize_key(meta.get("satker_code"))
+    total_val = money_value(meta.get("total"))
+    bulan_val = meta.get("bulan")
+    tanggal_val = meta.get("tanggal_spm")
+
+    for tx in query.filter(conditions).order_by("-updated_at")[:20]:
+        score = 0
+        reasons = []
+        
+        # 1. Nomor SPM
+        if nomor_spm_clean and normalize_key(tx.nomor_spm) == nomor_spm_clean:
+            score += 50
+            reasons.append("Nomor SPM cocok (+50)")
+        elif nomor_spm_clean:
+            reasons.append("Nomor SPM beda")
+
+        # 2. Satker
+        tx_satker = normalize_key(tx.satker_code)
+        if satker_clean and tx_satker:
+            if satker_clean == tx_satker:
+                score += 20
+                reasons.append("Satker cocok (+20)")
+            else:
+                reasons.append("Satker beda (-30)")
+                score -= 30 
+        
+        # 3. Nilai
+        if total_val > 0:
+            if tx.nilai_bruto == total_val or tx.nilai_netto == total_val:
+                score += 20
+                reasons.append("Nilai cocok (+20)")
+            else:
+                reasons.append("Nilai beda")
+
+        # 4. Tanggal / Bulan
+        if bulan_val and tx.bulan_sp2d == bulan_val:
+            score += 15
+            reasons.append("Bulan cocok (+15)")
+        elif tanggal_val and tx.tanggal_spm == tanggal_val:
+            score += 15
+            reasons.append("Tanggal cocok (+15)")
+            
+        # 5. Akun
+        if meta.get("akun_list") and tx.akun in meta["akun_list"]:
+            score += 15
+            reasons.append("Akun cocok (+15)")
+
+        if any("Satker beda" in r for r in reasons):
+            continue  # Hard validation: abaikan/dibuang dari kandidat
+
+        candidates.append({
+            "transaction": tx,
+            "score": score,
+            "reasons": reasons,
+        })
+    
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    best_match = None
+    
+    if candidates:
+        top = candidates[0]
+        if top["score"] >= 70 and not any("Satker beda" in r for r in top["reasons"]):
+            best_match = top["transaction"]
+
+    return best_match, candidates
 
 
 def find_matching_sp2d(meta):
@@ -254,10 +316,13 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
     meta = package_metadata(parsed)
     document_status, notes = evaluate_document_status(parsed)
     duplicate = find_duplicate_package(meta, original_filename)
-    matched_transaction = find_matching_transaction(meta)
+    matched_transaction, candidates = analyze_matching_transactions(meta)
     matched_sp2d = forced_sp2d or find_matching_sp2d(meta)
+    
     if matched_transaction and matched_transaction.nomor_spm:
         meta["nomor_spm_matching"] = normalize_key(matched_transaction.nomor_spm)
+    elif candidates and candidates[0]["transaction"].nomor_spm:
+        meta["nomor_spm_matching"] = normalize_key(candidates[0]["transaction"].nomor_spm)
     elif matched_sp2d and matched_sp2d.nomor_spm_extracted:
         meta["nomor_spm_matching"] = normalize_key(matched_sp2d.nomor_spm_extracted)
 
@@ -267,7 +332,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             meta["nomor_spm_conflict"] = False
             meta["nomor_spm_review_status"] = "OK"
             meta["nomor_spm_final"] = meta["nomor_spm_ocr"]
-            meta["nomor_spm_reason"] = "Konflik OCR vs Filename otomatis diselesaikan karena cocok dengan D_K/SP2D."
+            meta["nomor_spm_reason"] = "Konflik OCR vs Filename otomatis diselesaikan karena cocok dengan D_K/SP2D/Kandidat."
             if "spm" in parsed and "metadata" in parsed["spm"]:
                 parsed["spm"]["metadata"]["nomor_spm_conflict"] = False
                 parsed["spm"]["metadata"]["nomor_spm_review_status"] = "OK"
@@ -307,6 +372,22 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "duplicate": None,
         }
 
+    if not matched_transaction and candidates:
+        return {
+            "document_status": document_status,
+            "reconciliation_status": "Perlu Review Matching",
+            "commit_action": "review_manual",
+            "commit_label": "Simpan Draft Review Manual",
+            "can_commit": True,
+            "decision_text": "Ditemukan beberapa kandidat D_K namun tidak ada yang memenuhi syarat cocok kuat (poin >= 70 & satker sama). Silakan kaitkan manual atau buat D_K baru.",
+            "notes": notes,
+            "meta": meta,
+            "matched_transaction": None,
+            "matched_sp2d": matched_sp2d,
+            "duplicate": None,
+            "candidates": candidates,
+        }
+
     if document_status == STATUS_REVIEW_NOMOR:
         return {
             "document_status": document_status,
@@ -320,6 +401,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "matched_transaction": matched_transaction,
             "matched_sp2d": matched_sp2d,
             "duplicate": None,
+            "candidates": candidates,
         }
 
     if document_status == STATUS_REVIEW_OCR and matched_transaction:
@@ -335,6 +417,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "matched_transaction": matched_transaction,
             "matched_sp2d": matched_sp2d,
             "duplicate": None,
+            "candidates": candidates,
         }
 
     if document_status == STATUS_REVIEW_OCR and matched_sp2d:
@@ -350,6 +433,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "matched_transaction": None,
             "matched_sp2d": matched_sp2d,
             "duplicate": None,
+            "candidates": candidates,
         }
 
     if document_status == STATUS_REVIEW_OCR:
@@ -365,6 +449,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "matched_transaction": None,
             "matched_sp2d": None,
             "duplicate": None,
+            "candidates": candidates,
         }
 
     if matched_transaction:
@@ -380,6 +465,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "matched_transaction": matched_transaction,
             "matched_sp2d": matched_sp2d,
             "duplicate": None,
+            "candidates": candidates,
         }
 
     if matched_sp2d:
@@ -395,6 +481,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "matched_transaction": None,
             "matched_sp2d": matched_sp2d,
             "duplicate": None,
+            "candidates": candidates,
         }
 
     if document_status == STATUS_BELUM_LENGKAP and matched_transaction:
@@ -410,6 +497,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "matched_transaction": matched_transaction,
             "matched_sp2d": matched_sp2d,
             "duplicate": None,
+            "candidates": candidates,
         }
 
     if document_status == STATUS_BELUM_LENGKAP:
@@ -425,13 +513,14 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "matched_transaction": None,
             "matched_sp2d": None,
             "duplicate": None,
+            "candidates": candidates,
         }
 
     return {
         "document_status": document_status,
         "reconciliation_status": f"{REKON_BELUM_SP2D} / {REKON_BELUM_DK}",
         "commit_action": "create_from_package",
-        "commit_label": "Simpan Paket SPM",
+        "commit_label": "Buat D_K Baru dari Hasil Scan",
         "can_commit": True,
         "decision_text": "Akan dibuat sebagai data baru di INTERMILAN dari sumber Paket SPM.",
         "notes": notes,
@@ -439,6 +528,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
         "matched_transaction": None,
         "matched_sp2d": None,
         "duplicate": None,
+        "candidates": candidates,
     }
 
 

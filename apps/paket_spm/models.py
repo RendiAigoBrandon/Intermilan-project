@@ -13,6 +13,8 @@ class PaketSPMUpload(models.Model):
     original_filename = models.CharField(max_length=255)
     folder_path = models.CharField(max_length=500, blank=True)
     nomor_spm = models.CharField(max_length=100, blank=True)
+    nomor_sp2d = models.CharField(max_length=100, blank=True)
+    nomor_invoice = models.CharField(max_length=100, blank=True)
     satker_code = models.CharField(max_length=32, blank=True)
     tahun = models.PositiveSmallIntegerField(null=True, blank=True)
     bulan = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -23,6 +25,7 @@ class PaketSPMUpload(models.Model):
     total_rincian_bruto = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     total_rincian_netto = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     selisih = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    parsed_data = models.JSONField(null=True, blank=True, help_text="Menyimpan hasil raw extract/OCR agar tidak diproses berulang kali saat preview.")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.UPLOADED)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -66,6 +69,8 @@ class PaketSPMPreviewItem(models.Model):
     nilai_bruto = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     nilai_netto = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     pembebanan = models.CharField(max_length=255, blank=True)
+    fp = models.CharField(max_length=100, blank=True)
+    pph21 = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     catatan = models.TextField(blank=True)
     matched_transaction = models.ForeignKey(

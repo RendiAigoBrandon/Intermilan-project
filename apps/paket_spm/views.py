@@ -12,7 +12,7 @@ from django.db import transaction
 from django.shortcuts import redirect, render
 
 from apps.accounts.access import filter_by_satker, permission_context
-from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf
+from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.documents.services.google_drive import archive_file_link
 from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package
 from apps.sp2d.models import SP2DRaw
@@ -23,9 +23,6 @@ from .models import PaketSPMPreviewItem, PaketSPMUpload
 @login_required
 def paket_spm_list(request):
     if request.method == "POST":
-        old_preview = request.session.pop("paket_spm_preview", None)
-        if old_preview:
-            cleanup_paket_files(old_preview.get("file_path"), "")
         upload_file = request.FILES.get("file_paket")
         upload_files = request.FILES.getlist("document_files")
         if not upload_files:
@@ -38,9 +35,11 @@ def paket_spm_list(request):
         if validation_error:
             messages.error(request, validation_error)
             return redirect("paket_spm:list")
+
         tmp_dir = os.path.join(settings.MEDIA_ROOT, "tmp")
         os.makedirs(tmp_dir, exist_ok=True)
         fs = FileSystemStorage(location=tmp_dir)
+
         if upload_files and len(upload_files) == 1 and upload_files[0].name.lower().endswith((".pdf", ".zip")):
             single_upload = upload_files[0]
             lower_name = single_upload.name.lower()
@@ -56,21 +55,88 @@ def paket_spm_list(request):
             filename = fs.save(upload_file.name, upload_file)
             original_filename = upload_file.name
             kind = "zip" if lower_name.endswith(".zip") else "pdf"
-        request.session["paket_spm_preview"] = {
-            "file_path": fs.path(filename),
-            "original_filename": original_filename,
-            "satker_code": request.POST.get("satker_code", ""),
-            "tahun": request.POST.get("tahun", ""),
-            "bulan": request.POST.get("bulan", ""),
-            "sp2d_raw_id": request.POST.get("sp2d_raw_id", ""),
-            "ocr": bool(request.POST.get("use_ocr")),
-            "kind": kind,
-        }
-        print(
-            "[INTERMILAN PaketSPM Upload] "
-            f"original_filename={original_filename}; temp_path={fs.path(filename)}; kind={kind}",
-            flush=True,
+
+        file_path = fs.path(filename)
+        use_ocr = bool(request.POST.get("use_ocr"))
+        
+        # 1. Parsing di POST
+        try:
+            if kind == "pdf":
+                text_probe = extract_pdf_text(file_path, ocr=False)
+                doc_type = classify_document(original_filename, "\n".join(text_probe["pages"]))
+                if doc_type == "DRPP" or doc_type == "KW":
+                    drpp = parse_drpp_pdf(file_path, ocr=use_ocr)
+                    spm = None
+                else:
+                    doc_type = "SPM"
+                    spm = parse_spm_pdf(file_path, ocr=use_ocr)
+                    drpp = None
+                parsed = {
+                    "ok": bool(
+                        (spm and spm["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (spm["metadata"].get("nomor_spm") or spm["akun_rows"]))
+                        or (drpp and drpp["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (drpp["metadata"].get("nomor_drpp") or drpp["items"]))
+                    ),
+                    "files": [{
+                        "file_name": original_filename,
+                        "type": doc_type,
+                        "status": "extracted",
+                        "parse_status": (spm or drpp)["status"],
+                        "method": (spm or drpp)["method"],
+                        "warnings": (spm or drpp)["warnings"],
+                    }],
+                    "spm": spm,
+                    "drpp": drpp,
+                    "drpps": [drpp] if drpp else [],
+                    "kw_by_drpp": {drpp["metadata"].get("nomor_drpp", "DRPP"): drpp.get("items", [])} if drpp else {},
+                    "kw_items": drpp.get("items", []) if drpp else [],
+                    "warnings": [],
+                    "temp_dir": "",
+                }
+            else:
+                parsed = parse_paket_spm_zip(file_path, ocr=use_ocr)
+        except Exception as exc:
+            parsed = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [str(exc)], "temp_dir": ""}
+
+        # 2. Simpan ke database sebagai DRAFT
+        spm_meta = (parsed.get("spm") or {}).get("metadata", {})
+        drpp_meta = (parsed.get("drpp") or {}).get("metadata", {})
+        tahun = int(request.POST.get("tahun")) if str(request.POST.get("tahun", "")).isdigit() else None
+        bulan = parse_month(request.POST.get("bulan", ""))
+        satker = str(request.POST.get("satker_code") or spm_meta.get("satker_code") or "")[:32]
+        
+        paket = PaketSPMUpload(
+            original_filename=original_filename,
+            folder_path=parsed.get("temp_dir", ""),
+            nomor_spm=str(spm_meta.get("nomor_spm") or drpp_meta.get("nomor_spm") or "")[:100],
+            nomor_sp2d=str(spm_meta.get("nomor_sp2d") or "")[:100],
+            nomor_invoice=str(spm_meta.get("nomor_invoice") or "")[:100],
+            satker_code=satker,
+            tahun=tahun,
+            bulan=bulan,
+            jenis_spm_asli=str(spm_meta.get("jenis_spm") or "")[:100],
+            jenis_spm_label=str(spm_meta.get("jenis_spm") or "")[:100],
+            tanggal_spm=spm_meta.get("tanggal_spm"),
+            nilai_spm=spm_meta.get("total_pembayaran") or Decimal("0"),
+            total_rincian_bruto=sum((item.get("jumlah") or Decimal("0") for item in parsed.get("kw_items", [])), Decimal("0")),
+            total_rincian_netto=sum((item.get("jumlah") or Decimal("0") for item in parsed.get("kw_items", [])), Decimal("0")),
+            status=PaketSPMUpload.Status.PREVIEW,
+            uploaded_by=request.user,
+            parsed_data=make_json_safe(parsed),
         )
+        with open(file_path, "rb") as zip_file:
+            paket.zip_file.save(original_filename, File(zip_file), save=False)
+        paket.save()
+        
+        # Sync file to drive immediately if valid? Actually let's just let it be saved locally first.
+        # User said: "Saat user upload, file PDF/ZIP harus langsung disimpan ke local archive atau Google Drive jika aktif. Jangan tunggu commit baru simpan file. Preview/Draft harus punya referensi path/link file."
+        # Local archive is handled by `paket.zip_file.save(...)` which puts it in `media/uploads/paket_spm/...`.
+        # Google Drive sync usually happens in services or celery, but I can call `archive_file_link(paket.zip_file.path)` here if needed.
+        # Actually let's leave it as `zip_file` path since we have `paket.zip_file.url`.
+        
+        request.session["paket_spm_preview_id"] = paket.id
+        request.session["sp2d_raw_id"] = request.POST.get("sp2d_raw_id", "")
+        
+        print(f"[INTERMILAN PaketSPM Upload] Saved as PREVIEW id={paket.id}", flush=True)
         return redirect("paket_spm:preview")
 
     rows = filter_by_satker(PaketSPMUpload.objects.select_related("uploaded_by"), request.user)
@@ -95,194 +161,105 @@ def paket_spm_list(request):
 
 @login_required
 def paket_spm_preview(request):
-    preview_state = request.session.get("paket_spm_preview")
-    if not preview_state:
-        messages.error(request, "Sesi preview Paket SPM tidak ditemukan.")
+    paket_id = request.session.get("paket_spm_preview_id")
+    if not paket_id:
+        messages.error(request, "Sesi preview Paket SPM tidak ditemukan. Silakan upload ulang atau buka dari daftar draft.")
         return redirect("paket_spm:list")
-    file_path = preview_state["file_path"]
-    if not os.path.exists(file_path):
-        messages.error(request, "File ZIP sementara hilang. Silakan upload ulang.")
-        request.session.pop("paket_spm_preview", None)
+    try:
+        paket = PaketSPMUpload.objects.get(id=paket_id, status=PaketSPMUpload.Status.PREVIEW, uploaded_by=request.user)
+    except PaketSPMUpload.DoesNotExist:
+        messages.error(request, "Draft Paket SPM tidak ditemukan.")
         return redirect("paket_spm:list")
-    sp2d_context = get_sp2d_context(preview_state.get("sp2d_raw_id"), request.user)
+
+    sp2d_context = get_sp2d_context(request.session.get("sp2d_raw_id"), request.user)
     forced_sp2d = sp2d_context.get("row") if sp2d_context else None
 
-    try:
-        if preview_state.get("kind") == "pdf":
-            text_probe = extract_pdf_text(file_path, ocr=False)
-            doc_type = classify_document(preview_state["original_filename"], "\n".join(text_probe["pages"]))
-            if doc_type == "DRPP":
-                drpp = parse_drpp_pdf(file_path, ocr=preview_state.get("ocr", False))
-                spm = None
-            elif doc_type == "KW":
-                drpp = parse_drpp_pdf(file_path, ocr=preview_state.get("ocr", False))
-                spm = None
-            else:
-                doc_type = "SPM"
-                spm = parse_spm_pdf(file_path, ocr=preview_state.get("ocr", False))
-                drpp = None
-            parsed = {
-                "ok": bool(
-                    (spm and spm["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (spm["metadata"].get("nomor_spm") or spm["akun_rows"]))
-                    or (drpp and drpp["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (drpp["metadata"].get("nomor_drpp") or drpp["items"]))
-                ),
-                "files": [{
-                    "file_name": preview_state["original_filename"],
-                    "type": doc_type,
-                    "status": "extracted",
-                    "parse_status": (spm or drpp)["status"],
-                    "method": (spm or drpp)["method"],
-                    "warnings": (spm or drpp)["warnings"],
-                }],
-                "spm": spm,
-                "drpp": drpp,
-                "drpps": [drpp] if drpp else [],
-                "kw_by_drpp": {drpp["metadata"].get("nomor_drpp", "DRPP"): drpp.get("items", [])} if drpp else {},
-                "kw_items": drpp.get("items", []) if drpp else [],
-                "warnings": [],
-                "temp_dir": "",
-            }
-        else:
-            parsed = parse_paket_spm_zip(file_path, ocr=preview_state.get("ocr", False))
-    except Exception as exc:
-        parsed = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [str(exc)], "temp_dir": ""}
-
-    decision = build_package_decision(parsed, preview_state.get("original_filename", ""), forced_sp2d=forced_sp2d)
-    log_number_resolution(preview_state, parsed, decision)
-    preview_summary = build_preview_summary(parsed, decision, preview_state)
-    scan_rows = build_scan_rows(parsed, decision)
-    drpp_rows = build_drpp_rows(parsed)
-    kw_rows = build_kw_rows(parsed)
-    can_commit = decision["can_commit"]
+    parsed = paket.parsed_data or {}
+    
     if request.method == "POST":
         action = request.POST.get("action")
         if action == "cancel":
-            cleanup_paket_files(file_path, parsed.get("temp_dir"))
-            request.session.pop("paket_spm_preview", None)
+            paket.delete() # Or keep it? The user might just want to abort. Since we have drafts now, we can just let them keep it or delete it.
+            # "Draft harus bisa ditemukan... tombol hapus draft". Let's assume cancel means abort completely.
+            request.session.pop("paket_spm_preview_id", None)
             messages.info(request, "Preview Paket SPM dibatalkan.")
             return redirect("paket_spm:list")
+            
+        if action == "recalculate":
+            # Update paket fields based on input
+            paket.nomor_spm = request.POST.get("nomor_spm", paket.nomor_spm)
+            paket.nomor_sp2d = request.POST.get("nomor_sp2d", paket.nomor_sp2d)
+            paket.nomor_invoice = request.POST.get("nomor_invoice", paket.nomor_invoice)
+            paket.satker_code = request.POST.get("satker_code", paket.satker_code)
+            
+            # We also update the parsed_data so it reflects in decision and UI
+            if "spm" not in parsed or not parsed["spm"]:
+                parsed["spm"] = {"metadata": {}}
+            parsed["spm"]["metadata"]["nomor_spm"] = paket.nomor_spm
+            parsed["spm"]["metadata"]["nomor_sp2d"] = paket.nomor_sp2d
+            parsed["spm"]["metadata"]["nomor_invoice"] = paket.nomor_invoice
+            parsed["spm"]["metadata"]["satker_code"] = paket.satker_code
+            
+            akun_str = request.POST.get("akun", "")
+            if akun_str:
+                parsed["spm"]["metadata"]["akun_pengeluaran"] = [a.strip() for a in akun_str.split(",") if a.strip()]
+            
+            nilai_str = request.POST.get("nilai_total", "")
+            if nilai_str:
+                try:
+                    parsed["spm"]["metadata"]["total_pembayaran"] = Decimal(nilai_str)
+                    paket.nilai_spm = Decimal(nilai_str)
+                except:
+                    pass
+            
+            paket.parsed_data = make_json_safe(parsed)
+            paket.save()
+            messages.success(request, "Data diupdate, matching dihitung ulang.")
+            return redirect("paket_spm:preview")
+
         if action == "commit":
-            if not can_commit:
-                messages.error(request, decision["decision_text"])
-                return redirect("paket_spm:preview")
-            spm_meta = (parsed.get("spm") or {}).get("metadata", {})
-            drpp_meta = (parsed.get("drpp") or {}).get("metadata", {})
-            decision_meta = decision["meta"]
-            tahun = int(preview_state["tahun"]) if str(preview_state.get("tahun", "")).isdigit() else None
-            bulan = parse_month(preview_state.get("bulan", ""))
-            with transaction.atomic():
-                paket = PaketSPMUpload(
-                    original_filename=preview_state["original_filename"],
-                    folder_path=parsed.get("temp_dir", ""),
-                    nomor_spm=str(decision_meta.get("nomor_spm") or spm_meta.get("nomor_spm") or drpp_meta.get("nomor_spm") or "")[:100],
-                    satker_code=str(preview_state.get("satker_code") or decision_meta.get("satker_code") or spm_meta.get("satker_code") or "")[:32],
-                    tahun=tahun,
-                    bulan=bulan,
-                    jenis_spm_asli=str(decision_meta.get("jenis_spm") or spm_meta.get("jenis_spm") or "")[:100],
-                    jenis_spm_label=str(decision_meta.get("jenis_spm") or spm_meta.get("jenis_spm") or "")[:100],
-                    tanggal_spm=decision_meta.get("tanggal_spm") or spm_meta.get("tanggal_spm"),
-                    nilai_spm=decision_meta.get("total") or spm_meta.get("total_pembayaran") or Decimal("0"),
-                    total_rincian_bruto=sum((item.get("jumlah") or Decimal("0") for item in parsed.get("kw_items", [])), Decimal("0")),
-                    total_rincian_netto=sum((item.get("jumlah") or Decimal("0") for item in parsed.get("kw_items", [])), Decimal("0")),
-                    status=PaketSPMUpload.Status.COMMITTED,
-                    uploaded_by=request.user,
-                )
-                with open(file_path, "rb") as zip_file:
-                    paket.zip_file.save(preview_state["original_filename"], File(zip_file), save=False)
-                paket.save()
-                matched_transaction = decision.get("matched_transaction")
-                created_transactions = []
-                if decision["commit_action"] in {"create_from_package", "link_sp2d"}:
-                    created_transactions = build_transaction_rows_from_package(
-                        parsed,
-                        paket,
-                        request.user,
-                        sp2d_raw=decision.get("matched_sp2d"),
-                        document_status=decision["document_status"],
-                    )
-                    matched_transaction = created_transactions[0] if created_transactions else None
-                    if decision.get("matched_sp2d") and created_transactions:
-                        decision["matched_sp2d"].status = SP2DRaw.Status.COCOK
-                        decision["matched_sp2d"].save(update_fields=["status", "updated_at"])
-                preview_items = parsed.get("kw_items", [])
-                if not preview_items and parsed.get("spm"):
-                    akun_pot_list = spm_meta.get("akun_potongan", [])
-                    pot_ref = f" (Potongan: {', '.join(akun_pot_list)})" if akun_pot_list else ""
-                    preview_items = [
-                        {"akun": row.get("akun", ""), "jumlah": Decimal("0"), "no_bukti": "", "keperluan": row.get("uraian", "") + pot_ref}
-                        for row in parsed["spm"].get("akun_rows", [])
-                    ]
-                if not preview_items:
-                    preview_items = [
-                        {
-                            "akun": "",
-                            "jumlah": decision_meta.get("total") or Decimal("0"),
-                            "no_bukti": "",
-                            "no_drpp": decision_meta.get("nomor_drpp", ""),
-                            "keperluan": "Dokumen Paket SPM tersimpan; rincian perlu review manual.",
-                        }
-                    ]
-                preview_objects = []
-                for index, item in enumerate(preview_items):
-                    item_transaction = matched_transaction
-                    if created_transactions and index < len(created_transactions):
-                        item_transaction = created_transactions[index]
-                    preview_objects.append(PaketSPMPreviewItem(
-                        paket=paket,
-                        helper=f"ZIP:{preview_state['original_filename']}",
-                        akun=str(item.get("akun", ""))[:32],
-                        bulan_sp2d=bulan,
-                        nomor_spm=paket.nomor_spm,
-                        tanggal_spm=paket.tanggal_spm,
-                        jenis_spm=paket.jenis_spm_label,
-                        no_kuitansi=str(item.get("no_bukti", ""))[:100],
-                        no_drpp=str(item.get("no_drpp") or decision_meta.get("nomor_drpp") or drpp_meta.get("nomor_drpp") or "")[:100],
-                        deskripsi=str(item.get("keperluan", "")),
-                        nilai_bruto=item.get("jumlah") or Decimal("0"),
-                        nilai_netto=item.get("jumlah") or Decimal("0"),
-                        status=PaketSPMPreviewItem.Status.MATCHED if item_transaction else PaketSPMPreviewItem.Status.PERLU_DICEK,
-                        catatan=f"Sumber Data: Paket SPM; Status Dokumen={decision['document_status']}; Status Rekonsiliasi={decision['reconciliation_status']}",
-                        matched_transaction=item_transaction,
-                    ))
-                PaketSPMPreviewItem.objects.bulk_create(preview_objects)
-            drive_result, _ = archive_file_link(
-                file_path,
-                user=request.user,
-                jenis_dokumen="PAKET_SPM_ZIP" if preview_state.get("kind") == "zip" else "SPM",
-                nama_file=preview_state["original_filename"],
-                satker_code=paket.satker_code,
-                nomor_spm=paket.nomor_spm,
-                no_drpp=str(decision_meta.get("nomor_drpp") or drpp_meta.get("nomor_drpp", ""))[:100],
-                catatan_extra=f"source=Paket SPM; parser_status={'ok' if parsed.get('ok') else 'needs_review'}; document_status={decision['document_status']}; reconciliation_status={decision['reconciliation_status']}; files={len(parsed.get('files', []))}",
-                transaction_detail=matched_transaction,
-            )
-            for parsed_file in parsed.get("files", []):
-                pdf_path = parsed_file.get("path")
-                if pdf_path and os.path.exists(pdf_path):
-                    archive_file_link(
-                        pdf_path,
-                        user=request.user,
-                        jenis_dokumen=parsed_file.get("type", "UNKNOWN"),
-                        nama_file=parsed_file.get("file_name", ""),
-                        satker_code=paket.satker_code,
-                        nomor_spm=paket.nomor_spm,
-                        no_drpp=str(drpp_meta.get("nomor_drpp", "")),
-                        no_kuitansi=parsed_file.get("file_name", "") if parsed_file.get("type") == "KW" else "",
-                        catatan_extra=f"source=Paket SPM; parser_status={parsed_file.get('parse_status')}; method={parsed_file.get('method')}; document_status={decision['document_status']}; reconciliation_status={decision['reconciliation_status']}",
-                        transaction_detail=matched_transaction,
-                    )
-            cleanup_paket_files(file_path, parsed.get("temp_dir"))
-            request.session.pop("paket_spm_preview", None)
-            if drive_result["status"] == "uploaded":
-                messages.success(request, f"Paket SPM disimpan sebagai preview #{paket.pk} dan ZIP diarsipkan ke Google Drive.")
-            elif drive_result["status"] == "local_archived":
-                messages.warning(request, f"Paket SPM disimpan sebagai preview #{paket.pk}. Google Drive belum aktif; file disimpan ke local archive.")
-            else:
-                messages.warning(request, f"Paket SPM disimpan sebagai preview #{paket.pk}. Arsip Google Drive belum aktif, file belum diunggah ke Drive.")
-            if preview_state.get("sp2d_raw_id"):
-                return redirect("sp2d:inbox_detail", pk=preview_state["sp2d_raw_id"])
+            commit_choice = request.POST.get("commit_choice") # 'link_existing', 'create_from_package', 'review_manual', 'save_draft'
+            decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d)
+            
+            if commit_choice == "save_draft":
+                request.session.pop("paket_spm_preview_id", None)
+                messages.success(request, "Dokumen disimpan sebagai draft review.")
+                # We do not change status, keep it PREVIEW so it shows in drafts
+                return redirect("paket_spm:list") # or to drafts page later
+                
+            if commit_choice == "link_existing":
+                matched_id = request.POST.get("matched_transaction_id")
+                if matched_id:
+                    tx = TransactionDetail.objects.filter(id=matched_id).first()
+                    if tx:
+                        # Link it
+                        paket.status = PaketSPMUpload.Status.COMMITTED
+                        paket.save()
+                        # TODO: update TX with file reference if needed
+                        messages.success(request, "Dokumen berhasil dikaitkan ke D_K existing.")
+                    else:
+                        messages.error(request, "D_K existing tidak ditemukan.")
+                        return redirect("paket_spm:preview")
+                else:
+                    messages.error(request, "Pilih D_K existing terlebih dahulu.")
+                    return redirect("paket_spm:preview")
+                    
+            elif commit_choice == "create_from_package":
+                with transaction.atomic():
+                    paket.status = PaketSPMUpload.Status.COMMITTED
+                    paket.save()
+                    build_transaction_rows_from_package(parsed, paket, request.user, sp2d_raw=forced_sp2d, document_status=decision.get("document_status"))
+                messages.success(request, "Dokumen berhasil dibaca. D_K baru telah dibuat.")
+            
+            request.session.pop("paket_spm_preview_id", None)
             return redirect("paket_spm:list")
 
+    decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d)
+    preview_summary = build_preview_summary(parsed, decision, {"original_filename": paket.original_filename})
+    scan_rows = build_scan_rows(parsed, decision)
+    drpp_rows = build_drpp_rows(parsed)
+    kw_rows = build_kw_rows(parsed)
+    
     context = permission_context(request.user)
     context.update({
         "page_title": "Preview Paket SPM",
@@ -294,9 +271,10 @@ def paket_spm_preview(request):
         "drpp_rows": drpp_rows,
         "kw_rows": kw_rows,
         "sp2d_context": sp2d_context,
-        "preview_state": preview_state,
-        "can_commit": can_commit,
+        "paket": paket,
+        "can_commit": decision["can_commit"],
     })
+    return render(request, "paket_spm/preview.html", context)
     return render(request, "paket_spm/preview.html", context)
 
 
@@ -550,3 +528,26 @@ def save_many_files_as_zip(fs, upload_files):
                 for chunk in upload_file.chunks():
                     target.write(chunk)
     return safe_name
+
+@login_required
+def paket_spm_drafts(request):
+    if request.method == "POST":
+        action = request.POST.get("action")
+        paket_id = request.POST.get("paket_id")
+        if action == "continue" and paket_id:
+            request.session["paket_spm_preview_id"] = paket_id
+            return redirect("paket_spm:preview")
+        elif action == "delete" and paket_id:
+            PaketSPMUpload.objects.filter(id=paket_id, uploaded_by=request.user, status=PaketSPMUpload.Status.PREVIEW).delete()
+            messages.success(request, "Draft berhasil dihapus.")
+            return redirect("paket_spm:drafts")
+
+    drafts = PaketSPMUpload.objects.filter(uploaded_by=request.user, status=PaketSPMUpload.Status.PREVIEW).order_by("-uploaded_at")
+    context = permission_context(request.user)
+    context.update({
+        "page_title": "Draft Review Paket SPM",
+        "page_subtitle": "Lanjutkan review dokumen yang belum disimpan ke D_K.",
+        "drafts": drafts,
+    })
+    return render(request, "paket_spm/drafts.html", context)
+

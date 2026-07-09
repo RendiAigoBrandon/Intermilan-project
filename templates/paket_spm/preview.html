@@ -11,7 +11,9 @@
   </div>
 
   {% for warning in parsed.warnings %}<div class="note-box danger">{{ warning }}</div>{% endfor %}
-  {% for note in decision.notes %}<div class="note-box {% if decision.document_status == 'Belum Lengkap' %}warning{% else %}danger{% endif %}">{{ note }}</div>{% endfor %}
+  {% for note in decision.notes %}<div
+    class="note-box {% if decision.document_status == 'Belum Lengkap' %}warning{% else %}danger{% endif %}">{{ note }}
+  </div>{% endfor %}
 
   {% if sp2d_context %}
   <div class="note-box">
@@ -85,15 +87,19 @@
           <td>{{ row.nomor_drpp }}</td>
           <td>{{ row.no_kw }}</td>
           <td>{{ row.akun }}</td>
-          <td class="col-nominal" title="{{ row.jumlah_pengeluaran|id_number }}">{{ row.jumlah_pengeluaran|id_number }}</td>
+          <td class="col-nominal" title="{{ row.jumlah_pengeluaran|id_number }}">{{ row.jumlah_pengeluaran|id_number }}
+          </td>
           <td class="col-nominal" title="{{ row.jumlah_potongan|id_number }}">{{ row.jumlah_potongan|id_number }}</td>
           <td class="col-nominal" title="{{ row.nilai|id_number }}">{{ row.nilai|id_number }}</td>
           <td><span class="status-pill">{{ preview_summary.document_status }}</span></td>
           <td>{{ row.matching_status }}</td>
-          <td title="{{ row.notes_user|default:row.notes }}">{{ row.notes_user|default:row.notes|truncatechars:120 }}</td>
+          <td title="{{ row.notes_user|default:row.notes }}">{{ row.notes_user|default:row.notes|truncatechars:120 }}
+          </td>
         </tr>
         {% empty %}
-        <tr><td colspan="16" class="empty">Tidak ada PDF yang bisa diproses.</td></tr>
+        <tr>
+          <td colspan="16" class="empty">Tidak ada PDF yang bisa diproses.</td>
+        </tr>
         {% endfor %}
       </tbody>
     </table>
@@ -103,7 +109,16 @@
   <h3 class="section-title mt">DRPP Terbaca</h3>
   <div class="table-wrap">
     <table class="data-table">
-      <thead><tr><th>No DRPP</th><th>No SPM terkait</th><th>Jumlah KW/Item</th><th class="col-nominal">Total Nilai</th><th>Status</th><th>File Sumber</th></tr></thead>
+      <thead>
+        <tr>
+          <th>No DRPP</th>
+          <th>No SPM terkait</th>
+          <th>Jumlah KW/Item</th>
+          <th class="col-nominal">Total Nilai</th>
+          <th>Status</th>
+          <th>File Sumber</th>
+        </tr>
+      </thead>
       <tbody>
         {% for row in drpp_rows %}
         <tr>
@@ -124,7 +139,16 @@
   <h3 class="section-title mt">Item KW/Bukti</h3>
   <div class="table-wrap">
     <table class="data-table">
-      <thead><tr><th>No DRPP</th><th>No KW/Bukti</th><th>Akun</th><th class="col-nominal">Jumlah</th><th>Keperluan</th><th>Status</th></tr></thead>
+      <thead>
+        <tr>
+          <th>No DRPP</th>
+          <th>No KW/Bukti</th>
+          <th>Akun</th>
+          <th class="col-nominal">Jumlah</th>
+          <th>Keperluan</th>
+          <th>Status</th>
+        </tr>
+      </thead>
       <tbody>
         {% for item in kw_rows %}
         <tr>
@@ -145,108 +169,224 @@
     <summary><strong>&#128268; Lihat Detail Teknis OCR</strong></summary>
     <div style="margin-top:12px;">
       {% for row in scan_rows %}
-        {% if row.warnings_technical %}
-        <div style="margin-bottom:8px;">
-          <strong>{{ row.file_name|truncatechars:60 }}</strong> &mdash;
-          {% for w in row.warnings_technical %}<span class="muted">{{ w }}</span>{% if not forloop.last %}; {% endif %}{% endfor %}
-        </div>
-        {% endif %}
+      {% if row.warnings_technical %}
+      <div style="margin-bottom:8px;">
+        <strong>{{ row.file_name|truncatechars:60 }}</strong> &mdash;
+        {% for w in row.warnings_technical %}<span class="muted">{{ w }}</span>{% if not forloop.last %}; {% endif %}{%
+        endfor %}
+      </div>
+      {% endif %}
       {% endfor %}
       {% if parsed.spm %}
-        <h3 style="margin-top:16px;">SPM &mdash; {{ parsed.spm.file_name }}</h3>
-        <p class="muted">
-          Engine dicoba: {{ parsed.spm.engines_tried|join:", "|default:"-" }}{% if parsed.spm.confidence %} &mdash; Confidence {{ parsed.spm.confidence|floatformat:0 }}%{% endif %}.<br>
-          Native text: {{ parsed.spm.native_text_length|default:0 }} karakter.
-          Tesseract: {% if parsed.spm.tesseract_called %}dipanggil, {{ parsed.spm.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
-          {{ parsed.spm.tesseract_reason|default:"" }}
-        </p>
-        <details style="margin-left:12px;">
-          <summary class="muted">Detail per halaman SPM</summary>
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead><tr><th>Halaman</th><th>Engine</th><th>Status</th><th>Confidence</th><th>Cuplikan Teks</th><th>Warning</th></tr></thead>
-              <tbody>
-                {% for page in parsed.spm.page_details %}
-                <tr>
-                  <td>{{ page.page|default:page.page_number }}</td>
-                  <td>{{ page.engine|default:page.method }}</td>
-                  <td>{{ page.status }}</td>
-                  <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
-                  <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:160 }}</td>
-                  <td>{{ page.warnings|join:"; " }}</td>
-                </tr>
-                {% empty %}
-                <tr><td colspan="6" class="empty">Detail OCR SPM belum tersedia.</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </details>
-
-        <details style="margin-top:12px; margin-left:12px;">
-          <summary class="muted">Nomor SPM resolusi internal</summary>
-          <table class="data-table" style="max-width:600px;">
+      <h3 style="margin-top:16px;">SPM &mdash; {{ parsed.spm.file_name }}</h3>
+      <p class="muted">
+        Engine dicoba: {{ parsed.spm.engines_tried|join:", "|default:"-" }}{% if parsed.spm.confidence %} &mdash;
+        Confidence {{ parsed.spm.confidence|floatformat:0 }}%{% endif %}.<br>
+        Native text: {{ parsed.spm.native_text_length|default:0 }} karakter.
+        Tesseract: {% if parsed.spm.tesseract_called %}dipanggil, {{ parsed.spm.tesseract_text_length|default:0 }}
+        karakter{% else %}tidak dipanggil{% endif %}.
+        {{ parsed.spm.tesseract_reason|default:"" }}
+      </p>
+      <details style="margin-left:12px;">
+        <summary class="muted">Detail per halaman SPM</summary>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Halaman</th>
+                <th>Engine</th>
+                <th>Status</th>
+                <th>Confidence</th>
+                <th>Cuplikan Teks</th>
+                <th>Warning</th>
+              </tr>
+            </thead>
             <tbody>
-              {% with meta=decision.meta %}
-              <tr><td>No SPM OCR</td><td><strong>{{ meta.nomor_spm_ocr|default:"-" }}</strong></td></tr>
-              <tr><td>No SPM dari Filename</td><td>{{ meta.nomor_spm_filename|default:"-" }}</td></tr>
-              <tr><td>No SPM Matching D_K/SP2D</td><td>{{ meta.nomor_spm_matching|default:"-" }}</td></tr>
-              <tr><td>No SPM Final</td><td><strong>{{ meta.nomor_spm_final|default:"-" }}</strong></td></tr>
-              <tr><td>Status Review</td><td>{{ meta.nomor_spm_review_status|default:"-" }}</td></tr>
-              <tr><td>Alasan</td><td class="muted">{{ meta.nomor_spm_reason|default:"-" }}</td></tr>
-              {% endwith %}
+              {% for page in parsed.spm.page_details %}
+              <tr>
+                <td>{{ page.page|default:page.page_number }}</td>
+                <td>{{ page.engine|default:page.method }}</td>
+                <td>{{ page.status }}</td>
+                <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
+                <td title="{{ page.text|default:page.extracted_text }}">{{
+                  page.text|default:page.extracted_text|truncatechars:160 }}</td>
+                <td>{{ page.warnings|join:"; " }}</td>
+              </tr>
+              {% empty %}
+              <tr>
+                <td colspan="6" class="empty">Detail OCR SPM belum tersedia.</td>
+              </tr>
+              {% endfor %}
             </tbody>
           </table>
-        </details>
+        </div>
+      </details>
+
+      <details style="margin-top:12px; margin-left:12px;">
+        <summary class="muted">Nomor SPM resolusi internal</summary>
+        <table class="data-table" style="max-width:600px;">
+          <tbody>
+            {% with meta=decision.meta %}
+            <tr>
+              <td>No SPM OCR</td>
+              <td><strong>{{ meta.nomor_spm_ocr|default:"-" }}</strong></td>
+            </tr>
+            <tr>
+              <td>No SPM dari Filename</td>
+              <td>{{ meta.nomor_spm_filename|default:"-" }}</td>
+            </tr>
+            <tr>
+              <td>No SPM Matching D_K/SP2D</td>
+              <td>{{ meta.nomor_spm_matching|default:"-" }}</td>
+            </tr>
+            <tr>
+              <td>No SPM Final</td>
+              <td><strong>{{ meta.nomor_spm_final|default:"-" }}</strong></td>
+            </tr>
+            <tr>
+              <td>Status Review</td>
+              <td>{{ meta.nomor_spm_review_status|default:"-" }}</td>
+            </tr>
+            <tr>
+              <td>Alasan</td>
+              <td class="muted">{{ meta.nomor_spm_reason|default:"-" }}</td>
+            </tr>
+            {% endwith %}
+          </tbody>
+        </table>
+      </details>
       {% endif %}
       {% for drpp in parsed.drpps %}
-        <h3 style="margin-top:16px;">DRPP &mdash; {{ drpp.file_name }}</h3>
-        <p class="muted">
-          Engine dicoba: {{ drpp.engines_tried|join:", "|default:"-" }}{% if drpp.confidence %} &mdash; Confidence {{ drpp.confidence|floatformat:0 }}%{% endif %}.<br>
-          Native text: {{ drpp.native_text_length|default:0 }} karakter.
-          Tesseract: {% if drpp.tesseract_called %}dipanggil, {{ drpp.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
-          {{ drpp.tesseract_reason|default:"" }}
-        </p>
-        <details style="margin-left:12px;">
-          <summary class="muted">Detail per halaman DRPP</summary>
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead><tr><th>Halaman</th><th>Engine</th><th>Status</th><th>Confidence</th><th>Cuplikan Teks</th><th>Warning</th></tr></thead>
-              <tbody>
-                {% for page in drpp.page_details %}
-                <tr>
-                  <td>{{ page.page|default:page.page_number }}</td>
-                  <td>{{ page.engine|default:page.method }}</td>
-                  <td>{{ page.status }}</td>
-                  <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
-                  <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:160 }}</td>
-                  <td>{{ page.warnings|join:"; " }}</td>
-                </tr>
-                {% empty %}
-                <tr><td colspan="6" class="empty">Detail OCR DRPP belum tersedia.</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </details>
+      <h3 style="margin-top:16px;">DRPP &mdash; {{ drpp.file_name }}</h3>
+      <p class="muted">
+        Engine dicoba: {{ drpp.engines_tried|join:", "|default:"-" }}{% if drpp.confidence %} &mdash; Confidence {{
+        drpp.confidence|floatformat:0 }}%{% endif %}.<br>
+        Native text: {{ drpp.native_text_length|default:0 }} karakter.
+        Tesseract: {% if drpp.tesseract_called %}dipanggil, {{ drpp.tesseract_text_length|default:0 }} karakter{% else
+        %}tidak dipanggil{% endif %}.
+        {{ drpp.tesseract_reason|default:"" }}
+      </p>
+      <details style="margin-left:12px;">
+        <summary class="muted">Detail per halaman DRPP</summary>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Halaman</th>
+                <th>Engine</th>
+                <th>Status</th>
+                <th>Confidence</th>
+                <th>Cuplikan Teks</th>
+                <th>Warning</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for page in drpp.page_details %}
+              <tr>
+                <td>{{ page.page|default:page.page_number }}</td>
+                <td>{{ page.engine|default:page.method }}</td>
+                <td>{{ page.status }}</td>
+                <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
+                <td title="{{ page.text|default:page.extracted_text }}">{{
+                  page.text|default:page.extracted_text|truncatechars:160 }}</td>
+                <td>{{ page.warnings|join:"; " }}</td>
+              </tr>
+              {% empty %}
+              <tr>
+                <td colspan="6" class="empty">Detail OCR DRPP belum tersedia.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
       {% empty %}
-        {% if parsed.drpp %}
-        <h3 style="margin-top:16px;">DRPP &mdash; {{ parsed.drpp.file_name }}</h3>
-        <p class="muted">
-          Engine dicoba: {{ parsed.drpp.engines_tried|join:", "|default:"-" }}.<br>
-          Native text: {{ parsed.drpp.native_text_length|default:0 }} karakter.
-          Tesseract: {% if parsed.drpp.tesseract_called %}dipanggil, {{ parsed.drpp.tesseract_text_length|default:0 }} karakter{% else %}tidak dipanggil{% endif %}.
-          {{ parsed.drpp.tesseract_reason|default:"" }}
-        </p>
-        {% endif %}
+      {% if parsed.drpp %}
+      <h3 style="margin-top:16px;">DRPP &mdash; {{ parsed.drpp.file_name }}</h3>
+      <p class="muted">
+        Engine dicoba: {{ parsed.drpp.engines_tried|join:", "|default:"-" }}.<br>
+        Native text: {{ parsed.drpp.native_text_length|default:0 }} karakter.
+        Tesseract: {% if parsed.drpp.tesseract_called %}dipanggil, {{ parsed.drpp.tesseract_text_length|default:0 }}
+        karakter{% else %}tidak dipanggil{% endif %}.
+        {{ parsed.drpp.tesseract_reason|default:"" }}
+      </p>
+      {% endif %}
       {% endfor %}
     </div>
   </details>
 
-  <form method="post" class="mt" style="display:flex; gap:10px; flex-wrap:wrap;">
+  <h3 class="section-title mt">Ubah / Perbaiki Data Pembacaan</h3>
+  <div class="table-wrap" style="padding: 16px; background: var(--bg-card);">
+    <form method="post" style="display:flex; flex-wrap:wrap; gap: 16px; align-items: flex-end;">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="recalculate">
+
+      <div style="flex: 1; min-width: 200px;">
+        <label style="display:block; margin-bottom:4px; font-weight:bold; font-size: 13px;">No SPM</label>
+        <input type="text" name="nomor_spm" value="{{ paket.nomor_spm|default:'' }}" class="form-control"
+          style="width:100%;">
+      </div>
+
+      <div style="flex: 1; min-width: 200px;">
+        <label style="display:block; margin-bottom:4px; font-weight:bold; font-size: 13px;">No SP2D</label>
+        <input type="text" name="nomor_sp2d" value="{{ paket.nomor_sp2d|default:'' }}" class="form-control"
+          style="width:100%;">
+      </div>
+
+      <div style="flex: 1; min-width: 200px;">
+        <label style="display:block; margin-bottom:4px; font-weight:bold; font-size: 13px;">No Invoice</label>
+        <input type="text" name="nomor_invoice" value="{{ paket.nomor_invoice|default:'' }}" class="form-control"
+          style="width:100%;">
+      </div>
+
+      <div style="flex: 1; min-width: 200px;">
+        <label style="display:block; margin-bottom:4px; font-weight:bold; font-size: 13px;">Satker</label>
+        <input type="text" name="satker_code" value="{{ paket.satker_code|default:'' }}" class="form-control"
+          style="width:100%;">
+      </div>
+
+      <div style="flex: 0 0 auto;">
+        <button type="submit" class="btn btn-sm btn-info" style="margin:0;">Hitung Ulang Matching</button>
+      </div>
+    </form>
+  </div>
+
+  <form method="post" class="mt"
+    style="background: var(--bg-card); padding: 16px; border: 1px solid #ddd; border-radius: 8px;">
     {% csrf_token %}
-    <button class="btn primary" name="action" value="commit" {% if not can_commit %}disabled{% endif %}>{{ decision.commit_label }}</button>
-    <button class="btn ghost" name="action" value="cancel">Batal</button>
+    <input type="hidden" name="action" value="commit">
+
+    <h3 class="section-title">Pilihan Aksi</h3>
+
+    {% if decision.matched_transaction %}
+    <div style="margin-bottom: 8px;">
+      <label style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
+        <input type="radio" name="commit_choice" value="link_existing" checked>
+        <strong>Kaitkan Dokumen ke Data Existing</strong> (D_K #{{ decision.matched_transaction.id }})
+      </label>
+      <input type="hidden" name="matched_transaction_id" value="{{ decision.matched_transaction.id }}">
+    </div>
+    {% endif %}
+
+    <div style="margin-bottom: 8px;">
+      <label style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
+        <input type="radio" name="commit_choice" value="create_from_package" {% if not decision.matched_transaction
+          %}checked{% endif %}>
+        <strong>Buat D_K Baru dari Hasil Scan</strong>
+      </label>
+    </div>
+
+    <div style="margin-bottom: 16px;">
+      <label style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
+        <input type="radio" name="commit_choice" value="save_draft">
+        <strong>Simpan ke Draft (Selesaikan Nanti)</strong>
+      </label>
+    </div>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn primary" type="submit" {% if not can_commit %}disabled{% endif %}>Jalankan Aksi</button>
+      <button class="btn ghost" type="submit" name="action" value="cancel" formnovalidate>Batal (Hapus Draft)</button>
+    </div>
   </form>
 </section>
 {% endblock %}

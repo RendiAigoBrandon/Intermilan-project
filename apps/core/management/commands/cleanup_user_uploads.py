@@ -175,7 +175,7 @@ class Command(BaseCommand):
                 | Q(original_filename__icontains="KW")
             )
             if filename:
-                upload_filter |= Q(original_filename__icontains=filename) | Q(stored_filename__icontains=filename) | Q(notes__icontains=filename)
+                upload_filter &= (Q(original_filename__icontains=filename) | Q(stored_filename__icontains=filename) | Q(notes__icontains=filename))
             qs = qs | DocumentUpload.objects.filter(upload_filter)
         if uploaded_after:
             qs = qs.filter(uploaded_at__gte=uploaded_after)

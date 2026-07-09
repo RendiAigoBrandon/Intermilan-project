@@ -1,0 +1,66 @@
+{% extends 'layouts/base.html' %}
+{% load static %}
+{% load humanize %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header pb-0">
+                <h6>Riwayat Draft Paket SPM</h6>
+                <p class="text-sm">Daftar Paket SPM yang belum diselesaikan proses reviewnya.</p>
+            </div>
+            <div class="card-body px-0 pt-0 pb-2">
+                <div class="table-responsive p-0">
+                    <table class="table align-items-center mb-0">
+                        <thead>
+                            <tr>
+                                <th class="text-uppercase text-secondary text-xxs font-weight-bolder opacity-7">Tgl Upload</th>
+                                <th class="text-uppercase text-secondary text-xxs font-weight-bolder opacity-7">File / SPM</th>
+                                <th class="text-uppercase text-secondary text-xxs font-weight-bolder opacity-7">Satker</th>
+                                <th class="text-uppercase text-secondary text-xxs font-weight-bolder opacity-7">Nilai</th>
+                                <th class="text-center text-uppercase text-secondary text-xxs font-weight-bolder opacity-7">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in drafts %}
+                            <tr>
+                                <td>
+                                    <span class="text-secondary text-xs font-weight-bold">{{ row.uploaded_at|date:"d M Y H:i" }}</span>
+                                </td>
+                                <td>
+                                    <div class="d-flex px-2 py-1">
+                                        <div class="d-flex flex-column justify-content-center">
+                                            <h6 class="mb-0 text-sm">{{ row.original_filename }}</h6>
+                                            <p class="text-xs text-secondary mb-0">No SPM: {{ row.nomor_spm|default:"-" }}</p>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="text-secondary text-xs font-weight-bold">{{ row.satker_code|default:"-" }}</span>
+                                </td>
+                                <td>
+                                    <span class="text-secondary text-xs font-weight-bold">Rp {{ row.nilai_spm|floatformat:0|intcomma }}</span>
+                                </td>
+                                <td class="align-middle text-center">
+                                    <form method="post" class="d-inline">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="paket_id" value="{{ row.id }}">
+                                        <button type="submit" name="action" value="continue" class="btn btn-sm btn-info mb-0">Lanjutkan Preview</button>
+                                        <button type="submit" name="action" value="delete" class="btn btn-sm btn-outline-danger mb-0" onclick="return confirm('Yakin hapus draft ini?');">Hapus</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="5" class="text-center py-4">Tidak ada draft Paket SPM.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock content %}
