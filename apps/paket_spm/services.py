@@ -185,6 +185,9 @@ def evaluate_document_status(parsed):
         return STATUS_REVIEW_OCR, ["Nilai total belum terbaca."]
     if not meta["akun_count"]:
         return STATUS_REVIEW_OCR, ["Akun/COA atau item pengeluaran belum terbaca."]
+    # Hanya SPM saja yang diupload — DRPP dan KW belum ada
+    if meta["has_spm"] and not meta["has_drpp"] and not meta["kw_count"]:
+        return STATUS_BELUM_LENGKAP, ["SPM berhasil dibaca. DRPP dan KW/Bukti pengeluaran belum diupload."]
     return STATUS_LENGKAP, notes
 
 
@@ -335,6 +338,21 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "duplicate": None,
         }
 
+    if document_status == STATUS_BELUM_LENGKAP and matched_transaction:
+        return {
+            "document_status": document_status,
+            "reconciliation_status": REKON_COCOK_DK,
+            "commit_action": "link_existing",
+            "commit_label": "Kaitkan SPM ke Data Existing",
+            "can_commit": True,
+            "decision_text": "SPM akan dikaitkan ke data D_K existing. Checklist SPM jadi Ada; DRPP dan KW tetap Belum Ada sampai diupload.",
+            "notes": notes,
+            "meta": meta,
+            "matched_transaction": matched_transaction,
+            "matched_sp2d": matched_sp2d,
+            "duplicate": None,
+        }
+
     if document_status == STATUS_BELUM_LENGKAP:
         return {
             "document_status": document_status,
@@ -367,17 +385,22 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
 
 def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP):
     meta = package_metadata(parsed)
+    spm_meta = (parsed.get("spm") or {}).get("metadata", {})
+    # Nilai bruto = jumlah_pengeluaran SPM; netto = total_pembayaran (setelah potongan)
+    nilai_bruto_spm = money_value(spm_meta.get("jumlah_pengeluaran") or meta["total"])
+    nilai_netto_spm = money_value(spm_meta.get("total_pembayaran") or meta["total"])
     items = parsed.get("kw_items") or []
     if not items and parsed.get("spm"):
         items = [
-            {"akun": row.get("akun", ""), "jumlah": Decimal("0"), "no_bukti": "", "keperluan": row.get("uraian", "")}
+            {"akun": row.get("akun", ""), "jumlah": nilai_netto_spm, "no_bukti": "", "keperluan": row.get("uraian", "")}
             for row in parsed["spm"].get("akun_rows", [])
         ]
     if not items:
-        items = [{"akun": "", "jumlah": meta["total"], "no_bukti": "", "keperluan": "Hasil Paket SPM; perlu review rincian."}]
+        items = [{"akun": "", "jumlah": nilai_netto_spm, "no_bukti": "", "keperluan": "Hasil Paket SPM; perlu review rincian."}]
     rows = []
     for item in items:
-        amount = money_value(item.get("jumlah"))
+        amount_netto = money_value(item.get("jumlah")) or nilai_netto_spm
+        amount_bruto = nilai_bruto_spm if nilai_bruto_spm > amount_netto else amount_netto
         rows.append(
             TransactionDetail(
                 satker_code=paket.satker_code or meta["satker_code"],
@@ -392,8 +415,8 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
                 no_kuitansi=str(item.get("no_bukti", ""))[:100],
                 no_drpp=str(item.get("no_drpp") or meta["nomor_drpp"])[:100],
                 deskripsi=str(item.get("keperluan", "") or "Data dibuat dari Paket SPM OCR.")[:1000],
-                nilai_bruto=amount,
-                nilai_netto=amount,
+                nilai_bruto=amount_bruto,
+                nilai_netto=amount_netto,
                 pembebanan="Paket SPM OCR",
                 status_detail=(
                     TransactionDetail.StatusDetail.LENGKAP
@@ -405,3 +428,4 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
             )
         )
     return TransactionDetail.objects.bulk_create(rows)
+

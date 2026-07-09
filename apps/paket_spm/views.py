@@ -357,6 +357,33 @@ def build_preview_summary(parsed, decision, preview_state):
     }
 
 
+# Kata kunci warning yang bersifat teknis -- tidak perlu tampil ke operator
+_TECHNICAL_WARNING_PATTERNS = [
+    "paddleocr",
+    "ocr_enable",
+    "pdf gabungan terdeteksi",
+    "native text",
+    "tesseract",
+    "engine=",
+    "engine dicoba",
+    "raw_text",
+    "tidak dipakai sebagai no spm",
+]
+
+
+def _split_warnings(warnings):
+    """Pisahkan warnings menjadi (notes_user, warnings_technical)."""
+    notes_user = []
+    warnings_technical = []
+    for w in (warnings or []):
+        lower = w.lower()
+        if any(pattern in lower for pattern in _TECHNICAL_WARNING_PATTERNS):
+            warnings_technical.append(w)
+        else:
+            notes_user.append(w)
+    return notes_user, warnings_technical
+
+
 def build_scan_rows(parsed, decision):
     meta = decision.get("meta", {})
     matching_number = meta.get("nomor_spm_matching") or "-"
@@ -392,6 +419,9 @@ def build_scan_rows(parsed, decision):
             akun = kw.get("akun", "")
             nilai = kw.get("jumlah") or Decimal("0")
             row_meta = {"nomor_drpp": kw.get("no_drpp", ""), "nomor_spm": meta.get("nomor_spm", "")}
+        all_warnings = item.get("warnings") or []
+        notes_user, warnings_technical = _split_warnings(all_warnings)
+        user_keterangan = "; ".join(notes_user) if notes_user else (decision.get("notes", [""])[0] if decision.get("notes") else "-")
         rows.append(
             {
                 "no": index,
@@ -415,11 +445,15 @@ def build_scan_rows(parsed, decision):
                 "method": item.get("method") or "-",
                 "ocr_status": item.get("parse_status") or item.get("status") or "-",
                 "matching_status": decision.get("reconciliation_status") or "-",
-                "notes": "; ".join(item.get("warnings") or []) or meta.get("nomor_spm_reason") or "-",
+                "notes": "; ".join(all_warnings) or "-",
+                "notes_user": user_keterangan,
+                "warnings_technical": warnings_technical,
             }
         )
     if not rows and parsed.get("spm"):
         spm_meta = parsed["spm"].get("metadata", {})
+        all_warnings = parsed["spm"].get("warnings") or []
+        notes_user, warnings_technical = _split_warnings(all_warnings)
         rows.append(
             {
                 "no": 1,
@@ -436,14 +470,16 @@ def build_scan_rows(parsed, decision):
                 "nomor_invoice": spm_meta.get("nomor_invoice") or "-",
                 "nomor_drpp": spm_meta.get("nomor_drpp") or "-",
                 "no_kw": "-",
-                "akun": "-",
+                "akun": ", ".join(parsed["spm"].get("akun_rows") and [r.get("akun", "") for r in parsed["spm"]["akun_rows"]] or []) or "-",
                 "jumlah_pengeluaran": spm_meta.get("jumlah_pengeluaran") or Decimal("0"),
                 "jumlah_potongan": spm_meta.get("jumlah_potongan") or Decimal("0"),
                 "nilai": spm_meta.get("total_pembayaran") or Decimal("0"),
                 "method": parsed["spm"].get("method") or "-",
                 "ocr_status": parsed["spm"].get("status") or "-",
                 "matching_status": decision.get("reconciliation_status") or "-",
-                "notes": "; ".join(parsed["spm"].get("warnings") or []) or "-",
+                "notes": "; ".join(all_warnings) or "-",
+                "notes_user": "; ".join(notes_user) or decision.get("notes", [""])[0] if decision.get("notes") else "-",
+                "warnings_technical": warnings_technical,
             }
         )
     return rows
