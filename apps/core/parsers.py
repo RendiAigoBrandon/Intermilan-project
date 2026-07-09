@@ -548,6 +548,7 @@ def parse_spm_pdf(file_path, ocr=False):
     pembebanan_values = sorted(set(_RE_PEMBEBANAN.findall(upper)))
 
     # Ekstrak Akun dari pola COA dan teks bebas
+    # Ekstrak Akun dari pola COA dan teks bebas
     coa_pattern = re.findall(r"\b\d{4,6}\.[0-9A-Z]{2,4}\.([4589]\d{5})\b", upper)
     dot_pattern = re.findall(r"\.([4589]\d{5})\.", upper)
     standalone = re.findall(r"\b([4589]\d{5})\b", upper)
@@ -557,14 +558,31 @@ def parse_spm_pdf(file_path, ocr=False):
     akun_pengeluaran = []
     akun_potongan = []
     
-    for cand in coa_pattern + dot_pattern + standalone:
+    # Prioritaskan coa_pattern dan dot_pattern
+    for cand in coa_pattern + dot_pattern:
         if cand == satker_c or cand == text_sp2d:
             continue
         if cand.startswith("5"):
             if cand not in akun_pengeluaran:
                 akun_pengeluaran.append(cand)
-        elif cand.startswith("4") or cand.startswith("8") or cand.startswith("9"):
+        elif cand.startswith("4") or cand.startswith("8"):
             if cand not in akun_potongan:
+                akun_potongan.append(cand)
+
+    # Tambah standalone hanya jika coa_pattern belum dapat akun 5
+    if not akun_pengeluaran:
+        for cand in standalone:
+            if cand == satker_c or cand == text_sp2d:
+                continue
+            if cand.startswith("5") and cand not in akun_pengeluaran:
+                akun_pengeluaran.append(cand)
+                
+    # Tambah standalone untuk potongan hanya jika spesifik 8xxxxx, menghindari kode aneh
+    if not akun_potongan:
+        for cand in standalone:
+            if cand == satker_c or cand == text_sp2d:
+                continue
+            if cand.startswith("8") and cand not in akun_potongan:
                 akun_potongan.append(cand)
                 
     akun_pengeluaran.sort()
@@ -598,52 +616,38 @@ def parse_spm_pdf(file_path, ocr=False):
     if extracted["method"] == "failed":
         status = "failed" if not extracted["warnings"] else "needs_manual_review"
 
-    # ── Resolusi nomor SPM ───────────────────────────────────────────────────
+    # ── Resolusi nomor SPM Utama (D_K) ───────────────────────────────────────────────────
     filename_spm = guess_number_from_filename(file_path, "SPM")
     warnings = list(extracted["warnings"])
 
-    # Jika filename cocok dengan No SPP, atau memiliki angka utama yang sama dengan No SPM (00074T vs 00074A)
-    # maka jangan anggap sebagai konflik SPM
-    is_spp_package = False
-    if filename_spm and text_spm and filename_spm != text_spm:
-        if text_spp and filename_spm == text_spp:
-            is_spp_package = True
-        else:
-            m_file = re.search(r"(\d{3,6})", filename_spm)
-            m_spm = re.search(r"(\d{3,6})", text_spm)
-            if m_file and m_spm and m_file.group(1) == m_spm.group(1):
-                is_spp_package = True
-                text_spp = filename_spm  # Jadikan filename sebagai No SPP
+    # Prioritas Nomor SPM Utama D_K:
+    # 1. filename
+    # 2. nomor SPP/Invoice (00074T/xxx)
+    nomor_spm_utama = filename_spm
+    source_utama = "filename"
+    if not nomor_spm_utama and text_invoice:
+        m = re.search(r"^([A-Z0-9]+)/", text_invoice)
+        if m:
+            nomor_spm_utama = m.group(1)
+            source_utama = "invoice/spp"
 
-    if is_spp_package:
-        number_decision = resolve_spm_number(
-            "",
-            text_spm,
-            extracted.get("confidence", 0.0),
-            extracted.get("method", ""),
-        )
-        warnings.append(
-            f"Info: Filename ({filename_spm}) dianggap sebagai nama paket/No SPP. "
-            "Tidak dipakai sebagai No SPM sehingga tidak ada konflik."
-        )
-    else:
-        number_decision = resolve_spm_number(
-            filename_spm,
-            text_spm,
-            extracted.get("confidence", 0.0),
-            extracted.get("method", ""),
-        )
+    nomor_spm_res = {
+        "final": nomor_spm_utama,
+        "source": source_utama,
+        "conflict": False,
+        "review_status": "OK" if nomor_spm_utama else "Perlu Review Nomor",
+        "reason": f"Diambil dari {source_utama} (Prioritas D_K)." if nomor_spm_utama else "Tidak terbaca.",
+        "warning": ""
+    }
 
-    if number_decision["warning"]:
-        warnings.append(number_decision["warning"])
-    if total_pembayaran <= 0:
-        warnings.append("Parser gagal mengambil nilai total pembayaran SPM dari dokumen.")
     if is_combined_package:
         warnings.append(
-            f"PDF gabungan terdeteksi: halaman SPM={spm_page_nums}, halaman SPP={spp_page_nums}. "
-            "No SPM dan No SPP diambil dari halaman yang relevan masing-masing."
+            f"PDF gabungan terdeteksi: halaman SPM={spm_page_nums}, halaman SPP={spp_page_nums}."
         )
 
+    if total_pembayaran <= 0:
+        warnings.append("Parser gagal mengambil nilai total pembayaran SPM dari dokumen.")
+        
     return {
         "file_name": os.path.basename(file_path),
         "page_count": extracted["page_count"],
@@ -662,14 +666,14 @@ def parse_spm_pdf(file_path, ocr=False):
         "paddleocr_text_length": extracted.get("paddleocr_text_length", 0),
         "is_combined_package": is_combined_package,
         "metadata": {
-            "nomor_spm": number_decision["final"],
-            "nomor_spm_final": number_decision["final"],
-            "nomor_spm_final_source": number_decision["source"],
-            "nomor_spm_ocr": text_spm,
+            "nomor_spm": nomor_spm_res["final"],
+            "nomor_spm_final": nomor_spm_res["final"],
+            "nomor_spm_final_source": nomor_spm_res["source"],
+            "nomor_spm_ocr": text_spm,  # Nomor SPM resmi DJPb dari OCR
             "nomor_spm_filename": filename_spm,
-            "nomor_spm_conflict": number_decision["conflict"],
-            "nomor_spm_review_status": number_decision["review_status"],
-            "nomor_spm_reason": number_decision["reason"],
+            "nomor_spm_conflict": nomor_spm_res["conflict"],
+            "nomor_spm_review_status": nomor_spm_res["review_status"],
+            "nomor_spm_reason": nomor_spm_res["reason"],
             "nomor_spp": text_spp,
             "nomor_spp_per_page": no_spp_per_page,
             "nomor_spp_global": spp_match_global.group(1) if spp_match_global else "",

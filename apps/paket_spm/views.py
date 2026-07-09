@@ -411,13 +411,9 @@ def build_scan_rows(parsed, decision):
         if doc_type == "SPM" and parsed.get("spm"):
             row_meta = parsed["spm"].get("metadata", {})
             akun_p = row_meta.get("akun_pengeluaran") or []
-            akun_pot = row_meta.get("akun_potongan") or []
-            akun_str = ", ".join([f"{a} (Pengeluaran)" for a in akun_p])
-            if akun_pot:
-                if akun_str:
-                    akun_str += ", "
-                akun_str += ", ".join([f"{a} (Potongan)" for a in akun_pot])
-            akun = akun_str or ", ".join(parsed["spm"].get("akun_rows") and [r.get("akun", "") for r in parsed["spm"]["akun_rows"]] or []) or "-"
+            akun = ", ".join(akun_p)
+            if not akun:
+                akun = ", ".join(parsed["spm"].get("akun_rows") and [r.get("akun", "") for r in parsed["spm"]["akun_rows"]] or []) or "-"
             nilai = row_meta.get("total_pembayaran") or meta.get("total") or Decimal("0")
         elif doc_type == "DRPP":
             drpp = drpp_by_file.get(base_name) or {}
@@ -481,9 +477,7 @@ def build_scan_rows(parsed, decision):
                 "nomor_drpp": spm_meta.get("nomor_drpp") or "-",
                 "no_kw": "-",
                 "akun": (
-                    ", ".join([f"{a} (Pengeluaran)" for a in spm_meta.get("akun_pengeluaran", [])])
-                    + (", " if spm_meta.get("akun_pengeluaran") and spm_meta.get("akun_potongan") else "")
-                    + ", ".join([f"{a} (Potongan)" for a in spm_meta.get("akun_potongan", [])])
+                    ", ".join([f"{a}" for a in spm_meta.get("akun_pengeluaran", [])])
                 ) or ", ".join(parsed["spm"].get("akun_rows") and [r.get("akun", "") for r in parsed["spm"]["akun_rows"]] or []) or "-",
                 "jumlah_pengeluaran": spm_meta.get("jumlah_pengeluaran") or Decimal("0"),
                 "jumlah_potongan": spm_meta.get("jumlah_potongan") or Decimal("0"),

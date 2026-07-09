@@ -237,7 +237,7 @@ def evaluate_document_status(parsed):
                 f"SPM {jenis_spm}: field berikut belum terbaca dari dokumen: {', '.join(missing_fields)}. "
                 "Periksa lampiran Detail Pengeluaran dan Potongan."
             ]
-        return STATUS_LENGKAP, notes
+        return "Lengkap SPM Utama", ["SPM berhasil dibaca dan field penting lengkap. Dokumen pendukung LS mungkin perlu review manual."]
 
     # GU/GUP/TUP dengan DRPP dan KW: cek field tambahan
     if drpp_kw_required and meta["has_drpp"] and meta["kw_count"]:
