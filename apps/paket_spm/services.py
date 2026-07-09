@@ -450,8 +450,10 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
     nilai_netto_spm = money_value(spm_meta.get("total_pembayaran") or meta["total"])
     items = parsed.get("kw_items") or []
     if not items and parsed.get("spm"):
+        akun_pot_list = spm_meta.get("akun_potongan", [])
+        potongan_ref = f" (Potongan: {', '.join(akun_pot_list)})" if akun_pot_list else ""
         items = [
-            {"akun": row.get("akun", ""), "jumlah": nilai_netto_spm, "no_bukti": "", "keperluan": row.get("uraian", "")}
+            {"akun": row.get("akun", ""), "jumlah": nilai_netto_spm, "no_bukti": "", "keperluan": row.get("uraian", "") + potongan_ref}
             for row in parsed["spm"].get("akun_rows", [])
         ]
     if not items:

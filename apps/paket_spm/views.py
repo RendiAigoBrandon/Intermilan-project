@@ -206,8 +206,10 @@ def paket_spm_preview(request):
                         decision["matched_sp2d"].save(update_fields=["status", "updated_at"])
                 preview_items = parsed.get("kw_items", [])
                 if not preview_items and parsed.get("spm"):
+                    akun_pot_list = spm_meta.get("akun_potongan", [])
+                    pot_ref = f" (Potongan: {', '.join(akun_pot_list)})" if akun_pot_list else ""
                     preview_items = [
-                        {"akun": row.get("akun", ""), "jumlah": Decimal("0"), "no_bukti": "", "keperluan": row.get("uraian", "")}
+                        {"akun": row.get("akun", ""), "jumlah": Decimal("0"), "no_bukti": "", "keperluan": row.get("uraian", "") + pot_ref}
                         for row in parsed["spm"].get("akun_rows", [])
                     ]
                 if not preview_items:
@@ -408,6 +410,14 @@ def build_scan_rows(parsed, decision):
         nilai = Decimal("0")
         if doc_type == "SPM" and parsed.get("spm"):
             row_meta = parsed["spm"].get("metadata", {})
+            akun_p = row_meta.get("akun_pengeluaran") or []
+            akun_pot = row_meta.get("akun_potongan") or []
+            akun_str = ", ".join([f"{a} (Pengeluaran)" for a in akun_p])
+            if akun_pot:
+                if akun_str:
+                    akun_str += ", "
+                akun_str += ", ".join([f"{a} (Potongan)" for a in akun_pot])
+            akun = akun_str or ", ".join(parsed["spm"].get("akun_rows") and [r.get("akun", "") for r in parsed["spm"]["akun_rows"]] or []) or "-"
             nilai = row_meta.get("total_pembayaran") or meta.get("total") or Decimal("0")
         elif doc_type == "DRPP":
             drpp = drpp_by_file.get(base_name) or {}
@@ -470,7 +480,11 @@ def build_scan_rows(parsed, decision):
                 "nomor_invoice": spm_meta.get("nomor_invoice") or "-",
                 "nomor_drpp": spm_meta.get("nomor_drpp") or "-",
                 "no_kw": "-",
-                "akun": ", ".join(parsed["spm"].get("akun_rows") and [r.get("akun", "") for r in parsed["spm"]["akun_rows"]] or []) or "-",
+                "akun": (
+                    ", ".join([f"{a} (Pengeluaran)" for a in spm_meta.get("akun_pengeluaran", [])])
+                    + (", " if spm_meta.get("akun_pengeluaran") and spm_meta.get("akun_potongan") else "")
+                    + ", ".join([f"{a} (Potongan)" for a in spm_meta.get("akun_potongan", [])])
+                ) or ", ".join(parsed["spm"].get("akun_rows") and [r.get("akun", "") for r in parsed["spm"]["akun_rows"]] or []) or "-",
                 "jumlah_pengeluaran": spm_meta.get("jumlah_pengeluaran") or Decimal("0"),
                 "jumlah_potongan": spm_meta.get("jumlah_potongan") or Decimal("0"),
                 "nilai": spm_meta.get("total_pembayaran") or Decimal("0"),

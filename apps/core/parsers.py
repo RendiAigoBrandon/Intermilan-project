@@ -133,7 +133,9 @@ def parse_date(value):
     if isinstance(value, date):
         return value
     try:
-        parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
+        parsed = pd.to_datetime(value, errors="coerce", format="%Y-%m-%d")
+        if pd.isna(parsed):
+            parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
     except Exception:
         return None
     if pd.isna(parsed):
@@ -541,10 +543,37 @@ def parse_spm_pdf(file_path, ocr=False):
     rekening = parse_first_match(text, [r"(?:REKENING|NO\.?\s*REK)\s*[:\-]?\s*([0-9 .-]{5,80})"])
     npwp_nik = parse_first_match(text, [r"(?:NPWP|NIK)\s*[:\-]?\s*([0-9 .-]{10,40})"])
     uraian = parse_first_match(text, [r"(?:URAIAN|KEPERLUAN)\s*[:\-]?\s*(.{10,300})"])
-    akun_values = sorted(set(re.findall(r"\b(5[0-9]{5})\b", upper)))
     amount_values = re.findall(r"\b\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?\b", text)
     # Pembebanan/COA 16-segmen: AAAA.BBB.CCC.DDD.XXXXXX
     pembebanan_values = sorted(set(_RE_PEMBEBANAN.findall(upper)))
+
+    # Ekstrak Akun dari pola COA dan teks bebas
+    coa_pattern = re.findall(r"\b\d{4,6}\.[0-9A-Z]{2,4}\.([4589]\d{5})\b", upper)
+    dot_pattern = re.findall(r"\.([4589]\d{5})\.", upper)
+    standalone = re.findall(r"\b([4589]\d{5})\b", upper)
+    
+    satker_c = satker_match.group(1) if satker_match else ""
+    
+    akun_pengeluaran = []
+    akun_potongan = []
+    
+    for cand in coa_pattern + dot_pattern + standalone:
+        if cand == satker_c or cand == text_sp2d:
+            continue
+        if cand.startswith("5"):
+            if cand not in akun_pengeluaran:
+                akun_pengeluaran.append(cand)
+        elif cand.startswith("4") or cand.startswith("8") or cand.startswith("9"):
+            if cand not in akun_potongan:
+                akun_potongan.append(cand)
+                
+    akun_pengeluaran.sort()
+    akun_potongan.sort()
+    
+    # Format untuk backward compatibility
+    akun_values = akun_pengeluaran.copy()
+    if not akun_values and akun_potongan:
+        akun_values = akun_potongan.copy()
 
     # ── Nilai keuangan ──────────────────────────────────────────────────
     # Prioritas: nilai dari halaman SPM > nilai global dari semua halaman
@@ -662,6 +691,8 @@ def parse_spm_pdf(file_path, ocr=False):
             "spm_page_nums": spm_page_nums,
             "spp_page_nums": spp_page_nums,
             "pembebanan_list": pembebanan_values[:30],
+            "akun_pengeluaran": akun_pengeluaran,
+            "akun_potongan": akun_potongan,
         },
         "akun_rows": [
             {"akun": akun, "uraian": "", "nilai": "", "pembebanan": next(

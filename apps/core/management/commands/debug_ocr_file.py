@@ -106,9 +106,9 @@ class Command(BaseCommand):
                 self.stdout.write(f"  Akun: {row.get('akun', '-')}  Pembebanan: {pembebanan}")
         else:
             self.stdout.write("  Akun: - (tidak terbaca)")
-        pembebanan_list = meta.get("pembebanan_list", [])
-        if pembebanan_list:
-            self.stdout.write(f"  Pembebanan/COA strings: {', '.join(pembebanan_list[:10])}")
+        self.stdout.write(f"  Akun Pengeluaran: {', '.join(meta.get('akun_pengeluaran') or []) or '-'}\n"
+            f"  Akun Potongan: {', '.join(meta.get('akun_potongan') or []) or '-'}\n"
+            f"  Pembebanan/COA strings: {', '.join(meta.get('pembebanan_list') or [])}\n")
         self.stdout.write("")
         self.stdout.write("  --- Nilai Keuangan ---")
         self.stdout.write(f"  Pengeluaran (Bruto): {meta.get('jumlah_pengeluaran') or '-'}")
