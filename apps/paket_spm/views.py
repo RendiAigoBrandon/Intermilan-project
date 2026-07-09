@@ -104,6 +104,15 @@ def paket_spm_list(request):
         bulan = parse_month(request.POST.get("bulan", ""))
         satker = str(request.POST.get("satker_code") or spm_meta.get("satker_code") or "")[:32]
         
+        import json
+        safe_parsed = make_json_safe(parsed)
+        # Validate that it is JSON serializable
+        try:
+            json.dumps(safe_parsed, ensure_ascii=False)
+        except TypeError as e:
+            messages.error(request, f"System Error: Gagal mengkonversi data OCR ke JSON. {str(e)}")
+            return redirect("paket_spm:list")
+
         paket = PaketSPMUpload(
             original_filename=original_filename,
             folder_path=parsed.get("temp_dir", ""),
@@ -121,7 +130,7 @@ def paket_spm_list(request):
             total_rincian_netto=sum((item.get("jumlah") or Decimal("0") for item in parsed.get("kw_items", [])), Decimal("0")),
             status=PaketSPMUpload.Status.PREVIEW,
             uploaded_by=request.user,
-            parsed_data=make_json_safe(parsed),
+            parsed_data=safe_parsed,
         )
         with open(file_path, "rb") as zip_file:
             paket.zip_file.save(original_filename, File(zip_file), save=False)
@@ -212,7 +221,15 @@ def paket_spm_preview(request):
                 except:
                     pass
             
-            paket.parsed_data = make_json_safe(parsed)
+            import json
+            safe_parsed = make_json_safe(parsed)
+            try:
+                json.dumps(safe_parsed, ensure_ascii=False)
+            except TypeError as e:
+                messages.error(request, f"System Error: Gagal mengkonversi update data ke JSON. {str(e)}")
+                return redirect("paket_spm:preview")
+                
+            paket.parsed_data = safe_parsed
             paket.save()
             messages.success(request, "Data diupdate, matching dihitung ulang.")
             return redirect("paket_spm:preview")

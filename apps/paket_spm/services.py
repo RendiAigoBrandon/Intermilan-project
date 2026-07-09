@@ -182,7 +182,15 @@ def analyze_matching_transactions(meta):
             continue  # Hard validation: abaikan/dibuang dari kandidat
 
         candidates.append({
-            "transaction": tx,
+            "transaction": {
+                "id": tx.id,
+                "nomor_spm": tx.nomor_spm,
+                "satker_code": tx.satker_code,
+                "akun": tx.akun,
+                "tanggal_spm": tx.tanggal_spm.isoformat() if tx.tanggal_spm else "",
+                "nilai_bruto": str(tx.nilai_bruto) if tx.nilai_bruto else "0",
+                "nilai_netto": str(tx.nilai_netto) if tx.nilai_netto else "0",
+            },
             "score": score,
             "reasons": reasons,
         })
@@ -319,10 +327,10 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
     matched_transaction, candidates = analyze_matching_transactions(meta)
     matched_sp2d = forced_sp2d or find_matching_sp2d(meta)
     
-    if matched_transaction and matched_transaction.nomor_spm:
-        meta["nomor_spm_matching"] = normalize_key(matched_transaction.nomor_spm)
-    elif candidates and candidates[0]["transaction"].nomor_spm:
-        meta["nomor_spm_matching"] = normalize_key(candidates[0]["transaction"].nomor_spm)
+    if matched_transaction and matched_transaction.get("nomor_spm"):
+        meta["nomor_spm_matching"] = normalize_key(matched_transaction.get("nomor_spm"))
+    elif candidates and candidates[0]["transaction"].get("nomor_spm"):
+        meta["nomor_spm_matching"] = normalize_key(candidates[0]["transaction"].get("nomor_spm"))
     elif matched_sp2d and matched_sp2d.nomor_spm_extracted:
         meta["nomor_spm_matching"] = normalize_key(matched_sp2d.nomor_spm_extracted)
 

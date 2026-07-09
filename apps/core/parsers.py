@@ -1029,21 +1029,44 @@ def parse_paket_spm_zip(zip_path, ocr=False):
 
 def make_json_safe(data):
     """
-    Recursively converts non-serializable objects (datetime, date, Decimal, set, tuple)
+    Recursively converts non-serializable objects (datetime, date, Decimal, set, tuple, etc.)
     into JSON-safe primitive types.
     """
     import datetime
+    import uuid
     from decimal import Decimal
-    
-    if isinstance(data, dict):
+    from pathlib import Path
+    from django.db.models import Model
+    from django.db.models.query import QuerySet
+    from django.core.files.base import File
+
+    if data is None:
+        return None
+    elif isinstance(data, (str, int, float, bool)):
+        return data
+    elif isinstance(data, dict):
         return {str(k): make_json_safe(v) for k, v in data.items()}
-    elif isinstance(data, (list, tuple, set)):
+    elif isinstance(data, (list, tuple, set, QuerySet)):
         return [make_json_safe(v) for v in data]
     elif isinstance(data, (datetime.datetime, datetime.date)):
         return data.isoformat()
     elif isinstance(data, Decimal):
-        return float(data)
-    elif hasattr(data, '__dict__'):
+        return str(data)
+    elif isinstance(data, (uuid.UUID, Path)):
+        return str(data)
+    elif isinstance(data, Model):
+        if hasattr(data, 'id'):
+            return str(data.id)
+        return str(data)
+    elif isinstance(data, File):
+        if hasattr(data, 'name') and data.name:
+            return str(data.name)
         return str(data)
     else:
-        return data
+        try:
+            # Check if it can be JSON serialized natively
+            import json
+            json.dumps(data)
+            return data
+        except (TypeError, ValueError):
+            return str(data)
