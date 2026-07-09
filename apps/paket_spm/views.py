@@ -471,7 +471,13 @@ def build_scan_rows(parsed, decision):
                 "notes": "; ".join(all_warnings) or "-",
                 "notes_user": user_keterangan,
                 "warnings_technical": warnings_technical,
-                "satker": row_meta.get("satker_code") or meta.get("satker_code") or "Perlu Review",
+                "satker": (
+                    f"{row_meta.get('satker_app_code')} - {row_meta.get('satker_app_name')}"
+                    if row_meta.get('satker_app_code')
+                    else f"{row_meta.get('satker_djpb_code')} - {row_meta.get('satker_name_ocr')} (Perlu Mapping)"
+                    if row_meta.get('satker_djpb_code')
+                    else row_meta.get("satker_code") or meta.get("satker_code") or "Perlu Review"
+                ),
             }
         )
     if not rows and parsed.get("spm"):
@@ -506,6 +512,13 @@ def build_scan_rows(parsed, decision):
                 "notes": "; ".join(all_warnings) or "-",
                 "notes_user": "; ".join(notes_user) or decision.get("notes", [""])[0] if decision.get("notes") else "-",
                 "warnings_technical": warnings_technical,
+                "satker": (
+                    f"{spm_meta.get('satker_app_code')} - {spm_meta.get('satker_app_name')}"
+                    if spm_meta.get('satker_app_code')
+                    else f"{spm_meta.get('satker_djpb_code')} - {spm_meta.get('satker_name_ocr')} (Perlu Mapping)"
+                    if spm_meta.get('satker_djpb_code')
+                    else spm_meta.get("satker_code") or "Perlu Review"
+                ),
             }
         )
     return rows

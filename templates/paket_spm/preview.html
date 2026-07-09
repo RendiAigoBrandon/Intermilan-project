@@ -349,7 +349,12 @@
     {% csrf_token %}
     <input type="hidden" name="action" value="commit">
 
-    <h3 class="section-title" style="margin-bottom: 16px;">Pilihan Aksi</h3>
+    {% if decision.reconciliation_status == 'Perlu Review Matching' %}
+      <h3 class="section-title" style="margin-bottom: 8px;">Matching D_K belum yakin</h3>
+      <p class="muted" style="margin-bottom: 16px; font-size: 14px;">Sistem belum yakin apakah dokumen ini sudah ada di D_K atau merupakan SPM baru. Periksa kandidat D_K terlebih dahulu.</p>
+    {% else %}
+      <h3 class="section-title" style="margin-bottom: 16px;">Pilihan Aksi</h3>
+    {% endif %}
 
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 12px;">
       {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
@@ -359,6 +364,7 @@
         {% endif %}
       {% elif decision.reconciliation_status == 'Perlu Review Matching' %}
         <button class="btn primary" type="submit" name="commit_choice" value="review_manual" {% if not can_commit %}disabled{% endif %}>CEK MANUAL</button>
+        <button class="btn primary" style="opacity: 0.5; cursor: not-allowed;" disabled title="Selesaikan Cek Manual terlebih dahulu sebelum menyimpan ke D_K baru.">SIMPAN KE D_K</button>
         <button class="btn ghost" type="submit" name="commit_choice" value="save_draft" {% if not can_commit %}disabled{% endif %}>SIMPAN DRAFT</button>
       {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
         <button class="btn primary" type="submit" name="commit_choice" value="create_from_package" {% if not can_commit %}disabled{% endif %}>SIMPAN KE D_K</button>
@@ -372,11 +378,10 @@
 
     <div class="muted" style="font-size: 13px;">
       {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
-        Dokumen cocok dengan data D_K. Klik untuk mengaitkan file ke D_K existing.
+        Dokumen cocok dengan data D_K existing. Klik untuk mengaitkan dokumen ke D_K.
       {% elif decision.reconciliation_status == 'Perlu Review Matching' %}
-        Dokumen berhasil dibaca, tetapi matching D_K belum yakin. Periksa kandidat D_K atau simpan sebagai draft.
       {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
-        Dokumen ini belum ada di D_K. Data hasil OCR akan disimpan sebagai D_K baru setelah disetujui.
+        Dokumen ini belum ada di D_K. Klik SIMPAN KE D_K untuk membuat data D_K baru dari hasil scan.
       {% else %}
         Data belum valid atau belum lengkap. Simpan sebagai draft atau hapus jika gagal.
       {% endif %}

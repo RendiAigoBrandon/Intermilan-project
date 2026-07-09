@@ -380,12 +380,28 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             "duplicate": None,
         }
 
+    if meta.get("satker_djpb_code") and not meta.get("satker_app_code"):
+        return {
+            "document_status": document_status,
+            "reconciliation_status": "Perlu Review Matching",
+            "commit_action": "review_manual",
+            "commit_label": "CEK MANUAL",
+            "can_commit": True,
+            "decision_text": f"Satker dokumen terbaca {meta.get('satker_djpb_code')}/{meta.get('satker_name_ocr')}, tetapi mapping ke satker aplikasi belum pasti.",
+            "notes": notes,
+            "meta": meta,
+            "matched_transaction": matched_transaction,
+            "matched_sp2d": matched_sp2d,
+            "duplicate": duplicate,
+            "candidates": candidates,
+        }
+
     if not matched_transaction and candidates:
         return {
             "document_status": document_status,
             "reconciliation_status": "Perlu Review Matching",
             "commit_action": "review_manual",
-            "commit_label": "Review Manual",
+            "commit_label": "CEK MANUAL",
             "can_commit": True,
             "decision_text": "Ditemukan beberapa kandidat D_K namun tidak ada yang memenuhi syarat cocok kuat (poin >= 70 & satker sama). Silakan kaitkan manual atau buat D_K baru.",
             "notes": notes,

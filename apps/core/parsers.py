@@ -528,7 +528,41 @@ def parse_spm_pdf(file_path, ocr=False):
     # ── Field lain ─────────────────────────────────────────────────────
     drpp_match = re.search(r"(?:NOMOR\s+DRPP|DRPP\s+NOMOR|NO\.?\s*DRPP)\s*[:\-]?\s*([0-9A-Z./-]+)", upper)
 
+    # ── Satker ────────────────────────────────────────────────────────
     satker_match = re.search(r"(?:SATKER|KODE\s+SATKER)\s*[:\-]?\s*([0-9]{4,6})", upper)
+    satker_c = satker_match.group(1) if satker_match else ""
+    
+    if not satker_c:
+        m2 = re.search(r"(?:SATUAN KERJA|UNIT KERJA|KANTOR|INSTANSI)[\s\S]{0,100}?([0-9]{6})", upper)
+        if m2:
+            satker_c = m2.group(1)
+            
+    satker_name_ocr = ""
+    bps_match = re.search(r"(BADAN PUSAT STATISTIK\s+[A-Z\s.]+)", upper)
+    if bps_match:
+        satker_name_ocr = bps_match.group(1).strip()
+        satker_name_ocr = re.sub(r"\s+", " ", satker_name_ocr)
+        # Hentikan jika ketemu kata kunci yang tidak terkait satker
+        stop_words = ["SPP", "SPM", "KUITANSI", "YANG", "TANGGAL", "NOMOR", "TAHUN"]
+        for sw in stop_words:
+            if f" {sw}" in satker_name_ocr:
+                satker_name_ocr = satker_name_ocr.split(f" {sw}")[0]
+                
+    satker_app_code = ""
+    satker_app_name = ""
+    if satker_name_ocr or satker_c:
+        from apps.core.satker import infer_satker_from_name
+        code, name = infer_satker_from_name(satker_name_ocr)
+        if code:
+            satker_app_code = code
+            satker_app_name = name
+        elif satker_c:
+            # Fallback code
+            from apps.core.satker import fallback_satker_name
+            fallback = fallback_satker_name(satker_c)
+            if fallback:
+                satker_app_code = satker_c
+                satker_app_name = fallback
     tanggal_spm = parse_date(parse_first_match(text, [
         r"(?:TANGGAL\s+SPM|TANGGAL)\s*[:\-]?\s*([0-9]{1,2}[-/][0-9]{1,2}[-/][0-9]{2,4})",
         r"\b([0-9]{4}-[0-9]{2}-[0-9]{2})\b",
@@ -680,7 +714,11 @@ def parse_spm_pdf(file_path, ocr=False):
             "nomor_sp2d": text_sp2d,
             "nomor_invoice": text_invoice,
             "nomor_drpp": drpp_match.group(1) if drpp_match else "",
-            "satker_code": satker_match.group(1) if satker_match else "",
+            "satker_code": satker_c,
+            "satker_djpb_code": satker_c,
+            "satker_name_ocr": satker_name_ocr,
+            "satker_app_code": satker_app_code,
+            "satker_app_name": satker_app_name,
             "tanggal_spm": tanggal_spm,
             "jenis_spm": jenis_spm,
             "kppn": kppn,
