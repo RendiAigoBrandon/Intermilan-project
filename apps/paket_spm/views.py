@@ -262,9 +262,9 @@ def paket_spm_preview(request):
             
             if commit_choice == "save_draft":
                 request.session.pop("paket_spm_preview_id", None)
-                messages.success(request, "Dokumen disimpan sebagai draft review.")
+                messages.success(request, "Draft Paket SPM berhasil disimpan. Anda dapat membukanya kembali di menu Draft Paket SPM.")
                 # We do not change status, keep it PREVIEW so it shows in drafts
-                return redirect("paket_spm:list") # or to drafts page later
+                return redirect("paket_spm:drafts")
                 
             if commit_choice == "link_existing":
                 matched_id = request.POST.get("matched_transaction_id")

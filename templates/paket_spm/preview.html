@@ -345,45 +345,41 @@
     </div>
   </details>
 
-  <form method="post" class="mt"
-    style="background: var(--bg-card); padding: 20px; border: 1px solid var(--border-color, #ddd); border-radius: 8px;">
+  <form method="post" class="mt" style="background: var(--bg-card); padding: 20px; border: 1px solid var(--border-color, #ddd); border-radius: 8px;">
     {% csrf_token %}
     <input type="hidden" name="action" value="commit">
 
     <h3 class="section-title" style="margin-bottom: 16px;">Pilihan Aksi</h3>
 
-    <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px;">
-      <label class="note-box" style="cursor: pointer; display: flex; align-items: flex-start; gap: 12px; margin: 0;">
-        <input type="radio" name="commit_choice" value="save_draft" style="margin-top: 4px;">
-        <div>
-          <strong style="display: block; font-size: 15px;">Review Manual / Simpan Draft</strong>
-          <span class="muted">Simpan progress saat ini sebagai draft dan selesaikan nanti.</span>
-        </div>
-      </label>
-
-      <label class="note-box" style="cursor: pointer; display: flex; align-items: flex-start; gap: 12px; margin: 0;">
-        <input type="radio" name="commit_choice" value="create_from_package" {% if not decision.matched_transaction %}checked{% endif %} style="margin-top: 4px;">
-        <div>
-          <strong style="display: block; font-size: 15px;">Buat D_K Baru dari Hasil Scan</strong>
-          <span class="muted">Gunakan opsi ini jika dokumen ini adalah tagihan baru yang belum ada di D_K.</span>
-        </div>
-      </label>
-
-      {% if decision.matched_transaction %}
-      <label class="note-box" style="cursor: pointer; display: flex; align-items: flex-start; gap: 12px; margin: 0; border: 1px solid var(--primary);">
-        <input type="radio" name="commit_choice" value="link_existing" checked style="margin-top: 4px;">
-        <div>
-          <strong style="display: block; font-size: 15px;">Kaitkan Dokumen ke Data Existing</strong>
-          <span class="muted">Dokumen akan dikaitkan ke D_K #{{ decision.matched_transaction.id }} yang cocok.</span>
-        </div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 12px;">
+      {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
+        <button class="btn primary" type="submit" name="commit_choice" value="link_existing" {% if not can_commit %}disabled{% endif %}>KAITKAN KE D_K</button>
+        {% if decision.matched_transaction %}
         <input type="hidden" name="matched_transaction_id" value="{{ decision.matched_transaction.id }}">
-      </label>
+        {% endif %}
+      {% elif decision.reconciliation_status == 'Perlu Review Matching' %}
+        <button class="btn primary" type="submit" name="commit_choice" value="review_manual" {% if not can_commit %}disabled{% endif %}>CEK MANUAL</button>
+        <button class="btn ghost" type="submit" name="commit_choice" value="save_draft" {% if not can_commit %}disabled{% endif %}>SIMPAN DRAFT</button>
+      {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
+        <button class="btn primary" type="submit" name="commit_choice" value="create_from_package" {% if not can_commit %}disabled{% endif %}>SIMPAN KE D_K</button>
+        <button class="btn ghost" type="submit" name="commit_choice" value="save_draft" {% if not can_commit %}disabled{% endif %}>SIMPAN DRAFT</button>
+      {% else %}
+        <button class="btn ghost" type="submit" name="commit_choice" value="save_draft" {% if not can_commit %}disabled{% endif %}>SIMPAN DRAFT</button>
       {% endif %}
+      
+      <button class="btn ghost" type="submit" name="action" value="cancel" formnovalidate style="color:var(--danger); border-color:var(--danger);">BATAL</button>
     </div>
 
-    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-      <button class="btn primary" type="submit" {% if not can_commit %}disabled{% endif %}>Jalankan Aksi</button>
-      <button class="btn ghost" type="submit" name="action" value="cancel" formnovalidate>Batal (Hapus Draft)</button>
+    <div class="muted" style="font-size: 13px;">
+      {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
+        Dokumen cocok dengan data D_K. Klik untuk mengaitkan file ke D_K existing.
+      {% elif decision.reconciliation_status == 'Perlu Review Matching' %}
+        Dokumen berhasil dibaca, tetapi matching D_K belum yakin. Periksa kandidat D_K atau simpan sebagai draft.
+      {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
+        Dokumen ini belum ada di D_K. Data hasil OCR akan disimpan sebagai D_K baru setelah disetujui.
+      {% else %}
+        Data belum valid atau belum lengkap. Simpan sebagai draft atau hapus jika gagal.
+      {% endif %}
     </div>
   </form>
 </section>
