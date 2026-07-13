@@ -13,8 +13,8 @@ from django.shortcuts import redirect, render
 
 from apps.accounts.access import filter_by_satker, permission_context
 from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
-from apps.documents.services.google_drive import archive_file_link
-from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package
+from apps.dk.models import TransactionDetail
+from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, lampiran_warnings, link_paket_spm_source_document
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMPreviewItem, PaketSPMUpload
@@ -58,7 +58,7 @@ def paket_spm_list(request):
 
         file_path = fs.path(filename)
         use_ocr = bool(request.POST.get("use_ocr"))
-        
+
         # 1. Parsing di POST
         try:
             if kind == "pdf":
@@ -100,10 +100,12 @@ def paket_spm_list(request):
         # 2. Simpan ke database sebagai DRAFT
         spm_meta = (parsed.get("spm") or {}).get("metadata", {})
         drpp_meta = (parsed.get("drpp") or {}).get("metadata", {})
-        tahun = int(request.POST.get("tahun")) if str(request.POST.get("tahun", "")).isdigit() else None
-        bulan = parse_month(request.POST.get("bulan", ""))
-        satker = str(request.POST.get("satker_code") or spm_meta.get("satker_code") or "")[:32]
-        
+        tanggal_spm = spm_meta.get("tanggal_spm")
+        tanggal_sp2d = spm_meta.get("tanggal_sp2d")
+        tahun = int(request.POST.get("tahun")) if str(request.POST.get("tahun", "")).isdigit() else getattr(tanggal_spm, "year", None)
+        bulan = parse_month(request.POST.get("bulan", "")) or getattr(tanggal_sp2d, "month", None)
+        satker = str(request.POST.get("satker_code") or spm_meta.get("satker_app_code") or spm_meta.get("satker_code") or "")[:32]
+
         import json
         safe_parsed = make_json_safe(parsed)
         # Validate that it is JSON serializable
@@ -124,7 +126,7 @@ def paket_spm_list(request):
             bulan=bulan,
             jenis_spm_asli=str(spm_meta.get("jenis_spm") or "")[:100],
             jenis_spm_label=str(spm_meta.get("jenis_spm") or "")[:100],
-            tanggal_spm=spm_meta.get("tanggal_spm"),
+            tanggal_spm=tanggal_spm,
             nilai_spm=spm_meta.get("total_pembayaran") or Decimal("0"),
             total_rincian_bruto=sum((item.get("jumlah") or Decimal("0") for item in parsed.get("kw_items", [])), Decimal("0")),
             total_rincian_netto=sum((item.get("jumlah") or Decimal("0") for item in parsed.get("kw_items", [])), Decimal("0")),
@@ -135,16 +137,16 @@ def paket_spm_list(request):
         with open(file_path, "rb") as zip_file:
             paket.zip_file.save(original_filename, File(zip_file), save=False)
         paket.save()
-        
+
         # Sync file to drive immediately if valid? Actually let's just let it be saved locally first.
         # User said: "Saat user upload, file PDF/ZIP harus langsung disimpan ke local archive atau Google Drive jika aktif. Jangan tunggu commit baru simpan file. Preview/Draft harus punya referensi path/link file."
         # Local archive is handled by `paket.zip_file.save(...)` which puts it in `media/uploads/paket_spm/...`.
         # Google Drive sync usually happens in services or celery, but I can call `archive_file_link(paket.zip_file.path)` here if needed.
         # Actually let's leave it as `zip_file` path since we have `paket.zip_file.url`.
-        
+
         request.session["paket_spm_preview_id"] = paket.id
         request.session["sp2d_raw_id"] = request.POST.get("sp2d_raw_id", "")
-        
+
         print(f"[INTERMILAN PaketSPM Upload] Saved as PREVIEW id={paket.id}", flush=True)
         return redirect("paket_spm:preview")
 
@@ -184,65 +186,75 @@ def paket_spm_preview(request):
     forced_sp2d = sp2d_context.get("row") if sp2d_context else None
 
     parsed = paket.parsed_data or {}
-    
+
     if request.method == "POST":
         action = request.POST.get("action")
         if action == "cancel":
-            paket.delete() # Or keep it? The user might just want to abort. Since we have drafts now, we can just let them keep it or delete it.
-            # "Draft harus bisa ditemukan... tombol hapus draft". Let's assume cancel means abort completely.
+            zip_path = paket.zip_file.path if paket.zip_file else ""
+            temp_dir = paket.folder_path
+            paket.delete()
+            cleanup_paket_files(zip_path, temp_dir)
             request.session.pop("paket_spm_preview_id", None)
             messages.info(request, "Preview Paket SPM dibatalkan.")
             return redirect("paket_spm:list")
-            
+
         if action == "recalculate":
+            def clean_text(val):
+                v = str(val or "").strip()
+                return "" if v == "-" else v
+
             # Update paket fields based on input
-            paket.nomor_spm = request.POST.get("nomor_spm", paket.nomor_spm)
-            paket.nomor_sp2d = request.POST.get("nomor_sp2d", paket.nomor_sp2d)
-            paket.nomor_invoice = request.POST.get("nomor_invoice", paket.nomor_invoice)
-            paket.satker_code = request.POST.get("satker_code", paket.satker_code)
-            
+            paket.nomor_spm = clean_text(request.POST.get("nomor_spm", paket.nomor_spm))
+            paket.nomor_sp2d = clean_text(request.POST.get("nomor_sp2d", paket.nomor_sp2d))
+            paket.nomor_invoice = clean_text(request.POST.get("nomor_invoice", paket.nomor_invoice))
+
+            raw_satker = clean_text(request.POST.get("satker_code", paket.satker_code))
+            paket.satker_code = raw_satker.split(" - ")[0].strip()[:32]
+
             # We also update the parsed_data so it reflects in decision and UI
             if "spm" not in parsed or not parsed["spm"]:
                 parsed["spm"] = {"metadata": {}}
             parsed["spm"]["metadata"]["nomor_spm"] = paket.nomor_spm
             parsed["spm"]["metadata"]["nomor_sp2d"] = paket.nomor_sp2d
             parsed["spm"]["metadata"]["nomor_invoice"] = paket.nomor_invoice
-            parsed["spm"]["metadata"]["satker_code"] = paket.satker_code
-            parsed["spm"]["metadata"]["nomor_drpp"] = request.POST.get("nomor_drpp", parsed["spm"]["metadata"].get("nomor_drpp", ""))
-            
-            # Update keterangan / notes user if provided
-            keterangan = request.POST.get("keterangan", "")
-            if keterangan:
-                if "notes" not in decision: decision["notes"] = []
-                # Simple replacement for demonstration since user can just re-type it
-                decision["notes"].insert(0, keterangan)
-            
+            parsed["spm"]["metadata"]["satker_code"] = raw_satker
+            parsed["spm"]["metadata"]["nomor_drpp"] = clean_text(request.POST.get("nomor_drpp", parsed["spm"]["metadata"].get("nomor_drpp", "")))
+
+            # Remove premature serialization and decision building
+
             akun_str = request.POST.get("akun", "")
             if akun_str:
                 parsed["spm"]["metadata"]["akun_pengeluaran"] = [a.strip() for a in akun_str.split(",") if a.strip()]
-            
-            nilai_str = request.POST.get("nilai_total", "").replace(".", "").replace(",", ".")
+
+            nilai_str = clean_text(request.POST.get("nilai_total", "")).replace(".", "").replace(",", ".")
             if nilai_str:
                 try:
                     parsed["spm"]["metadata"]["total_pembayaran"] = Decimal(nilai_str)
                     paket.nilai_spm = Decimal(nilai_str)
                 except:
                     pass
-                    
-            pengeluaran_str = request.POST.get("jumlah_pengeluaran", "").replace(".", "").replace(",", ".")
+
+            pengeluaran_str = clean_text(request.POST.get("jumlah_pengeluaran", "")).replace(".", "").replace(",", ".")
             if pengeluaran_str:
                 try:
                     parsed["spm"]["metadata"]["jumlah_pengeluaran"] = Decimal(pengeluaran_str)
                 except:
                     pass
-                    
-            potongan_str = request.POST.get("jumlah_potongan", "").replace(".", "").replace(",", ".")
+
+            potongan_str = clean_text(request.POST.get("jumlah_potongan", "")).replace(".", "").replace(",", ".")
             if potongan_str:
                 try:
                     parsed["spm"]["metadata"]["jumlah_potongan"] = Decimal(potongan_str)
                 except:
                     pass
-            
+
+            keterangan = request.POST.get("keterangan", "")
+            if keterangan and "spm" in parsed:
+                if "warnings" not in parsed["spm"] or not isinstance(parsed["spm"]["warnings"], list):
+                    parsed["spm"]["warnings"] = []
+                if keterangan not in parsed["spm"]["warnings"]:
+                    parsed["spm"]["warnings"].insert(0, keterangan)
+
             import json
             safe_parsed = make_json_safe(parsed)
             try:
@@ -250,31 +262,47 @@ def paket_spm_preview(request):
             except TypeError as e:
                 messages.error(request, f"System Error: Gagal mengkonversi update data ke JSON. {str(e)}")
                 return redirect("paket_spm:preview")
-                
+
             paket.parsed_data = safe_parsed
             paket.save()
+
+            # Compute decision just to ensure it works, though not strictly needed since we redirect
+            decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
+            if keterangan and "notes" in decision:
+                decision["notes"].insert(0, keterangan)
+
             messages.success(request, "Data diupdate, matching dihitung ulang.")
             return redirect("paket_spm:preview")
 
         if action == "commit":
             commit_choice = request.POST.get("commit_choice") # 'link_existing', 'create_from_package', 'review_manual', 'save_draft'
-            decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d)
-            
+            decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
+
             if commit_choice == "save_draft":
                 request.session.pop("paket_spm_preview_id", None)
                 messages.success(request, "Draft Paket SPM berhasil disimpan. Anda dapat membukanya kembali di menu Draft Paket SPM.")
                 # We do not change status, keep it PREVIEW so it shows in drafts
                 return redirect("paket_spm:drafts")
-                
+
             if commit_choice == "link_existing":
                 matched_id = request.POST.get("matched_transaction_id")
                 if matched_id:
                     tx = TransactionDetail.objects.filter(id=matched_id).first()
                     if tx:
-                        # Link it
-                        paket.status = PaketSPMUpload.Status.COMMITTED
-                        paket.save()
-                        # TODO: update TX with file reference if needed
+                        try:
+                            with transaction.atomic():
+                                link_paket_spm_source_document(
+                                    paket,
+                                    [tx],
+                                    user=request.user,
+                                    parsed=parsed,
+                                    document_status=decision.get("document_status"),
+                                )
+                                paket.status = PaketSPMUpload.Status.COMMITTED
+                                paket.save(update_fields=["status"])
+                        except Exception as e:
+                            messages.error(request, str(e))
+                            return redirect("paket_spm:preview")
                         messages.success(request, "Dokumen berhasil dikaitkan ke D_K existing.")
                     else:
                         messages.error(request, "D_K existing tidak ditemukan.")
@@ -282,36 +310,118 @@ def paket_spm_preview(request):
                 else:
                     messages.error(request, "Pilih D_K existing terlebih dahulu.")
                     return redirect("paket_spm:preview")
-                    
+
             elif commit_choice == "create_from_package":
-                with transaction.atomic():
-                    paket.status = PaketSPMUpload.Status.COMMITTED
-                    paket.save()
-                    build_transaction_rows_from_package(parsed, paket, request.user, sp2d_raw=forced_sp2d, document_status=decision.get("document_status"))
-                messages.success(request, "Dokumen berhasil dibaca. D_K baru telah dibuat.")
-            
+                try:
+                    with transaction.atomic():
+                        rows = build_transaction_rows_from_package(
+                            parsed,
+                            paket,
+                            request.user,
+                            sp2d_raw=forced_sp2d,
+                            document_status=decision.get("document_status"),
+                            save=True,
+                        )
+                        if not rows:
+                            meta = decision.get("meta", {})
+                            rows = list(TransactionDetail.objects.filter(
+                                satker_code=meta.get("satker_code") or paket.satker_code,
+                                nomor_spm__iexact=meta.get("nomor_spm") or paket.nomor_spm,
+                                tanggal_spm__year=getattr(meta.get("tanggal_spm") or paket.tanggal_spm, "year", None),
+                            ))
+                        link_paket_spm_source_document(
+                            paket,
+                            rows,
+                            user=request.user,
+                            parsed=parsed,
+                            document_status=decision.get("document_status"),
+                        )
+                        paket.status = PaketSPMUpload.Status.COMMITTED
+                        paket.save(update_fields=["status"])
+                except Exception as e:
+                    messages.error(request, str(e))
+                    return redirect("paket_spm:preview")
+
+                messages.success(request, "Dokumen berhasil dibaca. D_K telah diperbarui/dibuat.")
+
             request.session.pop("paket_spm_preview_id", None)
             return redirect("paket_spm:list")
 
-    decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d)
+    decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
     preview_summary = build_preview_summary(parsed, decision, {"original_filename": paket.original_filename})
+    summary_document_status = preview_summary.get("document_status") or decision.get("document_status") or "-"
+
+    # Render preview rows dynamically (without saving)
+    rekon_errors = []
+    try:
+        transaction_rows = build_transaction_rows_from_package(parsed, paket, request.user, sp2d_raw=forced_sp2d, document_status=decision.get("document_status"), save=False)
+    except ValueError as e:
+        transaction_rows = []
+        rekon_errors.append(str(e))
+
+    sum_bruto = sum(row.nilai_bruto for row in transaction_rows)
+    sum_netto = sum(row.nilai_netto for row in transaction_rows)
+
+    spm_meta = (parsed.get("spm") or {}).get("metadata", {})
     scan_rows = build_scan_rows(parsed, decision)
     drpp_rows = build_drpp_rows(parsed)
     kw_rows = build_kw_rows(parsed)
-    
+    from apps.paket_spm.services import is_gup, is_tup, money_value
+    spm_bruto = money_value(spm_meta.get("jumlah_pengeluaran"))
+    spm_netto = money_value(spm_meta.get("total_pembayaran"))
+    spm_potongan = money_value(spm_meta.get("jumlah_potongan"))
+
+    # 1. Total Bruto seluruh baris = Nilai Bruto SPM
+    diff_bruto = abs(sum_bruto - spm_bruto)
+    if diff_bruto > 1 and spm_bruto > 0:
+        rekon_errors.append(f"Total Bruto baris Rp{sum_bruto:,.0f}, sedangkan Bruto SPM Rp{spm_bruto:,.0f}. Selisih Rp{diff_bruto:,.0f}.")
+
+    # 2. GU/GUP/TUP direkonsiliasi dengan bruto dan potongan; LS tetap pakai nilai pembayaran.
+    is_gu_package = is_gup(spm_meta.get("jenis_spm", "")) or is_tup(spm_meta.get("jenis_spm", ""))
+    if is_gu_package:
+        row_deduction = sum_bruto - sum_netto
+        header_deduction = spm_potongan if spm_potongan > 0 else row_deduction
+        diff_gu = abs((sum_netto + header_deduction) - sum_bruto)
+        if diff_gu > 1 and sum_bruto > 0:
+            rekon_errors.append(
+                f"Rekonsiliasi GUP belum balance: Netto baris + potongan = Rp{(sum_netto + header_deduction):,.0f}, "
+                f"sedangkan Bruto baris Rp{sum_bruto:,.0f}. Selisih Rp{diff_gu:,.0f}."
+            )
+    else:
+        diff_netto = abs(sum_netto - spm_netto)
+        if diff_netto > 1 and spm_netto > 0:
+            rekon_errors.append(f"Total Netto baris Rp{sum_netto:,.0f}, sedangkan Pembayaran SPM Rp{spm_netto:,.0f}. Selisih Rp{diff_netto:,.0f}.")
+
+    # Jika ada error, blokir tombol SIMPAN KE D_K
+    can_commit = decision.get("can_commit", False)
+    if getattr(paket, "alokasi_potongan_ambigu", False):
+        rekon_errors.append("Alokasi potongan ambigu untuk beberapa baris pengeluaran. Potongan tidak dapat dialokasikan secara eksplisit. Harap perbaiki nilai potongan per baris secara manual.")
+
+    if rekon_errors:
+        can_commit = False
+
     context = permission_context(request.user)
     context.update({
         "page_title": "Preview Paket SPM",
-        "page_subtitle": "Tinjau isi ZIP dan hasil parser sebelum commit.",
+        "page_subtitle": "Tinjau isi data sebelum disimpan ke D_K.",
         "parsed": parsed,
         "decision": decision,
         "preview_summary": preview_summary,
+        "summary_document_status": summary_document_status,
+        "transaction_rows": transaction_rows,
         "scan_rows": scan_rows,
         "drpp_rows": drpp_rows,
         "kw_rows": kw_rows,
+        "spm_meta": spm_meta,
+        "spm_bruto": spm_bruto,
+        "spm_netto": spm_netto,
+        "sum_bruto": sum_bruto,
+        "sum_netto": sum_netto,
+        "rekon_errors": rekon_errors,
         "sp2d_context": sp2d_context,
         "paket": paket,
-        "can_commit": decision["can_commit"],
+        "can_commit": can_commit,
+        "lampiran_warnings": lampiran_warnings(parsed),
     })
     return render(request, "paket_spm/preview.html", context)
     return render(request, "paket_spm/preview.html", context)
@@ -363,6 +473,10 @@ def validate_paket_upload(upload_file=None, upload_files=None):
 
 def build_preview_summary(parsed, decision, preview_state):
     meta = decision.get("meta", {})
+    document_status = decision.get("document_status") or "-"
+    if lampiran_warnings(parsed) and document_status in {"-", "Lengkap"}:
+        if parsed.get("spm") and (parsed.get("drpps") or parsed.get("drpp")) and parsed.get("kw_items"):
+            document_status = "Lengkap dengan Peringatan Lampiran"
     return {
         "upload_name": preview_state.get("original_filename", "-"),
         "file_count": len(parsed.get("files", [])),
@@ -370,7 +484,7 @@ def build_preview_summary(parsed, decision, preview_state):
         "drpp_count": len(parsed.get("drpps", []) or ([parsed.get("drpp")] if parsed.get("drpp") else [])),
         "kw_count": len(parsed.get("kw_items", [])),
         "total": meta.get("total") or Decimal("0"),
-        "document_status": decision.get("document_status", "-"),
+        "document_status": document_status,
         "reconciliation_status": decision.get("reconciliation_status", "-"),
         "commit_label": decision.get("commit_label", "-"),
     }
@@ -542,6 +656,7 @@ def log_number_resolution(preview_state, parsed, decision):
 
 def build_drpp_rows(parsed):
     rows = []
+    main_spm = ((parsed.get("spm") or {}).get("metadata", {}) or {}).get("nomor_spm")
     for drpp in parsed.get("drpps", []) or ([parsed.get("drpp")] if parsed.get("drpp") else []):
         if not drpp:
             continue
@@ -550,7 +665,7 @@ def build_drpp_rows(parsed):
         rows.append(
             {
                 "nomor_drpp": meta.get("nomor_drpp") or "-",
-                "nomor_spm": meta.get("nomor_spm") or "-",
+                "nomor_spm": main_spm or meta.get("nomor_spm") or "-",
                 "item_count": len(items),
                 "total": meta.get("total") or sum((row.get("jumlah") or Decimal("0") for row in items), Decimal("0")),
                 "status": drpp.get("status") or "-",

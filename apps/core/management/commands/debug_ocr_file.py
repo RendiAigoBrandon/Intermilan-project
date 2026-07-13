@@ -3,8 +3,10 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.core.ocr import check_ocr_environment
-from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_spm_pdf
-from apps.paket_spm.services import evaluate_document_status
+from apps.core.parsers import classify_document, extract_pdf_text, make_json_safe, parse_drpp_pdf, parse_spm_pdf
+from apps.core.templatetags.intermilan_format import month_id
+from apps.paket_spm.models import PaketSPMUpload
+from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, evaluate_document_status
 
 
 class Command(BaseCommand):
@@ -91,7 +93,9 @@ class Command(BaseCommand):
         self.stdout.write(f"  No SP2D: {meta.get('nomor_sp2d') or '-'}")
         self.stdout.write(f"  No Invoice/SPP-SPM: {meta.get('nomor_invoice') or '-'}")
         self.stdout.write(f"  No DRPP: {meta.get('nomor_drpp') or '-'}")
-        self.stdout.write(f"  Satker: {meta.get('satker_code') or '-'}")
+        self.stdout.write(f"  Satker: {meta.get('satker_app_name') or meta.get('satker_code') or '-'}")
+        self.stdout.write(f"  Kode Satker DJPb: {meta.get('satker_djpb_code') or '-'}")
+        self.stdout.write(f"  Kode Satker Aplikasi: {meta.get('satker_app_code') or '-'}")
         self.stdout.write(f"  Tanggal SPM: {meta.get('tanggal_spm') or '-'}")
         self.stdout.write(f"  Jenis SPM: {meta.get('jenis_spm') or '-'}")
         self.stdout.write(f"  Supplier/Penerima: {meta.get('supplier') or '-'}")
@@ -136,10 +140,58 @@ class Command(BaseCommand):
                 self.stdout.write(f"  keterangan: {note}")
         except Exception as exc:
             self.stdout.write(f"  status_dokumen: (gagal dievaluasi: {exc})")
+        self.print_preview_rows(parsed)
         self.stdout.write("")
         self.stdout.write("  --- Warning Teknis ---")
         for warning in parsed.get("warnings", []):
             self.stdout.write(f"  warning: {warning}")
+
+    def print_preview_rows(self, spm):
+        meta = spm.get("metadata", {})
+        parsed = make_json_safe({
+            "ok": True,
+            "files": [{"file_name": spm.get("file_name", "-"), "type": "SPM"}],
+            "spm": spm,
+            "drpp": None,
+            "drpps": [],
+            "kw_items": [],
+        })
+        paket = PaketSPMUpload(
+            original_filename=spm.get("file_name", ""),
+            nomor_spm=meta.get("nomor_spm", ""),
+            nomor_invoice=meta.get("nomor_invoice", ""),
+            satker_code=meta.get("satker_app_code") or meta.get("satker_code") or "",
+            tanggal_spm=meta.get("tanggal_spm"),
+            tahun=getattr(meta.get("tanggal_spm"), "year", None),
+            bulan=getattr(meta.get("tanggal_sp2d"), "month", None),
+            jenis_spm_asli=meta.get("jenis_spm", ""),
+            jenis_spm_label=meta.get("jenis_spm", ""),
+            parsed_data=parsed,
+        )
+        self.stdout.write("")
+        self.stdout.write("  --- Preview D_K 15 Kolom ---")
+        try:
+            decision = build_package_decision(parsed, spm.get("file_name", ""))
+            rows = build_transaction_rows_from_package(parsed, paket, save=False, document_status=decision.get("document_status"))
+        except Exception as exc:
+            self.stdout.write(f"  preview_error: {exc}")
+            return
+        for row in rows:
+            self.stdout.write(f"  Helper: {row.akun}{row.no_kuitansi}")
+            self.stdout.write(f"  Akun: {row.akun}")
+            self.stdout.write(f"  SP2D Bulan: {month_id(row.bulan_sp2d)}")
+            self.stdout.write(f"  Cara Pembayaran: {row.cara_pembayaran}")
+            self.stdout.write(f"  Nomor SPM: {row.nomor_spm}")
+            self.stdout.write(f"  Tanggal SPM: {row.tanggal_spm}")
+            self.stdout.write(f"  Jenis SPM: {row.jenis_spm}")
+            self.stdout.write(f"  No. Kuitansi: {row.no_kuitansi}")
+            self.stdout.write(f"  No. DRPP: {row.no_drpp}")
+            self.stdout.write(f"  Deskripsi: {row.deskripsi}")
+            self.stdout.write(f"  Nilai Bruto: {row.nilai_bruto}")
+            self.stdout.write(f"  Nilai Netto: {row.nilai_netto}")
+            self.stdout.write(f"  Pembebanan: {row.pembebanan}")
+            self.stdout.write(f"  FP: {row.fp}")
+            self.stdout.write(f"  PPh21: {row.pph21}")
 
     def print_drpp(self, parsed, doc_type):
         meta = parsed.get("metadata", {})

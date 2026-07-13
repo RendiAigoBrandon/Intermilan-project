@@ -1,6 +1,6 @@
-{% extends 'layouts/base.html' %}
+{% extends 'base.html' %}
 {% load static %}
-{% load humanize %}
+{% load intermilan_format %}
 
 {% block content %}
 <div class="row">
@@ -40,7 +40,7 @@
                                     <span class="text-secondary text-xs font-weight-bold">{{ row.satker_code|default:"-" }}</span>
                                 </td>
                                 <td>
-                                    <span class="text-secondary text-xs font-weight-bold">Rp {{ row.nilai_spm|floatformat:0|intcomma }}</span>
+                                    <span class="text-secondary text-xs font-weight-bold">Rp {{ row.nilai_spm|id_number }}</span>
                                 </td>
                                 <td class="align-middle text-center">
                                     <form method="post" class="d-inline">

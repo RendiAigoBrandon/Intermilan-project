@@ -10,10 +10,14 @@
     </div>
   </div>
 
-  {% for warning in parsed.warnings %}<div class="note-box danger">{{ warning }}</div>{% endfor %}
+  {% for warning in lampiran_warnings %}
+  <div class="note-box warning"><strong>Peringatan lampiran:</strong> {{ warning }}</div>
+  {% endfor %}
+  {% for warning in parsed.warnings %}{% if warning not in lampiran_warnings %}<div class="note-box danger">{{ warning }}</div>{% endif %}{% endfor %}
   {% for note in decision.notes %}<div
+    {% if note not in lampiran_warnings %}
     class="note-box {% if decision.document_status == 'Belum Lengkap' %}warning{% else %}danger{% endif %}">{{ note }}
-  </div>{% endfor %}
+  </div>{% endif %}{% endfor %}
 
   {% if sp2d_context %}
   <div class="note-box">
@@ -45,7 +49,7 @@
           <td>{{ preview_summary.drpp_count }}</td>
           <td>{{ preview_summary.kw_count }}</td>
           <td class="col-nominal">{{ preview_summary.total|id_number }}</td>
-          <td><span class="status-pill">{{ preview_summary.document_status }}</span></td>
+          <td><span class="status-pill">{{ summary_document_status }}</span></td>
           <td>{{ preview_summary.reconciliation_status }}</td>
           <td>{{ preview_summary.commit_label }}</td>
         </tr>
@@ -53,92 +57,88 @@
     </table>
     </div>
 
-  {% if preview_summary.reconciliation_status == 'Perlu Review Matching' %}
-  <div class="note-box warning mt" style="margin-bottom: 16px;">
-    <strong>Dokumen berhasil dibaca, tetapi matching D_K belum yakin.</strong> Silakan review data, hitung ulang matching, pilih D_K manual, atau buat D_K baru.
+
+
+  {% if rekon_errors %}
+  <div class="note-box danger mt" style="margin-bottom: 16px;">
+    <strong>Gagal Rekonsiliasi:</strong>
+    <ul>
+      {% for err in rekon_errors %}
+      <li>{{ err }}</li>
+      {% endfor %}
+    </ul>
+    <p>Silakan perbaiki data di atas agar nilai baris sama persis dengan total SPM sebelum menyimpan.</p>
   </div>
   {% endif %}
 
-  <h3 class="section-title mt">Hasil Scan Dokumen</h3>
+  <h3 class="section-title mt">Satker: {{ spm_meta.satker_app_name|default:paket.satker_code }}</h3>
   <form method="post" style="margin-bottom: 24px;">
     {% csrf_token %}
     <input type="hidden" name="action" value="recalculate">
+    <!-- Tombol navigasi aksi form -->
+    <div style="margin-bottom: 12px; display: flex; gap: 8px;">
+        <button type="submit" class="btn btn-sm btn-info">SIMPAN PERUBAHAN &amp; VALIDASI ULANG</button>
+    </div>
+
     <div class="table-wrap">
       <table class="data-table data-table-wide">
         <thead>
           <tr>
-            <th>No</th>
-            <th>Nama File</th>
-            <th>Tipe Dokumen</th>
-            <th>No SPM</th>
-            <th>No SP2D</th>
-            <th>No Invoice</th>
-            <th>No DRPP</th>
-            <th>No KW/Bukti</th>
-            <th>Satker</th>
+            <th>Helper</th>
             <th>Akun</th>
-            <th class="col-nominal">Pengeluaran</th>
-            <th class="col-nominal">Potongan</th>
-            <th class="col-nominal">Total Pembayaran</th>
-            <th>Status Dokumen</th>
-            <th>Status Rekonsiliasi</th>
-            <th>Keterangan</th>
+            <th>SP2D Bulan</th>
+            <th>Cara Pembayaran</th>
+            <th>Nomor SPM</th>
+            <th>Tanggal SPM</th>
+            <th>Jenis SPM</th>
+            <th>No. Kuitansi</th>
+            <th>No. DRPP</th>
+            <th>Deskripsi</th>
+            <th class="col-nominal">Nilai Bruto</th>
+            <th class="col-nominal">Nilai Netto</th>
+            <th>Pembebanan</th>
+            <th>FP</th>
+            <th class="col-nominal">PPh21</th>
           </tr>
         </thead>
         <tbody>
-          {% for row in scan_rows %}
+          {% for row in transaction_rows %}
           <tr>
-            <td>{{ row.no }}</td>
-            <td title="{{ row.file_name }}">{{ row.file_name|truncatechars:32 }}</td>
-            <td>{{ row.type }}</td>
-            {% if row.type == 'SPM' %}
-            <td><input type="text" name="nomor_spm" value="{{ row.nomor_spm_final|default:'' }}" class="form-control" style="width:100%; min-width:120px; padding:4px; font-size:12px; font-weight:bold;"></td>
-            <td><input type="text" name="nomor_sp2d" value="{{ row.nomor_sp2d|default:'' }}" class="form-control" style="width:100%; min-width:130px; padding:4px; font-size:12px;"></td>
-            <td><input type="text" name="nomor_invoice" value="{{ row.nomor_invoice|default:'' }}" class="form-control" style="width:100%; min-width:130px; padding:4px; font-size:12px;"></td>
-            <td><input type="text" name="nomor_drpp" value="{{ row.nomor_drpp|default:'' }}" class="form-control" style="width:100%; min-width:80px; padding:4px; font-size:12px;"></td>
-            <td><input type="text" name="no_kw" value="{{ row.no_kw|default:'' }}" class="form-control" style="width:100%; min-width:70px; padding:4px; font-size:12px;"></td>
-            <td>
-              <input type="text" name="satker_code" value="{{ row.satker|default:'' }}" class="form-control" style="width:100%; min-width:80px; padding:4px; font-size:12px;" placeholder="Perlu Review">
-              {% if row.satker == 'Perlu Review' or not row.satker %}<div style="color:var(--danger); font-size:11px; margin-top:2px;">Perlu Review</div>{% endif %}
-            </td>
-            <td><input type="text" name="akun" value="{{ row.akun|default:'' }}" class="form-control" style="width:100%; min-width:80px; padding:4px; font-size:12px;"></td>
-            <td class="col-nominal"><input type="text" name="jumlah_pengeluaran" value="{{ row.jumlah_pengeluaran|id_number }}" class="form-control" style="width:100%; min-width:90px; padding:4px; font-size:12px; text-align:right;"></td>
-            <td class="col-nominal"><input type="text" name="jumlah_potongan" value="{{ row.jumlah_potongan|id_number }}" class="form-control" style="width:100%; min-width:80px; padding:4px; font-size:12px; text-align:right;"></td>
-            <td class="col-nominal"><input type="text" name="nilai_total" value="{{ row.nilai|id_number }}" class="form-control" style="width:100%; min-width:100px; padding:4px; font-size:12px; text-align:right;"></td>
-            <td><span class="status-pill">{{ preview_summary.document_status }}</span></td>
-            <td><div style="font-size:12px;">{{ row.matching_status }}</div></td>
-            <td><input type="text" name="keterangan" value="{{ row.notes_user|default:row.notes }}" class="form-control" style="width:100%; min-width:120px; padding:4px; font-size:12px;"></td>
-            {% else %}
-            <td><strong>{{ row.nomor_spm_final }}</strong></td>
-            <td>{{ row.nomor_sp2d }}</td>
-            <td>{{ row.nomor_invoice }}</td>
-            <td>{{ row.nomor_drpp }}</td>
-            <td>{{ row.no_kw }}</td>
-            <td>
-              {{ row.satker|default:'-' }}
-              {% if row.satker == 'Perlu Review' or not row.satker %}<div style="color:var(--danger); font-size:11px; margin-top:4px;">Perlu Review</div>{% endif %}
-            </td>
+            <td>{{ row.akun }}{{ row.no_kuitansi }}</td>
             <td>{{ row.akun }}</td>
-            <td class="col-nominal" title="{{ row.jumlah_pengeluaran|id_number }}">{{ row.jumlah_pengeluaran|id_number }}</td>
-            <td class="col-nominal" title="{{ row.jumlah_potongan|id_number }}">{{ row.jumlah_potongan|id_number }}</td>
-            <td class="col-nominal" title="{{ row.nilai|id_number }}">{{ row.nilai|id_number }}</td>
-            <td><span class="status-pill">{{ preview_summary.document_status }}</span></td>
-            <td>{{ row.matching_status }}</td>
-            <td title="{{ row.notes_user|default:row.notes }}">{{ row.notes_user|default:row.notes|truncatechars:120 }}</td>
-            {% endif %}
+            <td>{{ row.bulan_sp2d|month_id }}</td>
+            <td>{{ row.cara_pembayaran }}</td>
+            <td>{{ row.nomor_spm }}</td>
+            <td>{{ row.tanggal_spm|date:"Y-m-d" }}</td>
+            <td>{{ row.jenis_spm }}</td>
+            <td>{{ row.no_kuitansi }}</td>
+            <td>{{ row.no_drpp }}</td>
+            <td title="{{ row.deskripsi }}">{{ row.deskripsi|truncatechars:50 }}</td>
+            <td class="col-nominal">{{ row.nilai_bruto|id_number }}</td>
+            <td class="col-nominal">{{ row.nilai_netto|id_number }}</td>
+            <td>{{ row.pembebanan }}</td>
+            <td>{{ row.fp }}</td>
+            <td class="col-nominal">{{ row.pph21|id_number }}</td>
           </tr>
           {% empty %}
           <tr>
-            <td colspan="17" class="empty">Tidak ada PDF yang bisa diproses.</td>
+            <td colspan="15" class="empty">Tidak ada baris transaksi.</td>
           </tr>
           {% endfor %}
         </tbody>
+        <tfoot>
+          <tr style="font-weight: bold; background: #f8f9fa;">
+            <td colspan="10" style="text-align: right;">TOTAL:</td>
+            <td class="col-nominal">{{ sum_bruto|id_number }}</td>
+            <td class="col-nominal">{{ sum_netto|id_number }}</td>
+            <td colspan="3"></td>
+          </tr>
+        </tfoot>
       </table>
     </div>
-    <div style="margin-top: 12px; text-align: right;">
-      <button type="submit" class="btn btn-sm btn-info">Simpan Perubahan &amp; Hitung Ulang Matching</button>
-    </div>
   </form>
+
+
 
   {% if drpp_rows %}
   <h3 class="section-title mt">DRPP Terbaca</h3>
@@ -349,28 +349,23 @@
     {% csrf_token %}
     <input type="hidden" name="action" value="commit">
 
-    {% if decision.reconciliation_status == 'Perlu Review Matching' %}
-      <h3 class="section-title" style="margin-bottom: 8px;">Matching D_K belum yakin</h3>
-      <p class="muted" style="margin-bottom: 16px; font-size: 14px;">Sistem belum yakin apakah dokumen ini sudah ada di D_K atau merupakan SPM baru. Periksa kandidat D_K terlebih dahulu.</p>
+    {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
+      <h3 class="section-title" style="margin-bottom: 16px;">Kaitkan ke D_K</h3>
+      <p class="muted" style="margin-bottom: 16px; font-size: 14px;">Dokumen ini cocok dengan data D_K existing. Data tidak akan diduplikasi.</p>
     {% else %}
       <h3 class="section-title" style="margin-bottom: 16px;">Pilihan Aksi</h3>
     {% endif %}
 
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 12px;">
       {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
-        <button class="btn primary" type="submit" name="commit_choice" value="link_existing" {% if not can_commit %}disabled{% endif %}>KAITKAN KE D_K</button>
+        <button class="btn primary" type="submit" name="commit_choice" value="link_existing" {% if not can_commit %}disabled{% endif %}>KAITKAN KE D_K EXISTING</button>
         {% if decision.matched_transaction %}
         <input type="hidden" name="matched_transaction_id" value="{{ decision.matched_transaction.id }}">
         {% endif %}
-      {% elif decision.reconciliation_status == 'Perlu Review Matching' %}
-        <button class="btn primary" type="submit" name="commit_choice" value="review_manual" {% if not can_commit %}disabled{% endif %}>CEK MANUAL</button>
-        <button class="btn primary" style="opacity: 0.5; cursor: not-allowed;" disabled title="Selesaikan Cek Manual terlebih dahulu sebelum menyimpan ke D_K baru.">SIMPAN KE D_K</button>
-        <button class="btn ghost" type="submit" name="commit_choice" value="save_draft" {% if not can_commit %}disabled{% endif %}>SIMPAN DRAFT</button>
       {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
-        <button class="btn primary" type="submit" name="commit_choice" value="create_from_package" {% if not can_commit %}disabled{% endif %}>SIMPAN KE D_K</button>
-        <button class="btn ghost" type="submit" name="commit_choice" value="save_draft" {% if not can_commit %}disabled{% endif %}>SIMPAN DRAFT</button>
+        <button class="btn primary" type="submit" name="commit_choice" value="create_from_package" {% if not can_commit %}disabled title="Perbaiki error rekonsiliasi sebelum menyimpan."{% endif %}>SIMPAN KE D_K</button>
       {% else %}
-        <button class="btn ghost" type="submit" name="commit_choice" value="save_draft" {% if not can_commit %}disabled{% endif %}>SIMPAN DRAFT</button>
+        <button class="btn primary" style="opacity: 0.5; cursor: not-allowed;" disabled title="Data belum lengkap atau rekonsiliasi gagal.">SIMPAN KE D_K</button>
       {% endif %}
       
       <button class="btn ghost" type="submit" name="action" value="cancel" formnovalidate style="color:var(--danger); border-color:var(--danger);">BATAL</button>
@@ -378,12 +373,11 @@
 
     <div class="muted" style="font-size: 13px;">
       {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
-        Dokumen cocok dengan data D_K existing. Klik untuk mengaitkan dokumen ke D_K.
-      {% elif decision.reconciliation_status == 'Perlu Review Matching' %}
+        Data aman dari duplikasi.
       {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
-        Dokumen ini belum ada di D_K. Klik SIMPAN KE D_K untuk membuat data D_K baru dari hasil scan.
+        Dokumen ini belum ada di D_K dan siap dibuat sebagai entri baru.
       {% else %}
-        Data belum valid atau belum lengkap. Simpan sebagai draft atau hapus jika gagal.
+        Terdapat isian yang perlu dilengkapi/diperbaiki atau rekonsiliasi belum tepat.
       {% endif %}
     </div>
   </form>

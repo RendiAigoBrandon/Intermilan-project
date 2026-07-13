@@ -1,14 +1,20 @@
+import os
 from decimal import Decimal
 
 from django.db.models import Q
+from django.utils.dateparse import parse_date as parse_iso_date
 
+from apps.dk.services import refresh_transaction_document_status
 from apps.dk.models import TransactionDetail
 from apps.documents.models import DocumentDriveLink
+from apps.documents.services.checklist import mark_checklist_present
+from apps.documents.services.google_drive import archive_file_link
 from apps.paket_spm.models import PaketSPMUpload
 from apps.sp2d.models import SP2DRaw
 
 
 STATUS_LENGKAP = "Lengkap"
+STATUS_LENGKAP_WARNING = "Lengkap dengan Peringatan Lampiran"
 STATUS_BELUM_LENGKAP = "Belum Lengkap"
 STATUS_REVIEW_OCR = "Perlu Review OCR"
 STATUS_REVIEW_NOMOR = "Perlu Review Nomor"
@@ -22,7 +28,6 @@ REKON_COCOK_SP2D = "Cocok dengan SP2D"
 REKON_COCOK_DK = "Cocok dengan D_K"
 REKON_BELUM_SP2D = "Belum ada SP2D pembanding"
 REKON_BELUM_DK = "Belum ada D_K pembanding"
-REKON_REVIEW = "Perlu Review Matching"
 REKON_BELUM_DIPASTIKAN = "Belum dipastikan"
 
 
@@ -30,10 +35,59 @@ def normalize_key(value):
     return str(value or "").strip().upper()
 
 
+def short_document_number(value):
+    text = str(value or "").strip()
+    return text.split("/", 1)[0].strip() if "/" in text else text
+
+
+def lampiran_warnings(parsed):
+    warnings = []
+    for warning in (parsed.get("warnings") or []) + ((parsed.get("spm") or {}).get("warnings") or []):
+        if "lampiran" in str(warning).lower() and warning not in warnings:
+            warnings.append(warning)
+    return warnings
+
+
 def money_value(value):
     if value in (None, ""):
         return Decimal("0")
     return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def item_bruto_value(item):
+    return money_value(
+        item.get("bruto")
+        or item.get("nilai_bruto")
+        or item.get("jumlah")
+        or item.get("nilai")
+    )
+
+
+def item_deduction_value(item):
+    return sum(
+        (
+            money_value(item.get(field))
+            for field in ("pph21", "pph22", "pph23", "ppn", "potongan", "pajak")
+        ),
+        Decimal("0"),
+    )
+
+
+def item_netto_value(item, bruto=None):
+    explicit = money_value(item.get("netto") or item.get("nilai_netto"))
+    if explicit > 0:
+        return explicit
+    bruto = item_bruto_value(item) if bruto is None else bruto
+    deduction = item_deduction_value(item)
+    return bruto - deduction if deduction > 0 and bruto >= deduction else bruto
+
+
+def date_value(value):
+    if not value:
+        return None
+    if hasattr(value, "year"):
+        return value
+    return parse_iso_date(str(value))
 
 
 def is_gup(jenis_spm):
@@ -82,6 +136,8 @@ def package_metadata(parsed):
     kw_numbers = [normalize_key(item.get("no_bukti")) for item in kw_items if normalize_key(item.get("no_bukti"))]
     drpp_total = sum((money_value(meta.get("total")) for meta in drpp_metas), Decimal("0"))
     total = money_value(spm_meta.get("total_pembayaran") or drpp_total or sum((money_value(item.get("jumlah")) for item in kw_items), Decimal("0")))
+    tanggal_spm = date_value(spm_meta.get("tanggal_spm"))
+    tanggal_sp2d = date_value(spm_meta.get("tanggal_sp2d"))
     return {
         "nomor_spm": normalize_key(spm_meta.get("nomor_spm") or drpp_meta.get("nomor_spm")),
         "nomor_spm_ocr": normalize_key(spm_meta.get("nomor_spm_ocr")),
@@ -97,9 +153,14 @@ def package_metadata(parsed):
         "nomor_invoice": normalize_key(spm_meta.get("nomor_invoice")),
         "nomor_drpp": ", ".join(drpp_numbers)[:100] or normalize_key(spm_meta.get("nomor_drpp")),
         "nomor_drpp_list": drpp_numbers,
-        "satker_code": str(spm_meta.get("satker_code") or drpp_meta.get("satker_code") or "").strip(),
+        "satker_code": str(spm_meta.get("satker_app_code") or spm_meta.get("satker_code") or drpp_meta.get("satker_code") or "").strip(),
+        "satker_djpb_code": str(spm_meta.get("satker_djpb_code") or "").strip(),
+        "satker_app_code": str(spm_meta.get("satker_app_code") or "").strip(),
+        "satker_app_name": str(spm_meta.get("satker_app_name") or "").strip(),
         "jenis_spm": str(spm_meta.get("jenis_spm") or drpp_meta.get("jenis_spm") or "").strip(),
-        "tanggal_spm": spm_meta.get("tanggal_spm"),
+        "cara_pembayaran": str(spm_meta.get("cara_pembayaran") or "").strip(),
+        "tanggal_spm": tanggal_spm,
+        "tanggal_sp2d": tanggal_sp2d,
         "total": total,
         "kw_count": len(kw_items),
         "kw_numbers": kw_numbers,
@@ -115,94 +176,39 @@ def package_metadata(parsed):
 
 
 def analyze_matching_transactions(meta):
-    query = TransactionDetail.objects.all()
-    conditions = Q()
-    if meta.get("nomor_spm"):
-        conditions |= Q(nomor_spm__iexact=meta["nomor_spm"])
-    if meta.get("nomor_drpp_list"):
-        for no_drpp in meta.get("nomor_drpp_list"):
-            if no_drpp:
-                conditions |= Q(no_drpp__iexact=no_drpp)
-    if meta.get("total") and money_value(meta["total"]) > 0:
-        conditions |= Q(nilai_bruto=money_value(meta["total"])) | Q(nilai_netto=money_value(meta["total"]))
-
-    if not conditions:
-        return None, []
-
-    candidates = []
     nomor_spm_clean = normalize_key(meta.get("nomor_spm"))
     satker_clean = normalize_key(meta.get("satker_code"))
-    total_val = money_value(meta.get("total"))
-    bulan_val = meta.get("bulan")
-    tanggal_val = meta.get("tanggal_spm")
+    tanggal_spm = meta.get("tanggal_spm")
+    tahun_spm = getattr(tanggal_spm, "year", None)
 
-    for tx in query.filter(conditions).order_by("-updated_at")[:20]:
-        score = 0
-        reasons = []
-        
-        # 1. Nomor SPM
-        if nomor_spm_clean and normalize_key(tx.nomor_spm) == nomor_spm_clean:
-            score += 50
-            reasons.append("Nomor SPM cocok (+50)")
-        elif nomor_spm_clean:
-            reasons.append("Nomor SPM beda")
+    if not nomor_spm_clean or not satker_clean or not tahun_spm:
+        return None, []
 
-        # 2. Satker
-        tx_satker = normalize_key(tx.satker_code)
-        if satker_clean and tx_satker:
-            if satker_clean == tx_satker:
-                score += 20
-                reasons.append("Satker cocok (+20)")
-            else:
-                reasons.append("Satker beda (-30)")
-                score -= 30 
-        
-        # 3. Nilai
-        if total_val > 0:
-            if tx.nilai_bruto == total_val or tx.nilai_netto == total_val:
-                score += 20
-                reasons.append("Nilai cocok (+20)")
-            else:
-                reasons.append("Nilai beda")
+    # Try to find exact matches for Satker + Nomor SPM
+    # (Since D_K models often lack explicit `tahun` field, we'll match Satker + Nomor SPM. In typical KPPN, SPM + Satker is unique per year)
+    query = TransactionDetail.objects.filter(
+        satker_code=satker_clean,
+        nomor_spm__iexact=nomor_spm_clean,
+        tanggal_spm__year=tahun_spm,
+    )
 
-        # 4. Tanggal / Bulan
-        if bulan_val and tx.bulan_sp2d == bulan_val:
-            score += 15
-            reasons.append("Bulan cocok (+15)")
-        elif tanggal_val and tx.tanggal_spm == tanggal_val:
-            score += 15
-            reasons.append("Tanggal cocok (+15)")
-            
-        # 5. Akun
-        if meta.get("akun_list") and tx.akun in meta["akun_list"]:
-            score += 15
-            reasons.append("Akun cocok (+15)")
+    existing = list(query)
+    if not existing:
+        return None, []
 
-        if any("Satker beda" in r for r in reasons):
-            continue  # Hard validation: abaikan/dibuang dari kandidat
+    first = existing[0]
+    best_match = {
+        "id": first.id,
+        "nomor_spm": first.nomor_spm,
+        "satker_code": first.satker_code,
+        "akun": first.akun,
+        "tanggal_spm": first.tanggal_spm.isoformat() if first.tanggal_spm else "",
+        "nilai_bruto": str(first.nilai_bruto) if first.nilai_bruto else "0",
+        "nilai_netto": str(first.nilai_netto) if first.nilai_netto else "0",
+    }
 
-        candidates.append({
-            "transaction": {
-                "id": tx.id,
-                "nomor_spm": tx.nomor_spm,
-                "satker_code": tx.satker_code,
-                "akun": tx.akun,
-                "tanggal_spm": tx.tanggal_spm.isoformat() if tx.tanggal_spm else "",
-                "nilai_bruto": str(tx.nilai_bruto) if tx.nilai_bruto else "0",
-                "nilai_netto": str(tx.nilai_netto) if tx.nilai_netto else "0",
-            },
-            "score": score,
-            "reasons": reasons,
-        })
-    
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-    best_match = None
-    
-    if candidates:
-        top = candidates[0]
-        if top["score"] >= 70 and not any("Satker beda" in r for r in top["reasons"]):
-            best_match = top["transaction"]
-
+    # We return the first one as best_match, and the list of existing as candidates
+    candidates = [{"transaction": best_match, "score": 100, "reasons": ["Exact match"]}]
     return best_match, candidates
 
 
@@ -212,7 +218,7 @@ def find_matching_sp2d(meta):
     query = SP2DRaw.objects.all()
     conditions = Q()
     if meta["nomor_spm"]:
-        conditions |= Q(nomor_spm_extracted__iexact=meta["nomor_spm"]) | Q(nomor_invoice__icontains=meta["nomor_spm"]) | Q(deskripsi__icontains=meta["nomor_spm"])
+        conditions |= Q(nomor_spm_extracted__iexact=meta["nomor_spm"]) | Q(deskripsi__icontains=meta["nomor_spm"])
     if meta["total"]:
         conditions |= Q(nilai_spm=meta["total"]) | Q(nilai_sp2d=meta["total"])
     query = query.filter(conditions)
@@ -223,8 +229,11 @@ def find_matching_sp2d(meta):
     return query.first()
 
 
-def find_duplicate_package(meta, original_filename=""):
+def find_duplicate_package(meta, original_filename="", current_paket_id=None):
     query = PaketSPMUpload.objects.all()
+    if current_paket_id:
+        query = query.exclude(id=current_paket_id)
+
     conditions = Q()
     if meta["nomor_spm"]:
         conditions |= Q(nomor_spm__iexact=meta["nomor_spm"])
@@ -259,7 +268,7 @@ def find_duplicate_package(meta, original_filename=""):
 
 def evaluate_document_status(parsed):
     meta = package_metadata(parsed)
-    notes = []
+    notes = lampiran_warnings(parsed)
     if not parsed.get("files") and not parsed.get("spm") and not parsed.get("drpp"):
         return STATUS_GAGAL, ["Dokumen tidak bisa diklasifikasi atau diproses."]
     if meta.get("nomor_spm_conflict"):
@@ -300,8 +309,6 @@ def evaluate_document_status(parsed):
         missing_fields = []
         if not spm_meta.get("nomor_sp2d") and not meta.get("nomor_sp2d"):
             missing_fields.append("No SP2D")
-        if not spm_meta.get("nomor_invoice") and not meta.get("nomor_invoice"):
-            missing_fields.append("No Invoice/SPP-SPM")
         if missing_fields:
             return STATUS_REVIEW_FIELD, [
                 f"SPM {jenis_spm}: field berikut belum terbaca dari dokumen: {', '.join(missing_fields)}. "
@@ -311,7 +318,7 @@ def evaluate_document_status(parsed):
 
     # GU/GUP/TUP dengan DRPP dan KW: cek field tambahan
     if drpp_kw_required and meta["has_drpp"] and meta["kw_count"]:
-        return STATUS_LENGKAP, notes
+        return (STATUS_LENGKAP_WARNING if notes else STATUS_LENGKAP), notes
 
     # Hanya SPM saja yang diupload (bukan LS, dan bukan sudah Lengkap)
     if meta["has_spm"] and not meta["has_drpp"] and not meta["kw_count"]:
@@ -320,13 +327,13 @@ def evaluate_document_status(parsed):
     return STATUS_LENGKAP, notes
 
 
-def build_package_decision(parsed, original_filename="", forced_sp2d=None):
+def build_package_decision(parsed, original_filename="", forced_sp2d=None, current_paket_id=None):
     meta = package_metadata(parsed)
     document_status, notes = evaluate_document_status(parsed)
-    duplicate = find_duplicate_package(meta, original_filename)
+    duplicate = find_duplicate_package(meta, original_filename, current_paket_id=current_paket_id)
     matched_transaction, candidates = analyze_matching_transactions(meta)
     matched_sp2d = forced_sp2d or find_matching_sp2d(meta)
-    
+
     if matched_transaction and matched_transaction.get("nomor_spm"):
         meta["nomor_spm_matching"] = normalize_key(matched_transaction.get("nomor_spm"))
     elif candidates and candidates[0]["transaction"].get("nomor_spm"):
@@ -350,14 +357,14 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
             # Update ulang document status
             document_status, notes = evaluate_document_status(parsed)
 
-    if duplicate:
+    if duplicate and matched_transaction:
         return {
             "document_status": STATUS_DUPLIKAT,
-            "reconciliation_status": REKON_REVIEW,
-            "commit_action": "duplicate",
-            "commit_label": "Review Manual",
-            "can_commit": False,
-            "decision_text": "Dokumen dengan nomor ini sudah pernah diupload.",
+            "reconciliation_status": REKON_BELUM_DIPASTIKAN,
+            "commit_action": "link_existing",
+            "commit_label": "Kaitkan Dokumen ke Data Existing",
+            "can_commit": True,
+            "decision_text": "Dokumen sudah pernah diupload dan cocok dengan D_K existing.",
             "notes": notes,
             "meta": meta,
             "matched_transaction": matched_transaction,
@@ -383,9 +390,9 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
     if meta.get("satker_djpb_code") and not meta.get("satker_app_code"):
         return {
             "document_status": document_status,
-            "reconciliation_status": "Perlu Review Matching",
+            "reconciliation_status": "Belum dipastikan",
             "commit_action": "review_manual",
-            "commit_label": "CEK MANUAL",
+            "commit_label": "Perlu Validasi",
             "can_commit": True,
             "decision_text": f"Satker dokumen terbaca {meta.get('satker_djpb_code')}/{meta.get('satker_name_ocr')}, tetapi mapping ke satker aplikasi belum pasti.",
             "notes": notes,
@@ -399,9 +406,9 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
     if not matched_transaction and candidates:
         return {
             "document_status": document_status,
-            "reconciliation_status": "Perlu Review Matching",
+            "reconciliation_status": "Belum dipastikan",
             "commit_action": "review_manual",
-            "commit_label": "CEK MANUAL",
+            "commit_label": "Perlu Validasi",
             "can_commit": True,
             "decision_text": "Ditemukan beberapa kandidat D_K namun tidak ada yang memenuhi syarat cocok kuat (poin >= 70 & satker sama). Silakan kaitkan manual atau buat D_K baru.",
             "notes": notes,
@@ -415,7 +422,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
     if document_status == STATUS_REVIEW_NOMOR:
         return {
             "document_status": document_status,
-            "reconciliation_status": REKON_REVIEW,
+            "reconciliation_status": REKON_BELUM_DIPASTIKAN,
             "commit_action": "review_only",
             "commit_label": "Simpan Draft Review",
             "can_commit": True,
@@ -463,7 +470,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
     if document_status == STATUS_REVIEW_OCR:
         return {
             "document_status": document_status,
-            "reconciliation_status": REKON_REVIEW,
+            "reconciliation_status": REKON_BELUM_DIPASTIKAN,
             "commit_action": "create_from_package",
             "commit_label": "Simpan Draft Review",
             "can_commit": True,
@@ -496,10 +503,10 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
         return {
             "document_status": document_status,
             "reconciliation_status": REKON_COCOK_SP2D,
-            "commit_action": "link_sp2d",
-            "commit_label": "Kaitkan Dokumen ke Data Existing",
+            "commit_action": "create_from_package",
+            "commit_label": "Simpan ke D_K Baru",
             "can_commit": True,
-            "decision_text": "Akan dikaitkan ke data SP2D existing.",
+            "decision_text": "SP2D pembanding ditemukan; D_K baru akan dibuat dan dikaitkan ke SP2D tersebut.",
             "notes": notes,
             "meta": meta,
             "matched_transaction": None,
@@ -556,51 +563,244 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None):
     }
 
 
-def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP):
+def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP, save=True):
     meta = package_metadata(parsed)
     spm_meta = (parsed.get("spm") or {}).get("metadata", {})
-    # Nilai bruto = jumlah_pengeluaran SPM; netto = total_pembayaran (setelah potongan)
-    nilai_bruto_spm = money_value(spm_meta.get("jumlah_pengeluaran") or meta["total"])
-    nilai_netto_spm = money_value(spm_meta.get("total_pembayaran") or meta["total"])
+
+    satker_code = meta["satker_code"] or paket.satker_code
+    nomor_spm = meta["nomor_spm"] or paket.nomor_spm
+    tanggal_spm = meta.get("tanggal_spm") or paket.tanggal_spm
+
+    # Validasi Tanggal SPM untuk Exact Match
+    if not tanggal_spm:
+        raise ValueError("Tanggal SPM belum valid, commit dibatalkan.")
+    tahun_spm = tanggal_spm.year
+    if paket.tahun and paket.tahun != tahun_spm:
+        raise ValueError(f"Tahun pada paket ({paket.tahun}) tidak sama dengan tahun Tanggal SPM ({tahun_spm}).")
+
+    # Pre-fetch existing rows for this exact package
+    existing_rows_query = TransactionDetail.objects.filter(
+        satker_code=satker_code,
+        nomor_spm__iexact=nomor_spm,
+        tanggal_spm__year=tahun_spm
+    )
+    existing_keys = set()
+    # Identitas penggabungan baris (tuple)
+    for row in existing_rows_query:
+        key = (
+            normalize_key(row.akun),
+            normalize_key(row.no_kuitansi),
+            normalize_key(row.no_drpp),
+            normalize_key(row.pembebanan)
+        )
+        existing_keys.add(key)
+
     items = parsed.get("kw_items") or []
+
     if not items and parsed.get("spm"):
-        akun_pot_list = spm_meta.get("akun_potongan", [])
-        potongan_ref = f" (Potongan: {', '.join(akun_pot_list)})" if akun_pot_list else ""
-        items = [
-            {"akun": row.get("akun", ""), "jumlah": nilai_netto_spm, "no_bukti": "", "keperluan": row.get("uraian", "") + potongan_ref}
-            for row in parsed["spm"].get("akun_rows", [])
-        ]
+        akun_rows = parsed["spm"].get("akun_rows", [])
+        if not akun_rows:
+            # Fallback jika tidak ada rincian akun di SPM
+            akun_rows = [{"akun": akun, "jumlah": Decimal("0"), "uraian": spm_meta.get("uraian") or ""} for akun in spm_meta.get("akun_pengeluaran", [])]
+
+        items = []
+        for row in akun_rows:
+            bruto_val = money_value(row.get("nilai", "0")) or money_value(spm_meta.get("jumlah_pengeluaran"))
+            items.append({
+                "akun": row.get("akun", ""),
+                "bruto": bruto_val,
+                "jumlah": bruto_val, # Akan disesuaikan di bawah
+                "no_bukti": meta.get("nomor_spm", ""), # Fallback no_kuitansi ke nomor_spm
+                "keperluan": row.get("uraian") or spm_meta.get("uraian") or "",
+                "pembebanan": row.get("pembebanan") or (spm_meta.get("pembebanan_list") or [""])[0],
+                "fp": row.get("fp") or spm_meta.get("fp") or "",
+            })
+
     if not items:
-        items = [{"akun": "", "jumlah": nilai_netto_spm, "no_bukti": "", "keperluan": "Hasil Paket SPM; perlu review rincian."}]
-    rows = []
+        items = [{"akun": "", "bruto": money_value(spm_meta.get("jumlah_pengeluaran")), "jumlah": money_value(spm_meta.get("total_pembayaran")), "no_bukti": "", "keperluan": spm_meta.get("uraian") or "Hasil Paket SPM; perlu review rincian.", "pembebanan": ""}]
+
+    # Group items by exact identity
+    grouped_items = {}
     for item in items:
-        amount_netto = money_value(item.get("jumlah")) or nilai_netto_spm
-        amount_bruto = nilai_bruto_spm if nilai_bruto_spm > amount_netto else amount_netto
+        akun = str(item.get("akun", ""))[:32]
+        # Jika item berasal dari KW (punya no_bukti), pakai itu. Jika tidak, pakai nomor SPM.
+        no_kuitansi = short_document_number(item.get("no_bukti", "") or meta.get("nomor_spm", ""))[:100]
+        no_drpp = str(item.get("no_drpp") or meta.get("nomor_drpp") or "-")[:100]
+        pembebanan = str(item.get("pembebanan", ""))
+
+        key = (
+            normalize_key(akun),
+            normalize_key(no_kuitansi),
+            normalize_key(no_drpp),
+            normalize_key(pembebanan)
+        )
+
+        bruto_value = item_bruto_value(item)
+        netto_value = item_netto_value(item, bruto_value)
+        deduction_value = item_deduction_value(item)
+
+        if key not in grouped_items:
+            grouped_items[key] = {
+                "akun": akun,
+                "no_kuitansi": no_kuitansi,
+                "no_drpp": no_drpp,
+                "pembebanan": pembebanan,
+                "bruto": Decimal("0"),
+                "netto": Decimal("0"),
+                "deduction": Decimal("0"),
+                "keperluan": item.get("keperluan", ""),
+                "fp": str(item.get("fp", "")),
+                "pph21": Decimal("0"),
+            }
+
+        grouped_items[key]["bruto"] += bruto_value
+        grouped_items[key]["netto"] += netto_value
+        grouped_items[key]["deduction"] += deduction_value
+        grouped_items[key]["pph21"] += money_value(item.get("pph21"))
+        if not grouped_items[key]["keperluan"] and item.get("keperluan"):
+            grouped_items[key]["keperluan"] = item.get("keperluan")
+        if not grouped_items[key]["fp"] and item.get("fp"):
+            grouped_items[key]["fp"] = item.get("fp")
+
+    # Alokasi potongan
+    total_potongan = money_value(spm_meta.get("jumlah_potongan"))
+    explicit_deductions = sum(
+        (item["deduction"] or max(item["bruto"] - item["netto"], Decimal("0")) for item in grouped_items.values()),
+        Decimal("0"),
+    )
+
+    if len(grouped_items) == 1:
+        # Jika hanya 1 baris, Netto = Netto Header
+        for key in grouped_items:
+            header_netto = money_value(spm_meta.get("total_pembayaran"))
+            if header_netto > 0:
+                grouped_items[key]["netto"] = header_netto
+    elif len(grouped_items) > 1 and total_potongan > 0 and explicit_deductions <= 0:
+        paket.alokasi_potongan_ambigu = True  # dibaca view sebagai warning rekonsiliasi, bukan exception
+
+    pph21_value = money_value(spm_meta.get("jumlah_potongan")) if "411121" in (spm_meta.get("akun_potongan") or []) else Decimal("0")
+
+    rows = []
+    for key, g_item in grouped_items.items():
+        if key in existing_keys:
+            continue
+
         rows.append(
             TransactionDetail(
-                satker_code=paket.satker_code or meta["satker_code"],
+                satker_code=satker_code,
                 sp2d_raw=sp2d_raw,
-                akun=str(item.get("akun", ""))[:32],
+                akun=g_item["akun"],
                 kategori="",
-                bulan_sp2d=paket.bulan,
-                cara_pembayaran=meta["jenis_spm"],
-                nomor_spm=paket.nomor_spm,
-                tanggal_spm=paket.tanggal_spm,
-                jenis_spm=paket.jenis_spm_label or paket.jenis_spm_asli,
-                no_kuitansi=str(item.get("no_bukti", ""))[:100],
-                no_drpp=str(item.get("no_drpp") or meta["nomor_drpp"])[:100],
-                deskripsi=str(item.get("keperluan", "") or "Data dibuat dari Paket SPM OCR.")[:1000],
-                nilai_bruto=amount_bruto,
-                nilai_netto=amount_netto,
-                pembebanan="Paket SPM OCR",
+                bulan_sp2d=paket.bulan or getattr(meta.get("tanggal_sp2d"), "month", None),
+                cara_pembayaran="UP/TUP" if (is_gup(meta["jenis_spm"]) or is_tup(meta["jenis_spm"])) else (meta.get("cara_pembayaran") or meta["jenis_spm"]),
+                nomor_spm=nomor_spm,
+                tanggal_spm=tanggal_spm,
+                jenis_spm=meta["jenis_spm"] or paket.jenis_spm_label or paket.jenis_spm_asli,
+                no_kuitansi=g_item["no_kuitansi"],
+                no_drpp=g_item["no_drpp"],
+                deskripsi=g_item["keperluan"][:1000],
+                nilai_bruto=g_item["bruto"],
+                nilai_netto=g_item["netto"],
+                pembebanan=g_item["pembebanan"],
+                fp=g_item["fp"],
+                pph21=g_item["pph21"] or pph21_value,
                 status_detail=(
                     TransactionDetail.StatusDetail.LENGKAP
-                    if document_status == STATUS_LENGKAP
+                    if document_status in {STATUS_LENGKAP, STATUS_LENGKAP_WARNING}
                     else TransactionDetail.StatusDetail.PERLU_REVIEW
                 ),
-                drpp_status=TransactionDetail.DRPPStatus.ADA if meta["nomor_drpp"] else TransactionDetail.DRPPStatus.BELUM_ADA,
+                drpp_status=TransactionDetail.DRPPStatus.ADA if meta.get("nomor_drpp") else TransactionDetail.DRPPStatus.BELUM_ADA,
                 created_by=user,
             )
         )
-    return TransactionDetail.objects.bulk_create(rows)
+        existing_keys.add(key)
+
+    if save and rows:
+        return TransactionDetail.objects.bulk_create(rows)
+    return rows
+
+
+def _package_source_path(paket):
+    try:
+        path = paket.zip_file.path if paket.zip_file else ""
+    except (NotImplementedError, ValueError):
+        return ""
+    return path if path and os.path.exists(path) else ""
+
+
+def _existing_spm_link(transaction, paket):
+    package_marker = f"paket_spm_id={paket.id}"
+    query = DocumentDriveLink.objects.filter(
+        transaction_detail=transaction,
+        jenis_dokumen__iexact="SPM",
+    )
+    return query.filter(
+        Q(catatan__icontains=package_marker)
+        | Q(
+            nama_file=paket.original_filename,
+            satker_code__iexact=paket.satker_code,
+            nomor_spm__iexact=paket.nomor_spm,
+        )
+    ).first()
+
+
+def link_paket_spm_source_document(paket, transactions, user=None, parsed=None, document_status=""):
+    transaction_list = [item for item in transactions if item]
+    if not transaction_list:
+        return {"status": "skipped", "links": [], "archive_status": ""}
+
+    missing_transactions = [tx for tx in transaction_list if not _existing_spm_link(tx, paket)]
+    if not missing_transactions:
+        for tx in transaction_list:
+            mark_checklist_present(tx, "SPM", user)
+            refresh_transaction_document_status(tx, verified_document_type="SPM")
+        return {"status": "exists", "links": [], "archive_status": ""}
+
+    source_path = _package_source_path(paket)
+    if not source_path:
+        raise ValueError("File sumber Paket SPM tidak tersedia di storage. Upload ulang dokumen untuk mengaitkan PDF ke D_K.")
+
+    first_transaction = missing_transactions[0]
+    meta = package_metadata(parsed or paket.parsed_data or {})
+    drive_result, first_link = archive_file_link(
+        source_path,
+        user=user,
+        jenis_dokumen="SPM",
+        nama_file=paket.original_filename,
+        satker_code=paket.satker_code,
+        nomor_spm=paket.nomor_spm,
+        no_drpp=str(meta.get("nomor_drpp") or "")[:100],
+        no_kuitansi=first_transaction.no_kuitansi,
+        catatan_extra=(
+            "source=Paket SPM; "
+            f"paket_spm_id={paket.id}; "
+            f"document_status={document_status or '-'}"
+        ),
+        transaction_detail=first_transaction,
+    )
+    if drive_result["status"] not in {"uploaded", "local_archived"}:
+        raise ValueError(drive_result["error_message"] or "File sumber Paket SPM gagal disimpan ke arsip permanen.")
+
+    links = [first_link]
+    mark_checklist_present(first_transaction, "SPM", user)
+    refresh_transaction_document_status(first_transaction, verified_document_type="SPM")
+    for transaction in missing_transactions[1:]:
+        link = DocumentDriveLink.objects.create(
+            transaction_detail=transaction,
+            satker_code=paket.satker_code or transaction.satker_code,
+            nomor_spm=paket.nomor_spm or transaction.nomor_spm,
+            no_kuitansi=transaction.no_kuitansi,
+            no_drpp=first_link.no_drpp,
+            jenis_dokumen="SPM",
+            nama_file=paket.original_filename,
+            google_drive_url=first_link.google_drive_url,
+            status=first_link.status,
+            catatan=(first_link.catatan + f"; linked_from_document_id={first_link.id}")[:2000],
+            created_by=user,
+        )
+        links.append(link)
+        mark_checklist_present(transaction, "SPM", user)
+        refresh_transaction_document_status(transaction, verified_document_type="SPM")
+
+    return {"status": "created", "links": links, "archive_status": drive_result["status"]}
 

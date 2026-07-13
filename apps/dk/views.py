@@ -170,7 +170,7 @@ def attach_source_labels(rows):
         package_item = package_items.get(row.id)
         if package_item:
             row.source_data_label = "Paket SPM"
-            row.document_status_label = extract_note_value(package_item.catatan, "Status Dokumen") or row.get_status_detail_display()
+            row.document_status_label = row.get_status_detail_display()
             row.reconciliation_status_label = extract_note_value(package_item.catatan, "Status Rekonsiliasi") or "Belum ada SP2D pembanding"
             row.display_no_sp2d = row.sp2d_raw.no_sp2d if row.sp2d_raw_id and row.sp2d_raw else "Belum ada SP2D pembanding"
         elif row.sp2d_raw_id:

@@ -23,8 +23,10 @@ from apps.core.parsers import (
 )
 from apps.core.views import CHECKLIST_ROWS, UPLOAD_COLUMNS
 from apps.dk.models import TransactionDetail
+from apps.dk.services import refresh_transaction_document_status
 from apps.drpp.models import DRPPItem, DRPPUpload
 from apps.sp2d.models import SP2DRaw
+from apps.documents.services.checklist import mark_checklist_present as mark_checklist_present_service
 from apps.documents.services.google_drive import archive_file_link
 
 from .models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink, DocumentUpload
@@ -92,6 +94,7 @@ def checklist_detail(request, transaction_id):
             return redirect("documents:checklist_detail", transaction_id=transaction.pk)
         if action == "save_checklist":
             update_checklist_manual(request, transaction)
+            refresh_transaction_document_status(transaction)
             messages.success(request, "Checklist berhasil diperbarui.")
             return redirect("documents:checklist_detail", transaction_id=transaction.pk)
 
@@ -242,6 +245,7 @@ def process_single_document_file(request, transaction, document_type, upload_fil
             archive_extracted_files(parsed, request.user, transaction)
             persist_drpp_groups(parsed, transaction, document_upload, request.user)
             update_checklist_from_parsed(transaction, document_type, parsed, request.user)
+            refresh_transaction_document_status(transaction, verified_document_type=document_type)
 
         if drive_result["status"] not in {"uploaded", "local_archived"}:
             messages.warning(request, drive_result["error_message"] or "Dokumen tersimpan, tetapi arsip Drive perlu dicek.")
@@ -470,22 +474,7 @@ def update_checklist_from_parsed(transaction, document_type, parsed, user):
 
 
 def mark_checklist_present(transaction, document_type, user):
-    normalized = (document_type or "").upper()
-    candidates = list(ChecklistStatus.objects.filter(transaction_detail=transaction))
-    matched = False
-    for status in candidates:
-        name = status.nama_dokumen.upper()
-        if normalized in name or name in normalized or (normalized == "KW" and ("KUITANSI" in name or "BUKTI" in name)):
-            status.status = ChecklistStatus.Status.ADA
-            status.updated_by = user
-            status.save(update_fields=["status", "updated_by", "updated_at"])
-            matched = True
-    if not matched:
-        ChecklistStatus.objects.get_or_create(
-            transaction_detail=transaction,
-            nama_dokumen=document_type,
-            defaults={"wajib": True, "status": ChecklistStatus.Status.ADA, "updated_by": user},
-        )
+    mark_checklist_present_service(transaction, document_type, user)
 
 
 def update_checklist_manual(request, transaction):

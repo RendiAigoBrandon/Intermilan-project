@@ -666,7 +666,7 @@ def extract_document_text(file_path, document_type=None):
 def extract_pdf_pages(file_path, use_ocr=False):
     original_order = os.getenv("OCR_ENGINE_ORDER")
     if not use_ocr:
-        os.environ["OCR_ENGINE_ORDER"] = "text,tesseract"
+        os.environ["OCR_ENGINE_ORDER"] = "text"
     elif not original_order:
         os.environ["OCR_ENGINE_ORDER"] = "text,tesseract,paddleocr"
     try:
