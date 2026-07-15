@@ -58,11 +58,13 @@ def paket_spm_list(request):
             kind = "zip" if lower_name.endswith(".zip") else "pdf"
 
         file_path = fs.path(filename)
-        use_ocr = bool(request.POST.get("use_ocr"))
+        use_ocr = False
 
         # 1. Identity probe dulu. Jika D_K existing aman ditemukan, jangan jalankan full parser/OCR.
-        input_tahun = request.POST.get("tahun")
-        input_satker = str(request.POST.get("satker_code") or "").split(" - ")[0].strip()
+        sp2d_context = get_sp2d_context(request.POST.get("sp2d_raw_id"), request.user)
+        sp2d_row = sp2d_context.get("row") if sp2d_context else None
+        input_tahun = str(request.POST.get("tahun") or getattr(sp2d_row, "tahun", "") or "")
+        input_satker = str(request.POST.get("satker_code") or getattr(sp2d_row, "satker_code", "") or "").split(" - ")[0].strip()
         identity_probe = probe_package_identity(
             file_path,
             original_filename,
@@ -172,9 +174,25 @@ def paket_spm_list(request):
         drpp_meta = ((parsed.get("drpp") or (drpp_list[0] if drpp_list else {})) or {}).get("metadata", {})
         tanggal_spm = spm_meta.get("tanggal_spm")
         tanggal_sp2d = spm_meta.get("tanggal_sp2d")
-        tahun = int(request.POST.get("tahun")) if str(request.POST.get("tahun", "")).isdigit() else (getattr(tanggal_spm, "year", None) or spm_meta.get("tahun"))
-        bulan = parse_month(request.POST.get("bulan", "")) or getattr(tanggal_sp2d, "month", None)
-        satker = str(request.POST.get("satker_code") or spm_meta.get("satker_app_code") or spm_meta.get("satker_code") or "")[:32]
+        tahun = (
+            (int(request.POST.get("tahun")) if str(request.POST.get("tahun", "")).isdigit() else None)
+            or
+            getattr(tanggal_spm, "year", None)
+            or spm_meta.get("tahun")
+            or getattr(sp2d_row, "tahun", None)
+        )
+        bulan = (
+            getattr(tanggal_sp2d, "month", None)
+            or getattr(sp2d_row, "bulan", None)
+            or parse_month(str(getattr(sp2d_row, "bulan_nama", "") or ""))
+        )
+        satker = str(
+            spm_meta.get("satker_app_code")
+            or spm_meta.get("satker_code")
+            or str(request.POST.get("satker_code") or "").split(" - ")[0].strip()
+            or getattr(sp2d_row, "satker_code", "")
+            or ""
+        )[:32]
         parsed["paket_context"] = {"tahun": tahun, "bulan": bulan, "satker_code": satker}
 
         import json

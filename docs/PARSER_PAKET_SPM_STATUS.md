@@ -5,7 +5,9 @@ Tanggal audit: 2026-07-15
 | Area spesifikasi | Status | Bukti kode | Catatan |
 |---|---|---|---|
 | Identity probe sebelum OCR penuh | Partial | `apps/paket_spm/services.py::probe_package_identity`, `apps/paket_spm/views.py::paket_spm_list` | Sudah dipanggil sebelum parser penuh, tetapi probe ZIP masih berbasis filename/native text ringan dan belum membaca header OCR rendah semua file. |
-| Page classifier per halaman | Partial | `apps/core/parsers.py::classify_page_types`, `apps/core/ocr.py::classify_page` | Sudah ada klasifikasi per halaman dan manifest dasar, namun confidence/alasan klasifikasi belum kaya untuk semua tipe. |
+| Intake upload file-only | Implemented | `templates/paket_spm/list.html`, `apps/paket_spm/views.py::paket_spm_list` | Form awal hanya memilih file/folder/ZIP. Satker, tahun, dan bulan dideteksi dari konteks/hasil parse dan diedit di preview. |
+| ZIP container dan manifest | Implemented | `apps/core/parsers.py::safe_extract_zip`, `parse_paket_spm_zip` | Outer ZIP diperlakukan sebagai container, nested ZIP ditolak, path traversal dicegah, PDF direkursifkan, SHA256 dicatat, dan duplikat by hash ditandai `duplicate`. |
+| Page classifier per halaman | Partial | `apps/core/parsers.py::classify_page_types`, `apps/core/ocr.py::classify_page`, `classify_document` | Klasifikasi dokumen sudah anchor-first agar SPM/DRPP/Lampiran/SP2D tidak kalah oleh kata support seperti faktur. Confidence/alasan klasifikasi belum kaya untuk semua tipe. |
 | Parser registry per jenis dokumen | Partial | `apps/core/parsers.py::DOCUMENT_PARSER_REGISTRY` | SPM/DRPP/KW memakai extractor; invoice/faktur/BAST/SSP/SP2D masih review-only. |
 | Parser tabel cell/TSV/koordinat | Partial | `parse_detail_sp2d_rows_by_grid`, `parse_detail_sp2d_rows_by_crop`, `parse_position_detail_items` | Production SPM memakai parser v2 untuk detail SP2D; DRPP Bukti Pengeluaran masih fallback text OCR yang dikontrol validasi total. |
 | Pemisahan SPM/SP2D/DRPP/Lampiran COA/KW/support | Partial | `classify_document`, `classify_page_types`, `parse_paket_spm_zip` | Support tidak jadi transaksi; klasifikasi beberapa dokumen masih perlu diperluas. |
@@ -14,7 +16,7 @@ Tanggal audit: 2026-07-15
 | Existing D_K sebelum full OCR | Partial | `probe_package_identity`, `parsed_from_identity_probe` | Exact D_K skip full parser; confidence konflik masih perlu diperkaya. |
 | Data meragukan menjadi Perlu Review | Partial | `build_package_decision`, `evaluate_document_status` | Parser tabel gagal dan KW standalone diblokir; beberapa parser lama masih memberi `needs_manual_review` tapi belum selalu membawa field confidence. |
 | Tidak fallback legacy flat text untuk auto-commit | Partial | `spm_table_parser_needs_review`, `build_transaction_rows_from_package` | SPM parser v2 gagal diblokir; DRPP text parser masih dipakai dengan validasi total karena belum ada cell parser DRPP penuh. |
-| Preview DRPP editable | Partial | `templates/paket_spm/preview.html`, `paket_spm_preview` | Preview rows bisa diedit untuk D_K; parent/item DRPP khusus belum lengkap sesuai spec. |
+| Preview DRPP editable | Implemented | `templates/paket_spm/preview.html`, `paket_spm_preview` | Parent DRPP dan item KW dapat diedit, disimpan ke `parsed_data`, dan validasi ulang tanpa OCR ulang. |
 | Blind test | Missing | - | Belum ada corpus blind test yang stabil di repo. |
 | Accordion D_K | Missing | - | Ditunda sesuai instruksi agar fokus P0 parser. |
 
@@ -63,4 +65,15 @@ Hasil: `needs_manual_review`, DRPP 00025, 2 item, total item 6.423.800, total te
 - Relasi granular invoice/faktur/BAST ke item KW masih belum lengkap; support sudah dipisahkan agar tidak menjadi transaksi.
 - Identity probe belum OCR header rendah multi-file untuk semua kondisi konflik.
 - Full upload production test untuk PDF 31 halaman masih opt-in karena lambat; parser langsung dan integration OCR lulus.
-- Preview DRPP editable parent/item belum lengkap sesuai seluruh spesifikasi.
+
+## Tambahan Implementasi 2026-07-15
+
+- Form awal Upload Paket SPM tidak lagi menampilkan input Satker/Tahun/Bulan; field tersebut menjadi hasil deteksi dan koreksi preview.
+- ZIP manifest menandai duplikat PDF berdasarkan SHA256 dan tidak mem-parse file duplikat.
+- Klasifikasi dokumen memprioritaskan anchor isi dokumen (`SURAT PERINTAH MEMBAYAR`, `DAFTAR RINCIAN PERMINTAAN PEMBAYARAN`, `LAMPIRAN DAFTAR RINCIAN`, `SP2D`) sebelum fallback filename/support.
+- Targeted test baru:
+  - `test_zip_manifest_marks_duplicate_pdf_by_hash_without_parsing_duplicate`
+  - `test_classifier_prioritizes_document_anchors_over_support_keywords`
+  - `test_upload_form_initial_context_fields_are_detected_in_preview_not_visible_inputs`
+
+Sisa terbesar tetap parser DRPP Bukti Pengeluaran full cell/TSV dan relasi granular dokumen support ke item KW.

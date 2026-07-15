@@ -21,10 +21,6 @@
     {% csrf_token %}
     {% if sp2d_context %}<input type="hidden" name="sp2d_raw_id" value="{{ sp2d_context.sp2d_raw_id }}">{% endif %}
 
-    <div class="form-field"><label>Satker</label><input class="form-control" name="satker_code" value="{{ sp2d_context.satker_code|default:'' }}" placeholder="Contoh: 1300"></div>
-    <div class="form-field"><label>Tahun</label><input class="form-control" name="tahun" value="{{ sp2d_context.tahun|default:'2026' }}"></div>
-    <div class="form-field"><label>Bulan SP2D</label><input class="form-control" name="bulan" value="{{ sp2d_context.bulan|default:'' }}" placeholder="Contoh: Juni"></div>
-
     <div class="form-field file-field full">
       <label>Paket SPM</label>
       <div class="upload-dropzone js-upload-dropzone">
@@ -33,10 +29,8 @@
         <input class="form-control js-upload-files" type="file" name="file_paket" multiple accept=".pdf,.zip,application/zip,application/pdf">
       </div>
       <input class="js-folder-files" type="file" name="document_files" multiple webkitdirectory directory hidden>
-      <p class="muted mt-small">Untuk folder, klik area upload sambil tahan tombol <b>Shift</b> atau drag folder langsung ke area ini jika browser mendukung.</p>
+      <p class="muted mt-small">Satker, tahun, dan bulan dideteksi otomatis lalu bisa dikoreksi pada halaman preview. Untuk folder, klik area upload sambil tahan tombol <b>Shift</b> atau drag folder langsung ke area ini jika browser mendukung.</p>
     </div>
-
-    <label class="checkline"><input type="checkbox" name="use_ocr"> Mode akurasi tinggi untuk scan buram (lebih lama)</label>
 
     <div class="note-box full js-upload-progress" hidden>
       <strong class="js-upload-progress-title">File sedang diupload...</strong>

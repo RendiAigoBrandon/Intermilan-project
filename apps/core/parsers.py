@@ -2694,6 +2694,17 @@ def classify_document(file_name, text=""):
     name = file_name.upper()
     upper = text.upper()
     haystack = f"{name}\n{upper[:1000]}"
+    content_hint = upper[:3000]
+    if "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D" in content_hint:
+        return "SPM"
+    if "SURAT PERINTAH MEMBAYAR" in content_hint or "SURAT PERMINTAAN PEMBAYARAN" in content_hint:
+        return "SPM"
+    if "LAMPIRAN DAFTAR RINCIAN PERMINTAAN PEMBAYARAN" in content_hint or "RO.KOMP.SUBKOMP" in content_hint:
+        return "LAMPIRAN_COA"
+    if "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN" in content_hint or "BUKTI PENGELUARAN" in content_hint:
+        return "DRPP"
+    if "SURAT PERINTAH PENCAIRAN DANA" in content_hint:
+        return "SP2D"
     if "FAKTUR" in haystack:
         return "FAKTUR"
     if "INVOICE" in haystack:
@@ -2877,6 +2888,7 @@ def safe_extract_zip(zip_path):
 
     temp_dir = tempfile.mkdtemp(prefix="intermilan_paket_")
     extracted = []
+    seen_sha = {}
     with zipfile.ZipFile(zip_path) as archive:
         members = [member for member in archive.infolist() if not member.is_dir()]
         if len(members) > settings.MAX_ZIP_FILES:
@@ -2916,17 +2928,34 @@ def safe_extract_zip(zip_path):
                         break
                     digest.update(chunk)
                     dst.write(chunk)
+            sha256 = digest.hexdigest()
+            duplicate_of = seen_sha.get(sha256, "")
+            if not duplicate_of:
+                seen_sha[sha256] = name
             extracted.append({
                 "file_name": os.path.basename(name),
                 "relative_path": name,
                 "path": str(target),
                 "size": member.file_size,
-                "sha256": digest.hexdigest(),
+                "sha256": sha256,
                 "type": "",
-                "status": "extracted",
+                "status": "duplicate" if duplicate_of else "extracted",
                 "skip_reason": "",
+                "duplicate_of": duplicate_of,
             })
     return temp_dir, extracted
+
+
+def classify_pdf_by_content_or_name(file_path, file_name):
+    text_probe = {"method": "filename", "warnings": [], "pages": []}
+    try:
+        text_probe = extract_pdf_text(file_path, ocr=False)
+        content_type = classify_document("", "\n".join(text_probe.get("pages", [])))
+        if content_type != "UNKNOWN":
+            return content_type, text_probe
+    except Exception:
+        pass
+    return classify_document(file_name, ""), text_probe
 
 
 def parse_paket_spm_zip(zip_path, ocr=False):
@@ -2941,26 +2970,17 @@ def parse_paket_spm_zip(zip_path, ocr=False):
     classified_types = []
     for item in files:
         if item["status"] != "extracted":
+            parsed_files.append(item)
             continue
-        doc_type = classify_document(item["file_name"], "")
-        if doc_type == "UNKNOWN":
-            try:
-                text_probe = extract_pdf_text(item["path"], ocr=False)
-                doc_type = classify_document(item["file_name"], "\n".join(text_probe["pages"]))
-            except Exception:
-                doc_type = "UNKNOWN"
+        doc_type, _ = classify_pdf_by_content_or_name(item["path"], item["file_name"])
         item["type"] = doc_type
         classified_types.append(doc_type)
     has_drpp_file = "DRPP" in classified_types
     for item in files:
         if item["status"] != "extracted":
-            parsed_files.append(item)
             continue
-        doc_type = item.get("type") or classify_document(item["file_name"], "")
-        text_probe = {"method": "filename", "warnings": [], "pages": []}
-        if doc_type == "UNKNOWN":
-            text_probe = extract_pdf_text(item["path"], ocr=False)
-            doc_type = classify_document(item["file_name"], "\n".join(text_probe["pages"]))
+        doc_type = item.get("type") or "UNKNOWN"
+        _, text_probe = classify_pdf_by_content_or_name(item["path"], item["file_name"])
         if doc_type == "SPM":
             parsed = parse_document_with_registry(item["path"], item["file_name"], doc_type, ocr=ocr)
             spm_data = spm_data or parsed

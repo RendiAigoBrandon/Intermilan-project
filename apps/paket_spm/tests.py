@@ -1237,8 +1237,8 @@ class PaketSPMRegressionTests(TestCase):
             "DRPP 00032.pdf",
         ]
         with zipfile.ZipFile(zip_path, "w") as archive:
-            for name in pdf_names:
-                archive.writestr(name, b"%PDF-1.4\nfixture\n")
+            for index, name in enumerate(pdf_names, start=1):
+                archive.writestr(name, f"%PDF-1.4\nfixture {index}\n".encode())
 
         def fake_registry(path, file_name, doc_type, ocr=False):
             if doc_type == "SPM":
@@ -1273,6 +1273,62 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(len(parsed["kw_items"]), 4)
         self.assertTrue(all(row.get("relative_path") for row in parsed["files"]))
         self.assertTrue(all(row.get("sha256") for row in parsed["files"]))
+
+    def test_zip_manifest_marks_duplicate_pdf_by_hash_without_parsing_duplicate(self):
+        zip_path = os.path.join(self.media_tmp.name, "paket_duplikat.zip")
+        pdf_bytes = b"%PDF-1.4\nsame-file\n"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr("SPM.pdf", pdf_bytes)
+            archive.writestr("sub/SPM copy.pdf", pdf_bytes)
+
+        calls = []
+
+        def fake_registry(path, file_name, doc_type, ocr=False):
+            calls.append(file_name)
+            return {
+                "file_name": file_name,
+                "status": "parsed_text",
+                "method": "mock",
+                "warnings": [],
+                "metadata": {"nomor_spm": "00001T", "satker_app_code": "1300", "tanggal_spm": "2026-01-02", "jenis_spm": "LS", "total_pembayaran": Decimal("1")},
+                "detail_items": [],
+                "akun_rows": [],
+            }
+
+        with patch("apps.core.parsers.parse_document_with_registry", side_effect=fake_registry), \
+             patch("apps.core.parsers.extract_pdf_text", return_value={"method": "text", "warnings": [], "pages": ["SURAT PERINTAH MEMBAYAR"], "page_details": []}):
+            parsed = parse_paket_spm_zip(zip_path, ocr=False)
+
+        duplicates = [row for row in parsed["files"] if row["status"] == "duplicate"]
+        self.assertEqual(len(duplicates), 1)
+        self.assertEqual(duplicates[0]["duplicate_of"], "SPM.pdf")
+        self.assertEqual(calls, ["SPM.pdf"])
+
+    def test_classifier_prioritizes_document_anchors_over_support_keywords(self):
+        self.assertEqual(
+            classify_document(
+                "",
+                "SURAT PERINTAH MEMBAYAR\nLampiran faktur pajak tersedia sebagai dokumen pendukung.",
+            ),
+            "SPM",
+        )
+        self.assertEqual(
+            classify_document(
+                "",
+                "LAMPIRAN DAFTAR RINCIAN PERMINTAAN PEMBAYARAN\nRo.Komp.Subkomp.Item - Uraian",
+            ),
+            "LAMPIRAN_COA",
+        )
+
+    def test_upload_form_initial_context_fields_are_detected_in_preview_not_visible_inputs(self):
+        self.client.login(username="operator", password="password")
+
+        response = self.client.get(reverse("paket_spm:list"))
+
+        self.assertNotContains(response, 'name="satker_code"')
+        self.assertNotContains(response, 'name="tahun"')
+        self.assertNotContains(response, 'name="bulan"')
+        self.assertContains(response, "Satker, tahun, dan bulan dideteksi otomatis")
 
     def test_nested_zip_is_rejected_before_document_parser(self):
         zip_path = os.path.join(self.media_tmp.name, "outer.zip")
