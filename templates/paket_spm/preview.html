@@ -71,6 +71,28 @@
   </div>
   {% endif %}
 
+  {% if document_checklist %}
+  <h3 class="section-title mt">Checklist Dokumen</h3>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Komponen</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in document_checklist %}
+        <tr>
+          <td>{{ item.label }}</td>
+          <td>{{ item.status }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   <h3 class="section-title mt">Satker: {{ spm_meta.satker_app_name|default:paket.satker_code }}</h3>
   <form method="post" style="margin-bottom: 24px;">
     {% csrf_token %}
@@ -81,6 +103,7 @@
     </div>
 
     <div class="table-wrap">
+      <input type="hidden" name="preview_row_count" value="{{ transaction_rows|length }}">
       <table class="data-table data-table-wide">
         <thead>
           <tr>
@@ -105,20 +128,20 @@
           {% for row in transaction_rows %}
           <tr>
             <td>{{ row.akun }}{{ row.no_kuitansi }}</td>
-            <td>{{ row.akun }}</td>
-            <td>{{ row.bulan_sp2d|month_id }}</td>
-            <td>{{ row.cara_pembayaran }}</td>
-            <td>{{ row.nomor_spm }}</td>
-            <td>{{ row.tanggal_spm|date:"Y-m-d" }}</td>
-            <td>{{ row.jenis_spm }}</td>
-            <td>{{ row.no_kuitansi }}</td>
-            <td>{{ row.no_drpp }}</td>
-            <td title="{{ row.deskripsi }}">{{ row.deskripsi|truncatechars:50 }}</td>
-            <td class="col-nominal">{{ row.nilai_bruto|id_number }}</td>
-            <td class="col-nominal">{{ row.nilai_netto|id_number }}</td>
-            <td>{{ row.pembebanan }}</td>
-            <td>{{ row.fp }}</td>
-            <td class="col-nominal">{{ row.pph21|id_number }}</td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-akun" value="{{ row.akun }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-bulan_sp2d" value="{{ row.bulan_sp2d|month_id }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-cara_pembayaran" value="{{ row.cara_pembayaran }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-nomor_spm" value="{{ row.nomor_spm }}"></td>
+            <td><input class="table-input" type="date" name="rows-{{ forloop.counter0 }}-tanggal_spm" value="{{ row.tanggal_spm|date:'Y-m-d' }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-jenis_spm" value="{{ row.jenis_spm }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-no_kuitansi" value="{{ row.no_kuitansi }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-no_drpp" value="{{ row.no_drpp }}"></td>
+            <td><textarea class="table-input" name="rows-{{ forloop.counter0 }}-deskripsi" rows="2">{{ row.deskripsi }}</textarea></td>
+            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-nilai_bruto" value="{{ row.nilai_bruto|id_number }}"></td>
+            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-nilai_netto" value="{{ row.nilai_netto|id_number }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-pembebanan" value="{{ row.pembebanan }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-fp" value="{{ row.fp }}"></td>
+            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-pph21" value="{{ row.pph21|id_number }}"></td>
           </tr>
           {% empty %}
           <tr>
@@ -136,13 +159,10 @@
         </tfoot>
       </table>
     </div>
-  </form>
-
-
-
   {% if drpp_rows %}
   <h3 class="section-title mt">DRPP Terbaca</h3>
   <div class="table-wrap">
+    <input type="hidden" name="drpp_row_count" value="{{ drpp_rows|length }}">
     <table class="data-table">
       <thead>
         <tr>
@@ -157,12 +177,21 @@
       <tbody>
         {% for row in drpp_rows %}
         <tr>
-          <td>{{ row.nomor_drpp }}</td>
-          <td>{{ row.nomor_spm }}</td>
+          <td><input class="table-input" name="drpp-{{ forloop.counter0 }}-nomor_drpp" value="{{ row.nomor_drpp }}"></td>
+          <td><input class="table-input" name="drpp-{{ forloop.counter0 }}-nomor_spm" value="{{ row.nomor_spm }}"></td>
           <td>{{ row.item_count }}</td>
           <td class="col-nominal">{{ row.total|id_number }}</td>
           <td>{{ row.status }}</td>
           <td>{{ row.file_name }}</td>
+        </tr>
+        <tr>
+          <td colspan="6">
+            <div class="filter-grid">
+              <label>Satker <input class="table-input" name="drpp-{{ forloop.counter0 }}-satker" value="{{ row.satker|default:paket.satker_code }}"></label>
+              <label>Tahun <input class="table-input" name="drpp-{{ forloop.counter0 }}-tahun" value="{{ row.tahun|default:paket.tahun }}"></label>
+              <label>Tanggal DRPP <input class="table-input" type="date" name="drpp-{{ forloop.counter0 }}-tanggal_drpp" value="{{ row.tanggal_drpp|default:'' }}"></label>
+            </div>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -173,25 +202,34 @@
   {% if kw_rows %}
   <h3 class="section-title mt">Item KW/Bukti</h3>
   <div class="table-wrap">
+    <input type="hidden" name="kw_row_count" value="{{ kw_rows|length }}">
     <table class="data-table">
       <thead>
         <tr>
           <th>No DRPP</th>
           <th>No KW/Bukti</th>
           <th>Akun</th>
+          <th>Tanggal</th>
+          <th>Penerima</th>
+          <th>NPWP</th>
           <th class="col-nominal">Jumlah</th>
           <th>Keperluan</th>
+          <th>Pembebanan</th>
           <th>Status</th>
         </tr>
       </thead>
       <tbody>
         {% for item in kw_rows %}
         <tr>
-          <td>{{ item.no_drpp|default:"-" }}</td>
-          <td>{{ item.no_bukti|default:"-" }}</td>
-          <td>{{ item.akun|default:"-" }}</td>
-          <td class="col-nominal">{{ item.jumlah|id_number }}</td>
-          <td title="{{ item.keperluan }}">{{ item.keperluan|truncatechars:140 }}</td>
+          <td><input class="table-input" name="kw-{{ forloop.counter0 }}-no_drpp" value="{{ item.no_drpp|default:'' }}"></td>
+          <td><input class="table-input" name="kw-{{ forloop.counter0 }}-no_bukti" value="{{ item.no_bukti|default:'' }}"></td>
+          <td><input class="table-input" name="kw-{{ forloop.counter0 }}-akun" value="{{ item.akun|default:'' }}"></td>
+          <td><input class="table-input" type="date" name="kw-{{ forloop.counter0 }}-tanggal_bukti" value="{{ item.tanggal_bukti|default:'' }}"></td>
+          <td><input class="table-input" name="kw-{{ forloop.counter0 }}-penerima" value="{{ item.penerima|default:'' }}"></td>
+          <td><input class="table-input" name="kw-{{ forloop.counter0 }}-npwp" value="{{ item.npwp|default:'' }}"></td>
+          <td class="col-nominal"><input class="table-input col-nominal" name="kw-{{ forloop.counter0 }}-jumlah" value="{{ item.jumlah|id_number }}"></td>
+          <td><textarea class="table-input" name="kw-{{ forloop.counter0 }}-keperluan" rows="2">{{ item.keperluan }}</textarea></td>
+          <td><input class="table-input" name="kw-{{ forloop.counter0 }}-pembebanan" value="{{ item.pembebanan|default:'' }}"></td>
           <td>{{ item.status|default:"Terbaca" }}</td>
         </tr>
         {% endfor %}
@@ -199,6 +237,7 @@
     </table>
   </div>
   {% endif %}
+  </form>
 
   <details class="note-box mt">
     <summary><strong>&#128268; Lihat Detail Teknis OCR</strong></summary>
@@ -362,6 +401,11 @@
         {% if decision.matched_transaction %}
         <input type="hidden" name="matched_transaction_id" value="{{ decision.matched_transaction.id }}">
         {% endif %}
+      {% elif decision.commit_action == 'update_existing' %}
+        <button class="btn primary" type="submit" name="commit_choice" value="update_existing" {% if not can_commit %}disabled title="Perbaiki error rekonsiliasi sebelum menyimpan."{% endif %}>PERBARUI D_K EXISTING</button>
+        {% if decision.matched_transaction %}
+        <span class="muted">Target D_K: {{ decision.matched_transaction.satker_code }} / {{ decision.matched_transaction.nomor_spm }}</span>
+        {% endif %}
       {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
         <button class="btn primary" type="submit" name="commit_choice" value="create_from_package" {% if not can_commit %}disabled title="Perbaiki error rekonsiliasi sebelum menyimpan."{% endif %}>SIMPAN KE D_K</button>
       {% else %}
@@ -372,7 +416,9 @@
     </div>
 
     <div class="muted" style="font-size: 13px;">
-      {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
+      {% if decision.commit_action == 'update_existing' %}
+        DRPP/KW akan memperbarui D_K existing berdasarkan Satker, Tahun, dan No. SPM yang sama.
+      {% elif decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
         Data aman dari duplikasi.
       {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
         Dokumen ini belum ada di D_K dan siap dibuat sebagai entri baru.

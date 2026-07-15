@@ -1,10 +1,15 @@
 import io
+import json
 import os
+import re
 import shutil
 import sys
+import hashlib
 from dataclasses import dataclass, field
 
 from PIL import Image, ImageOps, ImageFilter
+
+OCR_CACHE_VERSION = "detail-tsv-v2"
 
 
 # ─── Klasifikasi halaman dokumen ─────────────────────────────────────────────
@@ -95,6 +100,7 @@ class OCRPage:
     confidence: float = 0.0
     warnings: list = field(default_factory=list)
     page_classification: str = ""
+    tsv_words: list = field(default_factory=list)
 
     @property
     def method(self):
@@ -139,6 +145,49 @@ def optional_import(module_name):
 
 def ocr_log(message):
     print(f"[INTERMILAN OCR] {message}", flush=True)
+
+
+def ocr_cache_key(file_path):
+    try:
+        stat = os.stat(file_path)
+        raw = f"{OCR_CACHE_VERSION}|{os.path.abspath(file_path)}|{stat.st_size}|{stat.st_mtime_ns}|{','.join(engine_order())}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    except OSError:
+        return ""
+
+
+def ocr_cache_path(file_path):
+    key = ocr_cache_key(file_path)
+    if not key or not parse_bool_env("OCR_CACHE_ENABLED", True):
+        return ""
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(file_path)), ".ocr_cache")
+    return os.path.join(cache_dir, f"{key}.json")
+
+
+def load_ocr_cache(file_path):
+    path = ocr_cache_path(file_path)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            cached = json.load(handle)
+        cached.setdefault("warnings", []).append("Hasil OCR diambil dari cache file aktif.")
+        return cached
+    except Exception as exc:
+        ocr_log(f"cache OCR tidak bisa dibaca: {exc}")
+        return None
+
+
+def save_ocr_cache(file_path, result):
+    path = ocr_cache_path(file_path)
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(result, handle, ensure_ascii=False, default=str)
+    except Exception as exc:
+        ocr_log(f"cache OCR tidak bisa disimpan: {exc}")
 
 
 def pdf_page_count(file_path):
@@ -237,6 +286,7 @@ def page_dict(page):
         "status": page.status,
         "warnings": page.warnings,
         "page_classification": page.page_classification,
+        "tsv_words": page.tsv_words,
     }
 
 
@@ -359,12 +409,25 @@ def render_pdf_pages(file_path, dpi=250):
 
 
 def preprocess_image(image):
-    processed = image.convert("L")
+    processed = ImageOps.exif_transpose(image).convert("L")
     processed = ImageOps.autocontrast(processed)
     processed = processed.filter(ImageFilter.SHARPEN)
-    if parse_bool_env("OCR_ENABLE_THRESHOLD", False):
+    if parse_bool_env("OCR_ENABLE_THRESHOLD", True):
         processed = processed.point(lambda pixel: 255 if pixel > 180 else 0)
     return processed
+
+
+def auto_rotate_for_ocr(pytesseract, image):
+    if not parse_bool_env("OCR_AUTO_ROTATE", True):
+        return image
+    try:
+        osd = pytesseract.image_to_osd(image)
+        match = re.search(r"Rotate:\s*(\d+)", osd)
+        angle = int(match.group(1)) if match else 0
+        return image.rotate(360 - angle, expand=True) if angle else image
+    except Exception as exc:
+        ocr_log(f"auto-rotate OCR dilewati: {exc}")
+        return image
 
 
 def tesseract_page_text(pytesseract, image):
@@ -380,7 +443,8 @@ def tesseract_page_text(pytesseract, image):
                 data = pytesseract.image_to_data(image, **kwargs)
                 words = []
                 confidences = []
-                for word, conf in zip(data.get("text", []), data.get("conf", [])):
+                tsv_words = []
+                for index, (word, conf) in enumerate(zip(data.get("text", []), data.get("conf", []))):
                     if word and str(word).strip():
                         words.append(str(word))
                         try:
@@ -389,16 +453,26 @@ def tesseract_page_text(pytesseract, image):
                             conf_value = -1.0
                         if conf_value >= 0:
                             confidences.append(conf_value)
+                        tsv_words.append({
+                            "text": str(word).strip(),
+                            "confidence": conf_value,
+                            "left": int(data.get("left", [0])[index]),
+                            "top": int(data.get("top", [0])[index]),
+                            "width": int(data.get("width", [0])[index]),
+                            "height": int(data.get("height", [0])[index]),
+                            "page": 0,
+                            "rotation": 0,
+                        })
                 text = " ".join(words).strip()
                 ocr_log(f"tesseract attempt lang={lang or 'default'} config={config} raw_text_length={len(text)}")
                 if text:
                     confidence = round(sum(confidences) / len(confidences), 2) if confidences else 0.0
-                    return text, confidence, warnings
+                    return text, confidence, warnings, tsv_words
             except Exception as exc:
                 warning = f"Tesseract lang {lang or 'default'} config {config} gagal: {exc}"
                 warnings.append(warning)
                 ocr_log(warning)
-    return "", 0.0, warnings
+    return "", 0.0, warnings, []
 
 
 def extract_tesseract(file_path, images=None):
@@ -422,10 +496,12 @@ def extract_tesseract(file_path, images=None):
     for index, image in enumerate(images, start=1):
         page_warnings = []
         try:
-            text, confidence, page_warnings = tesseract_page_text(pytesseract, preprocess_image(image))
+            text, confidence, page_warnings, tsv_words = tesseract_page_text(pytesseract, auto_rotate_for_ocr(pytesseract, preprocess_image(image)))
+            for word in tsv_words:
+                word["page"] = index
             status = "parsed_ocr" if text.strip() else "empty"
             page_class = classify_page(text)
-            pages.append(OCRPage(index, "tesseract", text, status, confidence, page_warnings, page_class))
+            pages.append(OCRPage(index, "tesseract", text, status, confidence, page_warnings, page_class, tsv_words))
         except Exception as exc:
             pages.append(OCRPage(index, "tesseract", "", "failed", 0.0, [f"Tesseract halaman {index} gagal: {exc}"], ""))
     if not any(page.extracted_text.strip() for page in pages):
@@ -533,13 +609,17 @@ def extract_document_text(file_path, document_type=None):
     4. PaddleOCR (Level 3) jika Tesseract kosong/confidence rendah dan PaddleOCR aktif.
     5. Pilih hasil terbaik.
     """
+    cached = load_ocr_cache(file_path)
+    if cached:
+        return cached
+
     warnings = []
     tried = []
     candidates = []
     native_result = None
     tesseract_result = None
     paddleocr_result = None
-    force_image = parse_bool_env("OCR_FORCE_IMAGE_FOR_SCANNED_DOCS", True)
+    force_image = parse_bool_env("OCR_FORCE_IMAGE_FOR_SCANNED_DOCS", False)
     tesseract_min_confidence = float(os.getenv("OCR_TESSERACT_MIN_CONFIDENCE", "60"))
     log_file_diagnostics(file_path, "start")
 
@@ -561,6 +641,7 @@ def extract_document_text(file_path, document_type=None):
             output["tesseract_text_length"] = 0
             output["tesseract_reason"] = "Native text cukup dan OCR_FORCE_IMAGE_FOR_SCANNED_DOCS=false; Tesseract tidak dipanggil."
             log_file_diagnostics(file_path, "done", f"best=text raw_text_length={native_text_len}")
+            save_ocr_cache(file_path, output)
             return output
 
         if native_result.combined_text.strip():
@@ -646,6 +727,7 @@ def extract_document_text(file_path, document_type=None):
         output["tesseract_text_length"] = tesseract_len
         output["tesseract_reason"] = "Tesseract dipanggil tetapi teks kosong." if "tesseract" in tried else "Tesseract tidak dipanggil."
         log_file_diagnostics(file_path, "done", f"best=failed raw_text_length=0 errors={'; '.join(warnings[-5:])}")
+        save_ocr_cache(file_path, output)
         return output
 
     best = max(candidates, key=lambda result: result_score(result, document_type))
@@ -660,6 +742,7 @@ def extract_document_text(file_path, document_type=None):
         else "Native text cukup; Tesseract tidak dipanggil."
     )
     log_file_diagnostics(file_path, "done", f"best={best.engine} raw_text_length={len(output.get('combined_text', ''))}")
+    save_ocr_cache(file_path, output)
     return output
 
 

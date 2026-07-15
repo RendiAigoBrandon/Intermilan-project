@@ -10,11 +10,12 @@ from django.core.files import File
 from django.core.files.storage import FileSystemStorage
 from django.db import transaction
 from django.shortcuts import redirect, render
+from django.urls import reverse
 
 from apps.accounts.access import filter_by_satker, permission_context
 from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.dk.models import TransactionDetail
-from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, lampiran_warnings, link_paket_spm_source_document
+from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, probe_package_identity
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMPreviewItem, PaketSPMUpload
@@ -59,52 +60,122 @@ def paket_spm_list(request):
         file_path = fs.path(filename)
         use_ocr = bool(request.POST.get("use_ocr"))
 
-        # 1. Parsing di POST
-        try:
-            if kind == "pdf":
-                text_probe = extract_pdf_text(file_path, ocr=False)
-                doc_type = classify_document(original_filename, "\n".join(text_probe["pages"]))
-                if doc_type == "DRPP" or doc_type == "KW":
-                    drpp = parse_drpp_pdf(file_path, ocr=use_ocr)
-                    spm = None
-                else:
-                    doc_type = "SPM"
-                    spm = parse_spm_pdf(file_path, ocr=use_ocr)
-                    drpp = None
-                parsed = {
-                    "ok": bool(
-                        (spm and spm["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (spm["metadata"].get("nomor_spm") or spm["akun_rows"]))
-                        or (drpp and drpp["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (drpp["metadata"].get("nomor_drpp") or drpp["items"]))
-                    ),
-                    "files": [{
-                        "file_name": original_filename,
-                        "type": doc_type,
-                        "status": "extracted",
-                        "parse_status": (spm or drpp)["status"],
-                        "method": (spm or drpp)["method"],
-                        "warnings": (spm or drpp)["warnings"],
-                    }],
-                    "spm": spm,
-                    "drpp": drpp,
-                    "drpps": [drpp] if drpp else [],
-                    "kw_by_drpp": {drpp["metadata"].get("nomor_drpp", "DRPP"): drpp.get("items", [])} if drpp else {},
-                    "kw_items": drpp.get("items", []) if drpp else [],
-                    "warnings": [],
-                    "temp_dir": "",
-                }
-            else:
+        # 1. Identity probe dulu. Jika D_K existing aman ditemukan, jangan jalankan full parser/OCR.
+        input_tahun = request.POST.get("tahun")
+        input_satker = str(request.POST.get("satker_code") or "").split(" - ")[0].strip()
+        identity_probe = probe_package_identity(
+            file_path,
+            original_filename,
+            input_satker=input_satker,
+            input_tahun=input_tahun,
+            kind=kind,
+        )
+        if kind == "zip":
+            try:
                 parsed = parse_paket_spm_zip(file_path, ocr=use_ocr)
-        except Exception as exc:
-            parsed = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [str(exc)], "temp_dir": ""}
+                parsed["identity_probe"] = identity_probe
+                if identity_probe.get("warnings"):
+                    parsed.setdefault("warnings", []).extend(identity_probe["warnings"])
+            except Exception as exc:
+                parsed = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [str(exc)], "temp_dir": ""}
+        elif identity_probe.get("exact_transaction_ids") and not identity_probe.get("needs_review"):
+            parsed = parsed_from_identity_probe(identity_probe, original_filename)
+        elif identity_probe.get("needs_review"):
+            parsed = parsed_from_identity_probe(identity_probe, original_filename)
+        else:
+            try:
+                if kind == "pdf":
+                    text_probe = extract_pdf_text(file_path, ocr=False)
+                    doc_type = classify_document(original_filename, "\n".join(text_probe["pages"]))
+                    if doc_type == "DRPP":
+                        drpp = parse_drpp_pdf(file_path, ocr=use_ocr)
+                        spm = None
+                    elif doc_type == "KW":
+                        spm = None
+                        drpp = None
+                        parsed = {
+                            "ok": False,
+                            "files": [{
+                                "file_name": original_filename,
+                                "type": "KW",
+                                "status": "needs_manual_review",
+                                "parse_status": "needs_manual_review",
+                                "method": "classifier",
+                                "warnings": ["KW/Bukti wajib diunggah bersama DRPP."],
+                            }],
+                            "spm": None,
+                            "drpp": None,
+                            "drpps": [],
+                            "kw_by_drpp": {},
+                            "kw_items": [],
+                            "warnings": ["KW/Bukti wajib diunggah bersama DRPP."],
+                            "temp_dir": "",
+                        }
+                        raise StopIteration
+                    elif doc_type in {"INVOICE", "FAKTUR", "BAST", "SSP", "SP2D", "LAMPIRAN_COA", "UNKNOWN"}:
+                        spm = None
+                        drpp = None
+                        parsed = {
+                            "ok": False,
+                            "files": [{
+                                "file_name": original_filename,
+                                "type": doc_type,
+                                "status": "needs_manual_review",
+                                "parse_status": "needs_manual_review",
+                                "method": "classifier",
+                                "warnings": ["Dokumen pendukung tidak boleh otomatis menjadi transaksi baru."],
+                            }],
+                            "spm": None,
+                            "drpp": None,
+                            "drpps": [],
+                            "kw_by_drpp": {},
+                            "kw_items": [],
+                            "warnings": ["Dokumen pendukung tidak boleh otomatis menjadi transaksi baru."],
+                            "temp_dir": "",
+                        }
+                        raise StopIteration
+                    else:
+                        doc_type = "SPM"
+                        spm = parse_spm_pdf(file_path, ocr=use_ocr)
+                        drpp = None
+                    parsed = {
+                        "ok": bool(
+                            (spm and spm["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (spm["metadata"].get("nomor_spm") or spm["akun_rows"]))
+                            or (drpp and drpp["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (drpp["metadata"].get("nomor_drpp") or drpp["items"]))
+                        ),
+                        "files": [{
+                            "file_name": original_filename,
+                            "type": doc_type,
+                            "status": "extracted",
+                            "parse_status": (spm or drpp)["status"],
+                            "method": (spm or drpp)["method"],
+                            "warnings": (spm or drpp)["warnings"],
+                        }],
+                        "spm": spm,
+                        "drpp": drpp,
+                        "drpps": [drpp] if drpp else [],
+                        "kw_by_drpp": {drpp["metadata"].get("nomor_drpp", "DRPP"): drpp.get("items", [])} if drpp else {},
+                        "kw_items": drpp.get("items", []) if drpp else [],
+                        "warnings": [],
+                        "temp_dir": "",
+                    }
+                else:
+                    parsed = parse_paket_spm_zip(file_path, ocr=use_ocr)
+            except StopIteration:
+                pass
+            except Exception as exc:
+                parsed = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [str(exc)], "temp_dir": ""}
 
         # 2. Simpan ke database sebagai DRAFT
         spm_meta = (parsed.get("spm") or {}).get("metadata", {})
-        drpp_meta = (parsed.get("drpp") or {}).get("metadata", {})
+        drpp_list = parsed.get("drpps") or ([parsed.get("drpp")] if parsed.get("drpp") else [])
+        drpp_meta = ((parsed.get("drpp") or (drpp_list[0] if drpp_list else {})) or {}).get("metadata", {})
         tanggal_spm = spm_meta.get("tanggal_spm")
         tanggal_sp2d = spm_meta.get("tanggal_sp2d")
-        tahun = int(request.POST.get("tahun")) if str(request.POST.get("tahun", "")).isdigit() else getattr(tanggal_spm, "year", None)
+        tahun = int(request.POST.get("tahun")) if str(request.POST.get("tahun", "")).isdigit() else (getattr(tanggal_spm, "year", None) or spm_meta.get("tahun"))
         bulan = parse_month(request.POST.get("bulan", "")) or getattr(tanggal_sp2d, "month", None)
         satker = str(request.POST.get("satker_code") or spm_meta.get("satker_app_code") or spm_meta.get("satker_code") or "")[:32]
+        parsed["paket_context"] = {"tahun": tahun, "bulan": bulan, "satker_code": satker}
 
         import json
         safe_parsed = make_json_safe(parsed)
@@ -248,6 +319,86 @@ def paket_spm_preview(request):
                 except:
                     pass
 
+            row_count = int(request.POST.get("preview_row_count") or 0)
+            if row_count:
+                preview_rows = []
+                for index in range(row_count):
+                    row = {
+                        "akun": clean_text(request.POST.get(f"rows-{index}-akun")),
+                        "bulan_sp2d": clean_text(request.POST.get(f"rows-{index}-bulan_sp2d")),
+                        "cara_pembayaran": clean_text(request.POST.get(f"rows-{index}-cara_pembayaran")),
+                        "nomor_spm": clean_text(request.POST.get(f"rows-{index}-nomor_spm")),
+                        "tanggal_spm": clean_text(request.POST.get(f"rows-{index}-tanggal_spm")),
+                        "jenis_spm": clean_text(request.POST.get(f"rows-{index}-jenis_spm")),
+                        "no_kuitansi": clean_text(request.POST.get(f"rows-{index}-no_kuitansi")),
+                        "no_drpp": clean_text(request.POST.get(f"rows-{index}-no_drpp")),
+                        "deskripsi": clean_text(request.POST.get(f"rows-{index}-deskripsi")),
+                        "nilai_bruto": clean_text(request.POST.get(f"rows-{index}-nilai_bruto")),
+                        "nilai_netto": clean_text(request.POST.get(f"rows-{index}-nilai_netto")),
+                        "pembebanan": clean_text(request.POST.get(f"rows-{index}-pembebanan")),
+                        "fp": clean_text(request.POST.get(f"rows-{index}-fp")),
+                        "pph21": clean_text(request.POST.get(f"rows-{index}-pph21")),
+                    }
+                    if any(row.values()):
+                        preview_rows.append(row)
+                parsed["preview_rows"] = preview_rows
+                if preview_rows:
+                    first = preview_rows[0]
+                    parsed["spm"]["metadata"]["nomor_spm"] = first.get("nomor_spm") or paket.nomor_spm
+                    parsed["spm"]["metadata"]["tanggal_spm"] = first.get("tanggal_spm") or parsed["spm"]["metadata"].get("tanggal_spm")
+                    parsed["spm"]["metadata"]["jenis_spm"] = first.get("jenis_spm") or parsed["spm"]["metadata"].get("jenis_spm")
+                    parsed["spm"]["metadata"]["cara_pembayaran"] = first.get("cara_pembayaran") or parsed["spm"]["metadata"].get("cara_pembayaran")
+                    total_bruto = sum((parse_user_decimal(row.get("nilai_bruto")) for row in preview_rows), Decimal("0"))
+                    total_netto = sum((parse_user_decimal(row.get("nilai_netto")) for row in preview_rows), Decimal("0"))
+                    parsed["spm"]["metadata"]["jumlah_pengeluaran"] = total_bruto
+                    parsed["spm"]["metadata"]["total_pembayaran"] = total_netto
+                    parsed["spm"]["metadata"]["jumlah_potongan"] = max(total_bruto - total_netto, Decimal("0"))
+                    paket.nomor_spm = first.get("nomor_spm") or paket.nomor_spm
+                    paket.nilai_spm = total_netto
+
+            drpp_count = int(request.POST.get("drpp_row_count") or 0)
+            if drpp_count:
+                drpps = parsed.get("drpps") or ([parsed.get("drpp")] if parsed.get("drpp") else [])
+                updated_drpps = []
+                for index in range(drpp_count):
+                    current = drpps[index] if index < len(drpps) and drpps[index] else {"metadata": {}, "items": []}
+                    meta = current.setdefault("metadata", {})
+                    meta["nomor_drpp"] = clean_text(request.POST.get(f"drpp-{index}-nomor_drpp", meta.get("nomor_drpp", "")))
+                    meta["satker_code"] = clean_text(request.POST.get(f"drpp-{index}-satker", meta.get("satker_app_code") or meta.get("satker_code", "")))
+                    meta["satker_app_code"] = meta["satker_code"]
+                    raw_tahun = clean_text(request.POST.get(f"drpp-{index}-tahun", meta.get("tahun", "")))
+                    meta["tahun"] = int(raw_tahun) if str(raw_tahun).isdigit() else raw_tahun
+                    meta["tanggal_drpp"] = clean_text(request.POST.get(f"drpp-{index}-tanggal_drpp", meta.get("tanggal_drpp", "")))
+                    meta["nomor_spm"] = clean_text(request.POST.get(f"drpp-{index}-nomor_spm", meta.get("nomor_spm", "")))
+                    updated_drpps.append(current)
+                parsed["drpps"] = updated_drpps
+                parsed["drpp"] = updated_drpps[0] if updated_drpps else None
+
+            kw_count = int(request.POST.get("kw_row_count") or 0)
+            if kw_count:
+                kw_items = []
+                for index in range(kw_count):
+                    row = {
+                        "no_drpp": clean_text(request.POST.get(f"kw-{index}-no_drpp")),
+                        "no_bukti": clean_text(request.POST.get(f"kw-{index}-no_bukti")),
+                        "tanggal_bukti": clean_text(request.POST.get(f"kw-{index}-tanggal_bukti")),
+                        "penerima": clean_text(request.POST.get(f"kw-{index}-penerima")),
+                        "npwp": clean_text(request.POST.get(f"kw-{index}-npwp")),
+                        "akun": clean_text(request.POST.get(f"kw-{index}-akun")),
+                        "jumlah": parse_user_decimal(request.POST.get(f"kw-{index}-jumlah")),
+                        "keperluan": clean_text(request.POST.get(f"kw-{index}-keperluan")),
+                        "pembebanan": clean_text(request.POST.get(f"kw-{index}-pembebanan")),
+                    }
+                    if any(v not in ("", Decimal("0")) for v in row.values()):
+                        kw_items.append(row)
+                parsed["kw_items"] = kw_items
+                for drpp in parsed.get("drpps") or []:
+                    nomor_drpp = (drpp.get("metadata") or {}).get("nomor_drpp", "")
+                    drpp["items"] = [{**item, "no_drpp": item.get("no_drpp") or nomor_drpp} for item in kw_items if (item.get("no_drpp") or nomor_drpp) == nomor_drpp]
+                parsed["kw_by_drpp"] = {}
+                for item in kw_items:
+                    parsed["kw_by_drpp"].setdefault(item.get("no_drpp") or "TANPA_DRPP", []).append(item)
+
             keterangan = request.POST.get("keterangan", "")
             if keterangan and "spm" in parsed:
                 if "warnings" not in parsed["spm"] or not isinstance(parsed["spm"]["warnings"], list):
@@ -286,12 +437,29 @@ def paket_spm_preview(request):
 
             if commit_choice == "link_existing":
                 matched_id = request.POST.get("matched_transaction_id")
-                if matched_id:
+                exact_rows = exact_transactions_for_package(parsed, paket)
+                if exact_rows:
+                    try:
+                        with transaction.atomic():
+                            link_existing_package_documents(
+                                paket,
+                                exact_rows,
+                                user=request.user,
+                                parsed=parsed,
+                                document_status=decision.get("document_status"),
+                            )
+                            paket.status = PaketSPMUpload.Status.COMMITTED
+                            paket.save(update_fields=["status"])
+                    except Exception as e:
+                        messages.error(request, str(e))
+                        return redirect("paket_spm:preview")
+                    messages.success(request, "Dokumen berhasil dikaitkan ke seluruh grup D_K existing.")
+                elif matched_id:
                     tx = TransactionDetail.objects.filter(id=matched_id).first()
                     if tx:
                         try:
                             with transaction.atomic():
-                                link_paket_spm_source_document(
+                                link_existing_package_documents(
                                     paket,
                                     [tx],
                                     user=request.user,
@@ -344,6 +512,26 @@ def paket_spm_preview(request):
 
                 messages.success(request, "Dokumen berhasil dibaca. D_K telah diperbarui/dibuat.")
 
+            elif commit_choice == "update_existing":
+                try:
+                    with transaction.atomic():
+                        rows = merge_followup_into_existing_dk(
+                            parsed,
+                            paket,
+                            user=request.user,
+                            document_status=decision.get("document_status"),
+                        )
+                        paket.status = PaketSPMUpload.Status.COMMITTED
+                        paket.save(update_fields=["status"])
+                except Exception as e:
+                    messages.error(request, str(e))
+                    return redirect("paket_spm:preview")
+                request.session.pop("paket_spm_preview_id", None)
+                messages.success(request, "DRPP/KW berhasil memperbarui D_K existing.")
+                satker = clean_optional(rows[0].satker_code if rows else paket.satker_code)
+                nomor_spm = clean_optional(rows[0].nomor_spm if rows else paket.nomor_spm)
+                return redirect(f"{reverse('dk:list')}?satker={satker}&q={nomor_spm}")
+
             request.session.pop("paket_spm_preview_id", None)
             return redirect("paket_spm:list")
 
@@ -353,11 +541,14 @@ def paket_spm_preview(request):
 
     # Render preview rows dynamically (without saving)
     rekon_errors = []
-    try:
-        transaction_rows = build_transaction_rows_from_package(parsed, paket, request.user, sp2d_raw=forced_sp2d, document_status=decision.get("document_status"), save=False)
-    except ValueError as e:
-        transaction_rows = []
-        rekon_errors.append(str(e))
+    if decision.get("matched_transaction") and decision.get("commit_action") in {"link_existing", "update_existing"}:
+        transaction_rows = exact_transactions_for_package(parsed, paket)
+    else:
+        try:
+            transaction_rows = build_transaction_rows_from_package(parsed, paket, request.user, sp2d_raw=forced_sp2d, document_status=decision.get("document_status"), save=False, skip_existing=False)
+        except ValueError as e:
+            transaction_rows = []
+            rekon_errors.append(str(e))
 
     sum_bruto = sum(row.nilai_bruto for row in transaction_rows)
     sum_netto = sum(row.nilai_netto for row in transaction_rows)
@@ -366,6 +557,7 @@ def paket_spm_preview(request):
     scan_rows = build_scan_rows(parsed, decision)
     drpp_rows = build_drpp_rows(parsed)
     kw_rows = build_kw_rows(parsed)
+    document_checklist = build_document_checklist(parsed, decision)
     from apps.paket_spm.services import is_gup, is_tup, money_value
     spm_bruto = money_value(spm_meta.get("jumlah_pengeluaran"))
     spm_netto = money_value(spm_meta.get("total_pembayaran"))
@@ -412,6 +604,7 @@ def paket_spm_preview(request):
         "scan_rows": scan_rows,
         "drpp_rows": drpp_rows,
         "kw_rows": kw_rows,
+        "document_checklist": document_checklist,
         "spm_meta": spm_meta,
         "spm_bruto": spm_bruto,
         "spm_netto": spm_netto,
@@ -488,6 +681,21 @@ def build_preview_summary(parsed, decision, preview_state):
         "reconciliation_status": decision.get("reconciliation_status", "-"),
         "commit_label": decision.get("commit_label", "-"),
     }
+
+
+def build_document_checklist(parsed, decision):
+    spm = parsed.get("spm") or {}
+    spm_meta = spm.get("metadata", {}) or {}
+    drpps = parsed.get("drpps") or ([parsed.get("drpp")] if parsed.get("drpp") else [])
+    kw_items = parsed.get("kw_items") or []
+    return [
+        {"label": "SPM", "status": "Tersedia" if spm else "Belum tersedia"},
+        {"label": "SPP", "status": "Tersedia" if spm_meta.get("nomor_spp") else "Belum terbaca"},
+        {"label": "Detail transaksi", "status": "Tersedia" if spm.get("detail_items") else "Belum terbaca"},
+        {"label": "DRPP", "status": "Tersedia" if drpps else "Belum diunggah"},
+        {"label": "KW/Bukti", "status": "Tersedia" if kw_items else "Belum diunggah"},
+        {"label": "SP2D pembanding", "status": "Terhubung" if decision.get("matched_sp2d") else "Belum terhubung"},
+    ]
 
 
 # Kata kunci warning yang bersifat teknis -- tidak perlu tampil ke operator
@@ -666,6 +874,9 @@ def build_drpp_rows(parsed):
             {
                 "nomor_drpp": meta.get("nomor_drpp") or "-",
                 "nomor_spm": main_spm or meta.get("nomor_spm") or "-",
+                "satker": meta.get("satker_app_code") or meta.get("satker_code") or "-",
+                "tahun": meta.get("tahun") or "-",
+                "tanggal_drpp": meta.get("tanggal_drpp") or "",
                 "item_count": len(items),
                 "total": meta.get("total") or sum((row.get("jumlah") or Decimal("0") for row in items), Decimal("0")),
                 "status": drpp.get("status") or "-",
