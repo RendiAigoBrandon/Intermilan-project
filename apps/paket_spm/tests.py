@@ -15,8 +15,28 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from PIL import Image
 
-from apps.core.ocr import classify_page, extract_tesseract, ocr_cache_key
-from apps.core.parsers import DOCUMENT_PARSER_REGISTRY, classify_document, classify_page_types, extract_lampiran_descriptions, make_json_safe, parse_detail_sp2d_rows_by_crop, parse_detail_sp2d_rows_from_tsv_lines, parse_drpp_items_from_tsv, parse_drpp_pdf, parse_paket_spm_zip, parse_position_detail_items, parse_spm_pdf
+from apps.core.ocr import classify_page, configure_tesseract, extract_tesseract, ocr_cache_key
+from apps.core.parsers import (
+    DOCUMENT_PARSER_REGISTRY,
+    best_amount_from_text,
+    classify_document,
+    classify_page_types,
+    extract_cara_pembayaran,
+    extract_jenis_spm,
+    extract_lampiran_descriptions,
+    extract_uraian,
+    make_json_safe,
+    parse_decimal,
+    parse_detail_sp2d_rows_by_grid,
+    parse_detail_sp2d_rows_by_crop,
+    parse_detail_sp2d_rows_from_tsv_lines,
+    parse_drpp_items_from_tsv,
+    parse_drpp_pdf,
+    parse_paket_spm_zip,
+    parse_position_detail_items,
+    parse_spm_number_from_pages,
+    parse_spm_pdf,
+)
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
 from apps.documents.models import ChecklistStatus, DocumentDriveLink
@@ -1493,6 +1513,156 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(calls, [(270,)])
         self.assertEqual(summary["source"], "PERLU_REVIEW_PARSER_TABEL")
 
+    def test_repeated_ocr_separators_are_parsed_as_currency(self):
+        self.assertEqual(parse_decimal("228,840,00"), Decimal("228840.00"))
+        self.assertEqual(parse_decimal("83.000,00"), Decimal("83000.00"))
+        self.assertEqual(parse_decimal("16,437,279.00"), Decimal("16437279.00"))
+
+    def test_uraian_skips_false_coa_header_and_stops_before_total(self):
+        text = (
+            "URAIAN: Pembayaran 019937.010.512212 NOP 00 "
+            "URAIAN: Pembayaran uang lembur PPPK bulan Juni 2026 "
+            "JUMLAH PENGELUARAN 83.000,00"
+        )
+
+        self.assertEqual(
+            extract_uraian(text),
+            "Pembayaran uang lembur PPPK bulan Juni 2026",
+        )
+
+    def test_amount_below_one_hundred_thousand_is_not_replaced_by_account(self):
+        self.assertEqual(best_amount_from_text("83.000,00"), Decimal("83000.00"))
+        self.assertEqual(best_amount_from_text("512212", allow_bare=False), Decimal("0"))
+
+    def test_partial_height_detail_grid_uses_repeated_monetary_value(self):
+        column_bands = [
+            (index * 100, (index + 1) * 100 - 1)
+            for index in range(13)
+        ]
+        column_bands[6] = (600, 1199)
+
+        class FakeCell:
+            def __init__(self, box):
+                self.box = box
+
+        class FakeImage:
+            def crop(self, box):
+                return FakeCell(box)
+
+        def fake_cell_text(cell, _pytesseract, numeric=False):
+            left, top, _right, _bottom = cell.box
+            if top < 50:
+                return "Kode COA 16 Segmen" if left == 602 else ""
+            values = {
+                602: "019937.010.512212.05401WA.2886EBA.A000000001.00000.2.0800.2.000000.000000.994.001.0A.000214",
+                702: "",
+                802: "1",
+                902: "83.000",
+                1002: "83.000",
+                102: "019937",
+                202: "00123T/019937/2026",
+                302: "260100000000001",
+                402: "2026-07-01",
+            }
+            return values.get(left, "")
+
+        with patch("apps.core.parsers.table_line_groups", return_value=[{"start": 0, "end": 1}]) as line_groups, \
+             patch("apps.core.parsers.table_row_bands", return_value=[(0, 40), (60, 100)]), \
+             patch("apps.core.parsers.table_column_bands", return_value=column_bands), \
+             patch("apps.core.parsers.ocr_cell_text", side_effect=fake_cell_text):
+            rows, info = parse_detail_sp2d_rows_by_grid(
+                FakeImage(),
+                object(),
+                1,
+                270,
+                ["DETAIL_SPP_SPM_SP2D"],
+                {"994.001.0A.000214": "Pembayaran lembur"},
+            )
+
+        line_groups.assert_any_call(line_groups.call_args_list[0].args[0], axis="vertical", min_ratio=0.04)
+        self.assertEqual(info, {"grid_rows": 2, "grid_columns": 13})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["akun"], "512212")
+        self.assertEqual(rows[0]["jumlah"], Decimal("83000"))
+        self.assertEqual(rows[0]["pembebanan"], "2886.EBA.994.001.512212")
+
+    def test_lampiran_corrects_letter_suffix_misread_as_digit(self):
+        pages = [
+            {"text": "SURAT PERINTAH MEMBAYAR Nomor 001234 Tanggal 01-Jul-2026"},
+            {"text": "LAMPIRAN SURAT PERINTAH MEMBAYAR Nomor SPM : 00123A"},
+            {"text": "SURAT PERMINTAAN PEMBAYARAN Tahun 2026 Nomor SPP : 00999T"},
+        ]
+
+        result = parse_spm_number_from_pages(pages)
+
+        self.assertEqual(result["no_spm"], "00123A")
+        self.assertEqual(result["no_spp"], "00999T")
+
+    def test_tunjangan_type_is_cleaned_and_uses_ls_payment_method(self):
+        text = (
+            "Jenis Tagihan : Tunjangan Kinerja Dasar Pembayaran "
+            "Susulan Nem DIPA-000.00.0.000000/2026"
+        )
+        jenis_spm = extract_jenis_spm(text)
+
+        self.assertEqual(jenis_spm, "Tunjangan Kinerja Susulan")
+        self.assertEqual(extract_cara_pembayaran("", jenis_spm), "LS Non Kontraktual")
+
+    def test_tesseract_command_can_be_loaded_from_environment(self):
+        backend = type("Backend", (), {"tesseract_cmd": ""})()
+        module = type("PytesseractModule", (), {"pytesseract": backend})()
+        configured_path = "C:/Program Files/Tesseract-OCR/tesseract.exe"
+
+        with patch.dict(os.environ, {"OCR_TESSERACT_CMD": configured_path}), \
+             patch("apps.core.ocr.os.path.isfile", return_value=True):
+            resolved = configure_tesseract(module)
+
+        self.assertEqual(resolved, configured_path)
+        self.assertEqual(backend.tesseract_cmd, configured_path)
+
+    def test_ls_rows_prefer_validated_detail_items_over_header_account_fallback(self):
+        parsed = self.parsed_package()
+        parsed["spm"]["metadata"].update({
+            "jenis_spm": "LS Non Kontraktual",
+            "jumlah_pengeluaran": "83000",
+            "total_pembayaran": "83000",
+            "detail_parse_summary": {
+                "source": "DETAIL_SPP_SPM_SP2D",
+                "rows_before_dedupe": 2,
+                "rows_after_dedupe": 2,
+                "total": "83000",
+            },
+        })
+        parsed["spm"]["detail_items"] = [
+            {
+                "akun": "512211",
+                "bruto": "30000",
+                "netto": "30000",
+                "no_bukti": "001",
+                "keperluan": "Rincian pertama",
+                "pembebanan": "2886.EBA.994.001.512211",
+                "source_priority": "DETAIL_SPP_SPM_SP2D",
+            },
+            {
+                "akun": "512212",
+                "bruto": "53000",
+                "netto": "53000",
+                "no_bukti": "002",
+                "keperluan": "Rincian kedua",
+                "pembebanan": "2886.EBA.994.001.512212",
+                "source_priority": "DETAIL_SPP_SPM_SP2D",
+            },
+        ]
+        parsed["spm"]["akun_rows"] = [{"akun": "512212", "nilai": ""}]
+        paket = self.paket_for(parsed)
+
+        rows = build_transaction_rows_from_package(parsed, paket, self.user, save=False, skip_existing=False)
+
+        self.assertEqual([row.akun for row in rows], ["512211", "512212"])
+        self.assertEqual([row.no_kuitansi for row in rows], ["00074A", "00074A"])
+        self.assertEqual([row.nilai_bruto for row in rows], [Decimal("30000"), Decimal("53000")])
+        self.assertEqual(sum((row.nilai_bruto for row in rows), Decimal("0")), Decimal("83000"))
+
     def test_classifier_prefers_detail_anchor_over_sp2d_token_and_keeps_multilabel(self):
         text = "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D No. SP2D 260100000024403"
 
@@ -1577,6 +1747,17 @@ class PaketSPMRegressionTests(TestCase):
         paket = PaketSPMUpload.objects.latest("id")
         self.assertEqual(paket.status, PaketSPMUpload.Status.PREVIEW)
         self.assertEqual(self.client.session["paket_spm_preview_id"], paket.id)
+
+    def test_upload_page_warns_when_scan_ocr_binary_is_missing(self):
+        self.client.login(username="operator", password="password")
+        with patch(
+            "apps.paket_spm.views.check_ocr_environment",
+            return_value={"tesseract_binary_available": False},
+        ):
+            response = self.client.get(reverse("paket_spm:list"))
+
+        self.assertContains(response, "OCR PDF scan belum siap")
+        self.assertContains(response, "OCR_TESSERACT_CMD")
 
     def test_upload_form_initial_context_fields_are_detected_in_preview_not_visible_inputs(self):
         self.client.login(username="operator", password="password")
@@ -1665,6 +1846,66 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(len(response.context["transaction_rows"]), 15)
         self.assertNotContains(response, "SIMPAN KE D_K</button>")
         self.assertContains(response, "KAITKAN KE D_K EXISTING")
+
+    def test_existing_dk_with_wrong_netto_is_blocked_by_spm_reconciliation(self):
+        spm = self.parse_fixture()
+        spm["metadata"].update({
+            "nomor_spm": "00140T",
+            "nomor_spm_final": "00140T",
+            "satker_app_code": "1300",
+            "tanggal_spm": "2026-06-02",
+            "jenis_spm": "Gaji Ke-13",
+            "jumlah_pengeluaran": "5949840",
+            "jumlah_potongan": "228840",
+            "total_pembayaran": "5721000",
+            "detail_parse_summary": {
+                "source": "DETAIL_SPP_SPM_SP2D",
+                "rows_before_dedupe": 1,
+                "rows_after_dedupe": 1,
+                "total": "5949840",
+            },
+        })
+        spm["detail_items"] = [{
+            "akun": "511121",
+            "bruto": "5949840",
+            "netto": "5721000",
+            "jumlah": "5949840",
+            "no_bukti": "00140T",
+            "keperluan": "Pembayaran Gaji Ke-13",
+            "pembebanan": "2886.EBA.994.001.511121",
+            "source_priority": "DETAIL_SPP_SPM_SP2D",
+        }]
+        parsed = self.parsed_package(spm)
+        TransactionDetail.objects.create(
+            satker_code="1300",
+            nomor_spm="00140T",
+            tanggal_spm=datetime.date(2026, 6, 2),
+            akun="511121",
+            no_kuitansi="00140T",
+            nilai_bruto=Decimal("5949840"),
+            nilai_netto=Decimal("5949840"),
+            created_by=self.user,
+        )
+        paket = self.paket_for(
+            parsed,
+            original_filename="SPM NOMOR 00140T.pdf",
+            nomor_spm="00140T",
+            satker_code="1300",
+            tanggal_spm=datetime.date(2026, 6, 2),
+            bulan=6,
+        )
+        self.client.login(username="operator", password="password")
+        session = self.client.session
+        session["paket_spm_preview_id"] = paket.id
+        session.save()
+
+        response = self.client.get(reverse("paket_spm:preview"))
+
+        self.assertFalse(response.context["can_commit"])
+        self.assertTrue(any("Total Netto baris" in error for error in response.context["rekon_errors"]))
+        self.assertEqual(response.context["sum_bruto"], Decimal("5949840"))
+        self.assertEqual(response.context["sum_netto"], Decimal("5949840"))
+        self.assertEqual(response.context["spm_netto"], Decimal("5721000"))
 
     def test_drpp_parent_and_kw_item_edits_persist_to_parsed_data(self):
         parsed = make_json_safe({

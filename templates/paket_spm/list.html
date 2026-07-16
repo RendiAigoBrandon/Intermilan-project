@@ -17,6 +17,14 @@
   </div>
   {% endif %}
 
+  {% if not ocr_environment.tesseract_binary_available %}
+  <div class="note-box">
+    <b>OCR PDF scan belum siap.</b> Tesseract tidak ditemukan. Instal Tesseract lalu isi
+    <code>OCR_TESSERACT_CMD</code> di <code>.env</code> atau tambahkan aplikasinya ke PATH.
+    PDF hasil scan dapat terbaca kosong sampai konfigurasi ini selesai.
+  </div>
+  {% endif %}
+
   <form class="form-grid" method="post" enctype="multipart/form-data">
     {% csrf_token %}
     {% if sp2d_context %}<input type="hidden" name="sp2d_raw_id" value="{{ sp2d_context.sp2d_raw_id }}">{% endif %}

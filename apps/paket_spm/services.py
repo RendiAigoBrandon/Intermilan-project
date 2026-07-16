@@ -1037,13 +1037,14 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
 
     if not items and parsed.get("spm"):
         detail_rows = parsed["spm"].get("detail_items") or []
-        akun_rows = detail_rows if (is_gup(meta["jenis_spm"]) or is_tup(meta["jenis_spm"])) else parsed["spm"].get("akun_rows", [])
+        akun_rows = detail_rows or parsed["spm"].get("akun_rows", [])
         if not akun_rows:
             # Fallback jika tidak ada rincian akun di SPM
             akun_rows = [{"akun": akun, "jumlah": Decimal("0"), "uraian": spm_meta.get("uraian") or ""} for akun in spm_meta.get("akun_pengeluaran", [])]
 
         items = []
         for row in akun_rows:
+            is_spm_detail_row = row.get("source_priority") == "DETAIL_SPP_SPM_SP2D"
             bruto_val = (
                 money_value(row.get("nilai"))
                 or money_value(row.get("bruto"))
@@ -1055,7 +1056,7 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
                 "akun": row.get("akun", ""),
                 "bruto": bruto_val,
                 "jumlah": netto_val,
-                "no_bukti": row.get("no_bukti") or meta.get("nomor_spm", ""),
+                "no_bukti": meta.get("nomor_spm", "") if is_spm_detail_row else (row.get("no_bukti") or meta.get("nomor_spm", "")),
                 "keperluan": row.get("keperluan") or row.get("uraian") or spm_meta.get("uraian") or "",
                 "pembebanan": row.get("pembebanan") or (spm_meta.get("pembebanan_list") or [""])[0],
                 "fp": row.get("fp") or spm_meta.get("fp") or "",
@@ -1481,4 +1482,3 @@ def link_existing_package_documents(paket, transactions, user=None, parsed=None,
             refresh_transaction_document_status(tx, verified_document_type=checklist_type)
 
     return {"status": "created" if links else "exists", "links": links, "archive_status": archive_status}
-

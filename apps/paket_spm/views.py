@@ -13,6 +13,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 
 from apps.accounts.access import filter_by_satker, permission_context
+from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.dk.models import TransactionDetail
 from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, probe_package_identity
@@ -250,6 +251,7 @@ def paket_spm_list(request):
             "max_zip_size_mb": settings.MAX_ZIP_SIZE_MB,
             "max_upload_size_mb": settings.MAX_UPLOAD_SIZE_MB,
             "sp2d_context": sp2d_context,
+            "ocr_environment": check_ocr_environment(),
         }
     )
     return render(
@@ -947,4 +949,3 @@ def paket_spm_drafts(request):
         "drafts": drafts,
     })
     return render(request, "paket_spm/drafts.html", context)
-

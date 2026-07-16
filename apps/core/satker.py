@@ -139,6 +139,7 @@ def simplify_satker_name(value):
     text = str(value or "").upper()
     replacements = {
         "BADAN PUSAT STATISTIK": "BPS",
+        "PROP,": "PROVINSI ",
         "PROP.": "PROVINSI",
         "PROP ": "PROVINSI ",
         "KAB.": "KABUPATEN",

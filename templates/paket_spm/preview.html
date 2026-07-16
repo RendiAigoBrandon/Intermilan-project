@@ -276,12 +276,15 @@
             </thead>
             <tbody>
               {% for page in parsed.spm.page_details %}
+              {% firstof page.page page.page_number "-" as page_label %}
+              {% firstof page.engine page.method "-" as page_engine %}
+              {% firstof page.text page.extracted_text "" as page_text %}
               <tr>
-                <td>{{ page.page|default:page.page_number }}</td>
-                <td>{{ page.engine|default:page.method }}</td>
+                <td>{{ page_label }}</td>
+                <td>{{ page_engine }}</td>
                 <td>{{ page.status }}</td>
                 <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
-                <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:160 }}</td>
+                <td title="{{ page_text }}">{{ page_text|truncatechars:160 }}</td>
                 <td>{{ page.warnings|join:"; " }}</td>
               </tr>
               {% empty %}
@@ -352,12 +355,15 @@
             </thead>
             <tbody>
               {% for page in drpp.page_details %}
+              {% firstof page.page page.page_number "-" as page_label %}
+              {% firstof page.engine page.method "-" as page_engine %}
+              {% firstof page.text page.extracted_text "" as page_text %}
               <tr>
-                <td>{{ page.page|default:page.page_number }}</td>
-                <td>{{ page.engine|default:page.method }}</td>
+                <td>{{ page_label }}</td>
+                <td>{{ page_engine }}</td>
                 <td>{{ page.status }}</td>
                 <td>{{ page.confidence|default:0|floatformat:0 }}%</td>
-                <td title="{{ page.text|default:page.extracted_text }}">{{ page.text|default:page.extracted_text|truncatechars:160 }}</td>
+                <td title="{{ page_text }}">{{ page_text|truncatechars:160 }}</td>
                 <td>{{ page.warnings|join:"; " }}</td>
               </tr>
               {% empty %}

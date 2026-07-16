@@ -266,6 +266,30 @@ def parse_bool_env(name, default=False):
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def configure_tesseract(pytesseract_module=None):
+    """Configure pytesseract from OCR_TESSERACT_CMD or the active PATH."""
+    pytesseract_module = pytesseract_module or optional_import("pytesseract")
+    if not pytesseract_module:
+        return ""
+
+    configured = os.path.expandvars(os.getenv("OCR_TESSERACT_CMD", "").strip().strip('"'))
+    if configured:
+        resolved = configured if os.path.isfile(configured) else shutil.which(configured)
+        if resolved:
+            backend = getattr(pytesseract_module, "pytesseract", None)
+            if backend is not None:
+                backend.tesseract_cmd = resolved
+            return resolved
+        return ""
+
+    resolved = shutil.which("tesseract") or ""
+    if resolved:
+        backend = getattr(pytesseract_module, "pytesseract", None)
+        if backend is not None:
+            backend.tesseract_cmd = resolved
+    return resolved
+
+
 def engine_order():
     raw = os.getenv("OCR_ENGINE_ORDER", "text,tesseract,paddleocr")
     return [item.strip().lower() for item in raw.split(",") if item.strip()]
@@ -567,8 +591,15 @@ def extract_tesseract(file_path, images=None, high_res_ocr_called=False):
     pytesseract = optional_import("pytesseract")
     if not pytesseract:
         return EngineResult("tesseract", [], ["package pytesseract tidak ada di environment Python aktif."])
-    if not shutil.which("tesseract"):
-        return EngineResult("tesseract", [], ["tesseract.exe tidak ditemukan di PATH Windows. Install Tesseract OCR binary terpisah."])
+    if not configure_tesseract(pytesseract):
+        return EngineResult(
+            "tesseract",
+            [],
+            [
+                "Tesseract OCR binary tidak ditemukan. Install Tesseract lalu isi "
+                "OCR_TESSERACT_CMD di .env atau tambahkan Tesseract ke PATH."
+            ],
+        )
 
     if images is None:
         try:
@@ -681,7 +712,7 @@ def check_ocr_environment():
     pdfplumber = optional_import("pdfplumber")
     pytesseract = optional_import("pytesseract")
     paddleocr = optional_import("paddleocr")
-    tesseract_path = shutil.which("tesseract")
+    tesseract_path = configure_tesseract(pytesseract)
     warnings = []
     tesseract_version = ""
 
@@ -692,7 +723,10 @@ def check_ocr_environment():
     if not pytesseract:
         warnings.append("Package pytesseract belum terinstall di virtualenv.")
     elif not tesseract_path:
-        warnings.append("Tesseract OCR binary belum terinstall atau belum masuk PATH.")
+        warnings.append(
+            "Tesseract OCR binary tidak ditemukan. Isi OCR_TESSERACT_CMD di .env "
+            "atau tambahkan Tesseract ke PATH sistem."
+        )
     else:
         try:
             tesseract_version = str(pytesseract.get_tesseract_version())
