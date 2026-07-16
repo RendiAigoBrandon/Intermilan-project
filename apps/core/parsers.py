@@ -585,12 +585,18 @@ def title_with_acronyms(value):
 
 
 def extract_uraian(text):
-    match = re.search(
-        r"URAIAN\s*[:;]?\s*(Pembayaran\b.*?)(?:\s+NOP\b|\s+ALAMAT\b|\s+Semua\b|\s+Padang\b)",
+    # Loop over matches to skip COA headers
+    for match in re.finditer(
+        r"URAIAN\s*[:;]?\s*(Pembayaran\b.*?)(?:\s+NOP\b|\s+ALAMAT\b|\s+Semua\b|\s+Padang\b|JUMLAH PENGELUARAN\b)",
         text,
         re.IGNORECASE | re.DOTALL,
-    )
-    return clean_description(match.group(1)) if match else ""
+    ):
+        desc = clean_description(match.group(1))
+        # Skip if it looks like a COA header (e.g. 019937.010.512212)
+        if re.match(r'^\d{4,6}[.\s]+\d{3}[.\s]+\d{6}', desc):
+            continue
+        return desc
+    return ""
 
 
 def extract_jenis_spm(text):
@@ -690,7 +696,7 @@ def parse_spm_detail_items(text, default_description=""):
         amount_text = block[item_code_match.end():] if item_code_match else block
         amount_matches = list(re.finditer(r"\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?\b", amount_text))
         amounts = [parse_decimal(match.group(0)) for match in amount_matches]
-        amounts = [amount for amount in amounts if Decimal("100000") <= amount < Decimal("40000000")]
+        amounts = [amount for amount in amounts if Decimal("10000") <= amount < Decimal("40000000")]
         if not amounts:
             continue
         description_text = ""
@@ -956,6 +962,9 @@ def parse_spm_pdf(file_path, ocr=False):
     rekening = parse_first_match(spm_text, [r"(?:REKENING|NO\.?\s*REK)\s*[:\-]?\s*([0-9 .-]{5,80})"])
     npwp_nik = parse_first_match(spm_text, [r"(?:NPWP|NIK)\s*[:\-]?\s*([0-9 .-]{10,40})"])
     uraian = extract_uraian(spm_text) or parse_first_match(spm_text, [r"(?:URAIAN|KEPERLUAN)\s*[:\-]?\s*(.{10,300})"])
+    
+    bulan_uraian_match = re.search(r"\bbulan\s+([A-Za-z]+)\b", uraian, re.IGNORECASE)
+    bulan_uraian = parse_month(bulan_uraian_match.group(1)) if bulan_uraian_match else None
     amount_values = re.findall(r"\b\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?\b", field_text)
     # Pembebanan/COA 16-segmen: AAAA.BBB.CCC.DDD.XXXXXX
     pembebanan_values = sorted(set(_RE_PEMBEBANAN.findall((detail_text or spm_text).upper())))
@@ -1073,6 +1082,7 @@ def parse_spm_pdf(file_path, ocr=False):
         uraian,
         expected_total=jumlah_pengeluaran or total_pembayaran,
     )
+    warnings = list(extracted.get("warnings", []))
     if position_items:
         detail_items = position_items
         for item in detail_items:
@@ -1094,7 +1104,12 @@ def parse_spm_pdf(file_path, ocr=False):
                 item["needs_review"] = True
                 item["review_note"] = "Pembebanan tidak valid atau mengandung nominal."
     elif position_summary.get("source") == "PERLU_REVIEW_PARSER_TABEL":
-        detail_items = []
+        # Keep detail_items from fallback legacy
+        if detail_items:
+            position_summary["source"] = "FALLBACK_LEGACY"
+            warnings.append("Parser tabel v2 gagal, menggunakan fallback legacy (regex).")
+        else:
+            detail_items = []
     detail_parse_summary = {
         "source": position_summary.get("source") or ("LAMPIRAN_COA" if detail_items else "fallback_total"),
         "rows_before_dedupe": position_summary.get("rows_before_dedupe") or len(detail_items),
@@ -1108,45 +1123,21 @@ def parse_spm_pdf(file_path, ocr=False):
 
     # ── Resolusi nomor SPM Utama (D_K) ───────────────────────────────────────────────────
     filename_spm = guess_number_from_filename(file_path, "SPM")
-    warnings = list(extracted["warnings"])
+    # warnings moved up
 
-    # Prioritas Nomor SPM Utama D_K:
-    # 1. Halaman SPM (text_spm)
-    # 2. filename (sebagai low-confidence fallback)
+    nomor_spm_res = resolve_spm_number(
+        filename_spm=filename_spm,
+        ocr_spm=text_spm,
+        confidence=extracted.get("confidence", 0.0),
+        method=extracted.get("method", ""),
+    )
     nomor_spm_candidates = collect_spm_number_candidates(text_spm, text_spp, filename_spm, text_invoice, detail_text)
-    if text_spm:
-        nomor_spm_utama = text_spm
-        source_utama = "ocr"
-        review_status = "OK"
-        reason = "Diambil dari dokumen OCR halaman SPM."
-        warning = ""
-    elif filename_spm:
-        nomor_spm_utama = filename_spm
-        source_utama = "filename"
-        review_status = "Perlu Review Nomor"
-        reason = "Nomor SPM tidak terbaca dari OCR, menggunakan filename sebagai fallback."
-        warning = "Nomor SPM menggunakan fallback filename. Mohon pastikan kebenarannya."
-    else:
-        nomor_spm_utama = ""
-        source_utama = ""
-        review_status = "Perlu Review Nomor"
-        reason = "Tidak terbaca."
-        warning = "Gagal mengekstrak Nomor SPM dari OCR maupun filename."
-
-    nomor_spm_res = {
-        "final": nomor_spm_utama,
-        "source": source_utama,
-        "conflict": False,
-        "review_status": review_status,
-        "reason": reason,
-        "warning": warning
-    }
 
     if is_combined_package:
         warnings.append(
             f"PDF gabungan terdeteksi: halaman SPM={spm_page_nums}, halaman SPP={spp_page_nums}."
         )
-    warnings.extend(detect_mismatched_lampiran_numbers(page_details, text_spm, text_spp))
+    warnings.extend(detect_mismatched_lampiran_numbers(page_details, nomor_spm_res["final"], text_spp))
 
     if total_pembayaran <= 0:
         warnings.append("Parser gagal mengambil nilai total pembayaran SPM dari dokumen.")
@@ -1170,6 +1161,7 @@ def parse_spm_pdf(file_path, ocr=False):
         "is_combined_package": is_combined_package,
         "metadata": {
             "nomor_spm": nomor_spm_res["final"],
+            "bulan_uraian": bulan_uraian,
             "nomor_spm_final": nomor_spm_res["final"],
             "nomor_spm_final_source": nomor_spm_res["source"],
             "nomor_spm_ocr": text_spm,  # Nomor SPM resmi DJPb dari OCR
@@ -1827,7 +1819,7 @@ def parse_lampiran_detail_rows(lines, coa_by_item, source_page, source_types):
             continue
         amounts = re.findall(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?", row["buffer"])
         amounts = [parse_decimal(amount) for amount in amounts]
-        amounts = [amount for amount in amounts if Decimal("100000") <= amount < Decimal("40000000")]
+        amounts = [amount for amount in amounts if Decimal("10000") <= amount < Decimal("40000000")]
         if not amounts:
             continue
         amount = amounts[-1]
@@ -1854,7 +1846,7 @@ def best_amount_from_text(value):
     amounts = re.findall(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?", normalize_ocr_amount_text(value))
     parsed = [parse_decimal(amount) for amount in amounts]
     parsed.extend(Decimal(amount) for amount in re.findall(r"\b\d{6,9}\b", normalize_text(value)))
-    parsed = [amount for amount in parsed if Decimal("100000") <= amount < Decimal("40000000")]
+    parsed = [amount for amount in parsed if Decimal("10000") <= amount < Decimal("40000000")]
     if not parsed:
         return Decimal("0")
     counts = {}
@@ -2473,7 +2465,7 @@ def extract_drpp_pembebanan_by_amount(text):
             continue
         for amount_text in re.findall(r"\b\d{1,3}(?:\.\d{3})+(?:[.,]\d{2})?\b", block):
             amount = parse_decimal(amount_text)
-            if amount >= Decimal("100000"):
+            if amount >= Decimal("10000"):
                 mapping.setdefault((akun, amount), pembebanan)
                 amount_totals.setdefault((akun, pembebanan), Decimal("0"))
                 amount_totals[(akun, pembebanan)] += amount
@@ -2641,7 +2633,7 @@ def parse_drpp_pdf(file_path, ocr=False):
     total = sum((item["jumlah"] for item in items), Decimal("0"))
     printed_total = extract_drpp_printed_total(item_text)
     status = parser_status(extracted)
-    warnings = list(extracted["warnings"])
+    # warnings moved up
     if tsv_review_warning:
         status = "needs_manual_review"
         warnings.append(tsv_review_warning)

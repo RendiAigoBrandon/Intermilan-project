@@ -472,6 +472,10 @@ def paket_spm_preview(request):
                         messages.error(request, str(e))
                         return redirect("paket_spm:preview")
                     messages.success(request, "Dokumen berhasil dikaitkan ke seluruh grup D_K existing.")
+                    request.session.pop("paket_spm_preview_id", None)
+                    satker = clean_optional(exact_rows[0].satker_code if exact_rows else paket.satker_code)
+                    nomor_spm = clean_optional(exact_rows[0].nomor_spm if exact_rows else paket.nomor_spm)
+                    return redirect(f"{reverse('dk:list')}?satker={satker}&q={nomor_spm}")
                 elif matched_id:
                     tx = TransactionDetail.objects.filter(id=matched_id).first()
                     if tx:
@@ -490,6 +494,10 @@ def paket_spm_preview(request):
                             messages.error(request, str(e))
                             return redirect("paket_spm:preview")
                         messages.success(request, "Dokumen berhasil dikaitkan ke D_K existing.")
+                        request.session.pop("paket_spm_preview_id", None)
+                        satker = clean_optional(tx.satker_code if tx else paket.satker_code)
+                        nomor_spm = clean_optional(tx.nomor_spm if tx else paket.nomor_spm)
+                        return redirect(f"{reverse('dk:list')}?satker={satker}&q={nomor_spm}")
                     else:
                         messages.error(request, "D_K existing tidak ditemukan.")
                         return redirect("paket_spm:preview")
@@ -529,6 +537,10 @@ def paket_spm_preview(request):
                     return redirect("paket_spm:preview")
 
                 messages.success(request, "Dokumen berhasil dibaca. D_K telah diperbarui/dibuat.")
+                request.session.pop("paket_spm_preview_id", None)
+                satker = clean_optional(rows[0].satker_code if rows else paket.satker_code)
+                nomor_spm = clean_optional(rows[0].nomor_spm if rows else paket.nomor_spm)
+                return redirect(f"{reverse('dk:list')}?satker={satker}&q={nomor_spm}")
 
             elif commit_choice == "update_existing":
                 try:
@@ -565,7 +577,8 @@ def paket_spm_preview(request):
         try:
             transaction_rows = build_transaction_rows_from_package(parsed, paket, request.user, sp2d_raw=forced_sp2d, document_status=decision.get("document_status"), save=False, skip_existing=False)
         except ValueError as e:
-            transaction_rows = []
+            # Tetap buat baris untuk keperluan UI (agar user bisa mereview dan save manual)
+            transaction_rows = build_transaction_rows_from_package(parsed, paket, request.user, sp2d_raw=forced_sp2d, document_status=decision.get("document_status"), save=False, skip_existing=False, skip_review_block=True)
             rekon_errors.append(str(e))
 
     sum_bruto = sum(row.nilai_bruto for row in transaction_rows)

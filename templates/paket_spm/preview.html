@@ -156,9 +156,48 @@
             <td class="col-nominal">{{ sum_netto|id_number }}</td>
             <td colspan="3"></td>
           </tr>
+          <tr>
+            <td colspan="15">
+              <button type="button" class="btn btn-sm btn-secondary" onclick="addPreviewRow()">+ Tambah Baris Manual</button>
+            </td>
+          </tr>
         </tfoot>
       </table>
     </div>
+
+<script>
+function addPreviewRow() {
+    var tbody = document.querySelector(".data-table-wide tbody");
+    var rowCountInput = document.querySelector("input[name='preview_row_count']");
+    var idx = parseInt(rowCountInput.value) || 0;
+    
+    var emptyMessage = tbody.querySelector(".empty");
+    if (emptyMessage && emptyMessage.parentElement) {
+        emptyMessage.parentElement.style.display = "none";
+    }
+    
+    var tr = document.createElement("tr");
+    tr.innerHTML = `
+        <td>Manual</td>
+        <td><input class="table-input" name="rows-${idx}-akun" value=""></td>
+        <td><input class="table-input" name="rows-${idx}-bulan_sp2d" value=""></td>
+        <td><input class="table-input" name="rows-${idx}-cara_pembayaran" value=""></td>
+        <td><input class="table-input" name="rows-${idx}-nomor_spm" value=""></td>
+        <td><input class="table-input" type="date" name="rows-${idx}-tanggal_spm" value=""></td>
+        <td><input class="table-input" name="rows-${idx}-jenis_spm" value=""></td>
+        <td><input class="table-input" name="rows-${idx}-no_kuitansi" value=""></td>
+        <td><input class="table-input" name="rows-${idx}-no_drpp" value=""></td>
+        <td><textarea class="table-input" name="rows-${idx}-deskripsi" rows="2"></textarea></td>
+        <td class="col-nominal"><input class="table-input col-nominal" name="rows-${idx}-nilai_bruto" value=""></td>
+        <td class="col-nominal"><input class="table-input col-nominal" name="rows-${idx}-nilai_netto" value=""></td>
+        <td><input class="table-input" name="rows-${idx}-pembebanan" value=""></td>
+        <td><input class="table-input" name="rows-${idx}-fp" value=""></td>
+        <td class="col-nominal"><input class="table-input col-nominal" name="rows-${idx}-pph21" value=""></td>
+    `;
+    tbody.appendChild(tr);
+    rowCountInput.value = idx + 1;
+}
+</script>
   {% if drpp_rows %}
   <h3 class="section-title mt">DRPP Terbaca</h3>
   <div class="table-wrap">

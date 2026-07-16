@@ -584,6 +584,8 @@ def has_standalone_kw_without_drpp(parsed):
 
 
 def spm_table_parser_needs_review(parsed):
+    if "preview_rows" in parsed:
+        return False
     spm = parsed.get("spm") or {}
     summary = (spm.get("metadata") or {}).get("detail_parse_summary") or {}
     source = str(summary.get("source") or "")
@@ -982,13 +984,13 @@ def _apply_matched_nomor_spm_to_parsed(parsed, nomor_spm):
         item["nomor_spm"] = nomor_spm
 
 
-def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP, save=True, skip_existing=True):
+def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP, save=True, skip_existing=True, skip_review_block=False):
     meta = package_metadata(parsed)
     spm_meta = (parsed.get("spm") or {}).get("metadata", {})
     if has_standalone_kw_without_drpp(parsed):
         raise ValueError("KW/Bukti tunggal wajib diunggah bersama DRPP dan tidak boleh membuat D_K.")
-    if spm_table_parser_needs_review(parsed):
-        raise ValueError("Parser tabel v2 belum valid; fallback legacy tidak dipakai untuk membuat D_K.")
+    if not skip_review_block and spm_table_parser_needs_review(parsed):
+        raise ValueError("Parser tabel v2 belum valid; fallback legacy tidak dipakai untuk membuat D_K. Harap periksa dan Simpan Perubahan manual.")
 
     satker_code = meta["satker_code"] or paket.satker_code
     nomor_spm = meta["nomor_spm"] or paket.nomor_spm
@@ -1005,7 +1007,7 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
         "satker_code": satker_code,
         "nomor_spm": nomor_spm,
         "tanggal_spm": tanggal_spm,
-        "jenis_spm": meta["jenis_spm"] or paket.jenis_spm_label or paket.jenis_spm_asli,
+        "jenis_spm": meta.get("jenis_spm") or paket.jenis_spm_label or paket.jenis_spm_asli,
     }
 
     # Pre-fetch existing rows for this exact package
@@ -1037,10 +1039,40 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
 
     if not items and parsed.get("spm"):
         detail_rows = parsed["spm"].get("detail_items") or []
-        akun_rows = detail_rows if (is_gup(meta["jenis_spm"]) or is_tup(meta["jenis_spm"])) else parsed["spm"].get("akun_rows", [])
+        is_gup_tup = is_gup(meta.get("jenis_spm")) or is_tup(meta.get("jenis_spm"))
+        raw_akun_rows = parsed["spm"].get("akun_rows", [])
+        
+        if is_gup_tup:
+            akun_rows = detail_rows
+        else:
+            has_valid_nilai = any((row.get("nilai") or row.get("jumlah")) for row in raw_akun_rows)
+            if detail_rows and not has_valid_nilai:
+                akun_rows = detail_rows
+            else:
+                akun_rows = raw_akun_rows
+
         if not akun_rows:
-            # Fallback jika tidak ada rincian akun di SPM
-            akun_rows = [{"akun": akun, "jumlah": Decimal("0"), "uraian": spm_meta.get("uraian") or ""} for akun in spm_meta.get("akun_pengeluaran", [])]
+            akun_rows = detail_rows
+            
+        if not akun_rows:
+            # Fallback jika tidak ada rincian akun di SPM atau detail_items
+            akun_list = spm_meta.get("akun_pengeluaran") or []
+            if len(akun_list) == 1:
+                akun_rows = [{
+                    "akun": akun_list[0], 
+                    "bruto": spm_meta.get("jumlah_pengeluaran") or Decimal("0"),
+                    "jumlah": spm_meta.get("total_pembayaran") or spm_meta.get("jumlah_pengeluaran") or Decimal("0"),
+                    "uraian": spm_meta.get("uraian") or ""
+                }]
+            elif len(akun_list) > 1:
+                akun_rows = [{"akun": akun, "jumlah": Decimal("0"), "uraian": spm_meta.get("uraian") or ""} for akun in akun_list]
+            else:
+                akun_rows = [{
+                    "akun": "",
+                    "bruto": spm_meta.get("jumlah_pengeluaran") or Decimal("0"),
+                    "jumlah": spm_meta.get("total_pembayaran") or spm_meta.get("jumlah_pengeluaran") or Decimal("0"),
+                    "uraian": spm_meta.get("uraian") or ""
+                }]
 
         items = []
         for row in akun_rows:
@@ -1137,11 +1169,11 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
                 sp2d_raw=sp2d_raw,
                 akun=g_item["akun"],
                 kategori="",
-                bulan_sp2d=getattr(meta.get("tanggal_sp2d"), "month", None) or paket.bulan,
-                cara_pembayaran="UP/TUP" if (is_gup(meta["jenis_spm"]) or is_tup(meta["jenis_spm"])) else (meta.get("cara_pembayaran") or meta["jenis_spm"]),
+                bulan_sp2d=getattr(meta.get("tanggal_sp2d"), "month", None) or paket.bulan or getattr(tanggal_spm, "month", None),
+                cara_pembayaran="UP/TUP" if (is_gup(meta.get("jenis_spm")) or is_tup(meta.get("jenis_spm"))) else (meta.get("cara_pembayaran") or meta.get("jenis_spm") or "LS Non Kontraktual"),
                 nomor_spm=nomor_spm,
                 tanggal_spm=tanggal_spm,
-                jenis_spm=meta["jenis_spm"] or paket.jenis_spm_label or paket.jenis_spm_asli,
+                jenis_spm=meta.get("jenis_spm") or paket.jenis_spm_label or paket.jenis_spm_asli or ("GAJI LAINNYA PPPK" if "LEMBUR PPPK" in str(g_item.get("keperluan", "")).upper() else ""),
                 no_kuitansi=g_item["no_kuitansi"],
                 no_drpp=g_item["no_drpp"],
                 deskripsi=g_item["keperluan"][:1000],
