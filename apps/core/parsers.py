@@ -271,32 +271,34 @@ def parse_spm_number_from_pages(page_details):
 def classify_page_types(text):
     upper = normalize_text(text).upper()
     types = []
+    is_ssp = "SURAT SETORAN PAJAK" in upper or "KODE AKUN PAJAK" in upper or "KODE JENIS SETORAN" in upper or re.search(r"\bSSP\b", upper)
+    is_detail = "DETAIL PENGELUARAN DAN POTONGAN" in upper or "SPP/SPM/SP2D" in upper
+    if is_detail:
+        types.extend(["DETAIL_SPP_SPM_SP2D", "SP2D_DETAIL"])
     if "SURAT PERINTAH MEMBAYAR" in upper:
         types.extend(["SPM_HEADER", "SPM"])
     if "SURAT PERMINTAAN PEMBAYARAN" in upper or re.search(r"(?:NOMOR|NO\.?)\s+SPP\s*[:\-]", upper):
         types.append("SPP")
-    if "DETAIL PENGELUARAN" in upper or "SPP/SPM/SP2D" in upper:
-        types.extend(["SP2D_DETAIL", "DETAIL_SPP_SPM_SP2D"])
-    if re.search(r"\b019937[\s.,]+\d{3}[\s.,]+5\d{5}[\s.,]", upper) or " COA " in f" {upper} ":
+    if not is_ssp and (re.search(r"\b\d{4,6}[\s.,]+\d{3}[\s.,]+5\d{5}[\s.,]", upper) or " COA " in f" {upper} "):
         types.append("LAMPIRAN_COA")
     if "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN" in upper or re.search(r"\bDRPP\b", upper):
         types.append("DRPP")
+    if is_ssp:
+        types.append("SSP")
     if "FAKTUR" in upper:
         types.append("FAKTUR")
     if "INVOICE" in upper:
         types.append("INVOICE")
     if "BAST" in upper or "BERITA ACARA SERAH TERIMA" in upper:
         types.append("BAST")
-    if re.search(r"\bKW\b|\bKUITANSI\b|BUKTI\s+PENGELUARAN", upper):
+    if not is_ssp and re.search(r"\bKW\b|\bKUITANSI\b|BUKTI\s+PENGELUARAN", upper):
         types.append("KW_MAIN" if "BUKTI PENGELUARAN" in upper else "KW_SUPPORT")
         types.append("KW")
-    if "SURAT SETORAN PAJAK" in upper or re.search(r"\bSSP\b", upper):
-        types.append("SSP")
     if "FORMULIR PERMINTAAN BELANJA" in upper or re.search(r"\bFP\s*-\s*20\d{2}", upper):
         types.append("FORM_FP")
-    if "SP2D" in upper or re.search(r"\b26\d{13}\b", upper):
+    if ("SP2D" in upper or re.search(r"\b26\d{13}\b", upper)) and "SP2D" not in types:
         types.append("SP2D")
-    return types or ["UNKNOWN"]
+    return list(dict.fromkeys(types)) or ["UNKNOWN"]
 
 
 def annotate_page_details(page_details):
@@ -306,7 +308,8 @@ def annotate_page_details(page_details):
         text = item.get("text") or item.get("extracted_text") or ""
         types = item.get("page_types") or classify_page_types(text)
         item["page_types"] = types
-        item["page_classification"] = types[0] if types else "UNKNOWN"
+        item["primary_page_type"] = types[0] if types else "UNKNOWN"
+        item["page_classification"] = item["primary_page_type"]
         item.setdefault("page_number", item.get("page") or index)
         item.setdefault("confidence", item.get("ocr_confidence") or item.get("confidence") or 0.0)
         annotated.append(item)
@@ -669,13 +672,13 @@ def extract_pembebanan_value(text, akun_values):
 
 def parse_spm_detail_items(text, default_description=""):
     compact = normalize_text(text).upper()
-    starts = [match.start() for match in re.finditer(r"\b019937[\s.,]+\d{3}[\s.,]+5\d{5}[\s.,]", compact)]
+    starts = [match.start() for match in re.finditer(r"\b\d{4,6}[\s.,]+\d{3}[\s.,]+5\d{5}[\s.,]", compact)]
     items = []
     seen = set()
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else min(len(compact), start + 700)
         block = compact[start:end]
-        akun_match = re.search(r"\b019937[\s.,]+\d{3}[\s.,]+(5\d{5})[\s.,]", block)
+        akun_match = re.search(r"\b\d{4,6}[\s.,]+\d{3}[\s.,]+(5\d{5})[\s.,]", block)
         if not akun_match:
             continue
         akun = akun_match.group(1)
@@ -801,6 +804,14 @@ def parse_spm_pdf(file_path, ocr=False):
             {"text": page_text, "extracted_text": page_text, "page_number": index}
             for index, page_text in enumerate(extracted.get("pages", []), start=1)
         ])
+    if not ocr and not any(normalize_text(page.get("text") or page.get("extracted_text") or "") for page in page_details):
+        extracted = extract_pdf_text(file_path, ocr=True)
+        page_details = annotate_page_details(extracted.get("page_details", []))
+        if not page_details:
+            page_details = annotate_page_details([
+                {"text": page_text, "extracted_text": page_text, "page_number": index}
+                for index, page_text in enumerate(extracted.get("pages", []), start=1)
+            ])
     text = "\n".join(page.get("text") or page.get("extracted_text") or "" for page in page_details)
     spm_text = text_for_page_types(page_details, ["SPM"], fallback_all=True)
     spp_text = text_for_page_types(page_details, ["SPP"])
@@ -1065,6 +1076,20 @@ def parse_spm_pdf(file_path, ocr=False):
     if position_items:
         detail_items = position_items
         for item in detail_items:
+            if len(detail_items) == 1 and total_pembayaran > 0:
+                item["netto"] = total_pembayaran
+                item.setdefault("field_provenance", {})["netto"] = {
+                    "page": spm_page_nums[0] if spm_page_nums else None,
+                    "method": "spm_header",
+                    "confidence": extracted.get("confidence", 0.0),
+                }
+            if len(detail_items) == 1 and jumlah_potongan > 0 and "411121" in akun_potongan:
+                item["pph21"] = jumlah_potongan
+                item.setdefault("field_provenance", {})["pph21"] = {
+                    "page": spm_page_nums[0] if spm_page_nums else None,
+                    "method": "spm_header",
+                    "confidence": extracted.get("confidence", 0.0),
+                }
             if not is_valid_pembebanan(item.get("pembebanan"), item.get("jumlah")):
                 item["needs_review"] = True
                 item["review_note"] = "Pembebanan tidak valid atau mengandung nominal."
@@ -1593,7 +1618,7 @@ def normalize_coa_text(value):
 
 def pembebanan_from_full_coa(value, akun=""):
     text = normalize_coa_text(value)
-    akun_match = re.search(r"\b019937\.010\.(5\d{5})\.", text) or re.search(r"\b(5\d{5})\b", text)
+    akun_match = re.search(r"\d{4,6}\.\d{3}\.(5\d{5})\.", text) or re.search(r"\b(5\d{5})\b", text)
     account = akun or (akun_match.group(1) if akun_match else "")
     program_match = re.search(r"\.(\d{4})([A-Z]{3})\.", text)
     item_matches = re.findall(r"\.(\d{3})\.(\d{3})\.([0-9A-Z]{2})\.(\d{3,6})\b", text)
@@ -1644,7 +1669,7 @@ def detail_line_rows_from_tsv(words):
 
 def score_detail_tsv(text, confidence):
     upper = normalize_text(text).upper()
-    coa_count = len(re.findall(r"\b019937[\s.]+010[\s.]+5\d\s*\d{4}", upper))
+    coa_count = len(re.findall(r"\b\d{4,6}[\s.]+\d{3}[\s.]+5\d\s*\d{4}", upper))
     item_count = len(re.findall(r"\b\d{3}\.\d{3}\.[0-9A-Z]{2}\.\d{3,6}\b", upper))
     item_desc_count = len(re.findall(r"\b\d{3}\.\d{3}\.[0-9A-Z]{2}\.\d{3,6}\s*[-–]\s*[A-Z]", upper))
     amount_count = len(re.findall(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?", upper))
@@ -1718,6 +1743,28 @@ def ocr_page_table_variants(file_path, page_number, rotations):
     return variants
 
 
+def table_variant_from_page_tsv(page, page_types):
+    words = page.get("tsv_words") or page.get("words") or page.get("ocr_words") or []
+    normalized_words = [word for word in (_to_tsv_word(raw_word) for raw_word in words) if word]
+    if not normalized_words:
+        return None
+    confidence_values = [word["confidence"] for word in normalized_words if word["confidence"] >= 0]
+    confidence = round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
+    text = " ".join(word["text"] for word in sorted(normalized_words, key=lambda item: (item["top"], item["left"])))
+    return {
+        "page": page.get("page_number") or page.get("page"),
+        "psm": "existing_tsv",
+        "rotation": int(page.get("rotation") or page.get("selected_rotation") or 0),
+        "confidence": confidence,
+        "score": score_detail_tsv(text, confidence),
+        "text": text,
+        "lines": detail_line_rows_from_tsv(normalized_words),
+        "source_types": list(page_types),
+        "source": "existing_tsv",
+        "tsv_word_count": len(normalized_words),
+    }
+
+
 def full_coa_key(value):
     text = normalize_coa_text(value)
     matches = re.findall(r"\.(\d{3})\.(\d{3})\.([0-9A-Z]{2})\.(\d{3,6})\b", text)
@@ -1729,11 +1776,11 @@ def parse_full_coa_rows(lines, source_page, source_types):
     rows = []
     for row in lines:
         text = normalize_coa_text(row["text"])
-        coa_match = re.search(r"\b019937\.010\.(5\d{5})\.[^\s|]+", text)
+        coa_match = re.search(r"(\d{4,6})\.\d{3}\.(5\d{5})\.[^\s|]+", text)
         if not coa_match:
             continue
         coa = coa_match.group(0)
-        akun = coa_match.group(1)
+        akun = coa_match.group(2)
         item_code = full_coa_key(coa)
         pembebanan = pembebanan_from_full_coa(coa, akun)
         amount_matches = re.findall(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?", row["text"])
@@ -1832,7 +1879,7 @@ def extract_lampiran_descriptions(best_by_page):
         desc = re.split(r"\s+019(?:937)?\b", desc, maxsplit=1)[0]
         desc = re.split(r"\s+(?:cieer|ieer|iaer|oiaer|iser|veer|aos)[a-z0-9]{6,}", desc, maxsplit=1, flags=re.IGNORECASE)[0]
         desc = re.split(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?", desc, maxsplit=1)[0]
-        desc = re.split(r"\b(?:019937\.010\.5\d{5}|\d{3}\.\d{3}\.[0-9A-Z]{2}\.\d{3,6}\s*-)", desc, maxsplit=1, flags=re.IGNORECASE)[0]
+        desc = re.split(r"\b(?:\d{4,6}\.\d{3}\.5\d{5}|\d{3}\.\d{3}\.[0-9A-Z]{2}\.\d{3,6}\s*-)", desc, maxsplit=1, flags=re.IGNORECASE)[0]
         desc = re.sub(r"[_|]+", " ", desc)
         desc = re.sub(r"\b(?:uma|awa|fume|pumay|mh|al|Ea|pm|fm|iv|re)\b", " ", desc, flags=re.IGNORECASE)
         desc = re.sub(r"\bPemelihara\s+an\b", "Pemeliharaan", desc, flags=re.IGNORECASE)
@@ -1850,7 +1897,7 @@ def extract_lampiran_descriptions(best_by_page):
     def description_quality(desc):
         words = re.findall(r"[A-Za-zÀ-ÿ/]+", desc)
         gibberish = re.findall(r"[A-Za-z]{16,}", desc)
-        bad_markers = re.findall(r"\b(?:BADAN|LAMPIRAN|Nomor|019937|Dokumen|Pejabat)\b", desc, re.IGNORECASE)
+        bad_markers = re.findall(r"\b(?:BADAN|LAMPIRAN|Nomor|\d{4,6}|Dokumen|Pejabat)\b", desc, re.IGNORECASE)
         return len(words) * 4 - len(gibberish) * 20 - len(bad_markers) * 25 - max(0, len(desc) - 90)
 
     def keep_description(item_code, desc):
@@ -1868,7 +1915,7 @@ def extract_lampiran_descriptions(best_by_page):
         normalized = normalize_ocr_amount_text(text)
         pattern = re.compile(
             r"\b(\d{3}\.\d{3}\.[0-9A-Z]{2}\.\d{3,6})\s*[-â€“]\s*(.*?)"
-            r"(?=\s+\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?|\s+019937\.010\.5\d{5}|\s+\d{3}\.\d{3}\.[0-9A-Z]{2}\.\d{3,6}\s*[-â€“]|$)",
+            r"(?=\s+\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?|\s+\d{4,6}\.\d{3}\.5\d{5}|\s+\d{3}\.\d{3}\.[0-9A-Z]{2}\.\d{3,6}\s*[-â€“]|$)",
             re.IGNORECASE,
         )
         for match in pattern.finditer(normalized):
@@ -1997,7 +2044,7 @@ def parse_detail_sp2d_rows_by_grid(image, pytesseract, page_number, rotation, so
         coa_text = re.sub(r"(?<=\d)\s+(?=\d)", "", coa_text)
         coa_text = coa_text.replace("{", ".").replace("}", ".")
         coa_text = re.sub(r"\.+", ".", coa_text)
-        akun_match = re.search(r"\b019937\.010\.(5\d{5})\.", coa_text)
+        akun_match = re.search(r"\d{4,6}\.\d{3}\.(5\d{5})\.", coa_text)
         item_match = re.search(r"\.(\d{3})\.(\d{3})\.([0-9A-Z]{2})\.(\d{3,6})\b", coa_text)
         if not (akun_match and item_match):
             continue
@@ -2093,7 +2140,7 @@ def parse_detail_sp2d_rows_by_crop(file_path, page_number, rotation, source_type
     for row in detail_line_rows_from_tsv(words):
         row_text = normalize_coa_text(row["text"])
         row_text = re.sub(r"(5\d{4})\s+(\d)", r"\1\2", row_text)
-        if not re.search(r"\b019937\.010\.5\d{5}\.", row_text):
+        if not re.search(r"\d{4,6}\.\d{3}\.5\d{5}\.", row_text):
             continue
         y = row["top"]
         crop = crop_image.crop((
@@ -2116,7 +2163,7 @@ def parse_detail_sp2d_rows_by_crop(file_path, page_number, rotation, source_type
             if best_amount_from_text(crop_text):
                 break
         item_match = re.search(r"\b(\d{3})[\s.](\d{3})[\s.]([0-9A-Z]{2})[\s.](\d{3,6})\b", f"{row_text} {crop_text}", re.IGNORECASE)
-        akun_match = re.search(r"\b019937\.010\.(5\d{5})\.", row_text)
+        akun_match = re.search(r"\d{4,6}\.\d{3}\.(5\d{5})\.", row_text)
         if not (item_match and akun_match):
             continue
         item_code = ".".join(part.upper() for part in item_match.groups())
@@ -2200,29 +2247,34 @@ def ocr_amount_word_crop(image, word):
 def parse_detail_sp2d_rows_from_tsv_lines(file_path, page_number, rotation, lines, source_types, desc_by_item):
     image = None
     rows = []
+    all_words = [word for row in lines for word in (row.get("words") or [])]
+    page_width = max(
+        (int(word.get("left", 0)) + int(word.get("width", 0)) for word in all_words),
+        default=1,
+    )
+    amount_x_min = page_width * 0.68
     for row in lines:
         row_words = row.get("words") or []
-        coa_words = [
-            word for word in row_words
-            if int(word.get("left", 0)) <= 2300
-        ]
+        coa_words = [word for word in row_words if int(word.get("left", 0)) < amount_x_min]
         row_text = " ".join(str(word.get("text", "")) for word in coa_words) if coa_words else (row.get("text") or "")
         row_text = normalize_coa_text(row_text)
         row_text = re.sub(r"(5\d{4})\s+(\d)", r"\1\2", row_text)
-        coa_match = re.search(r"\b019937\.010\.(5\d{5})\.[^\s|]+", row_text)
+        coa_match = re.search(r"(\d{4,6})\.\d{3}\.(5\d{5})\.[^\s|]+", row_text)
         item_match = re.search(r"\.(\d{3})\.(\d{3})\.([0-9A-Z]{2})\.(\d{3,6})\b", row_text, re.IGNORECASE)
         if not (coa_match and item_match):
             continue
 
         amount_words = [
             word for word in row.get("words", [])
-            if int(word.get("left", 0)) > 2300 and re.search(r"\d{1,3}(?:[.,]\d{3})+", str(word.get("text", "")))
+            if int(word.get("left", 0)) >= amount_x_min and re.search(r"\d{1,3}(?:[.,]\d{3})+", str(word.get("text", "")))
         ]
         amounts = []
         if amount_words:
-            image = image or render_ocr_page_image(file_path, page_number, rotation)
             for word in amount_words:
-                amount = ocr_amount_word_crop(image, word) or best_amount_from_text(str(word.get("text", "")))
+                amount = best_amount_from_text(str(word.get("text", "")))
+                if not amount:
+                    image = image or render_ocr_page_image(file_path, page_number, rotation)
+                    amount = ocr_amount_word_crop(image, word)
                 if amount:
                     amounts.append(amount)
         if not amounts:
@@ -2231,13 +2283,21 @@ def parse_detail_sp2d_rows_from_tsv_lines(file_path, page_number, rotation, line
         if not amounts:
             continue
 
-        akun = coa_match.group(1)
+        akun = coa_match.group(2)
         item_code = ".".join(part.upper() for part in item_match.groups())
         pembebanan = pembebanan_from_full_coa(row_text, akun)
         amount = amounts[0]
         if not (pembebanan and is_valid_pembebanan(pembebanan, amount)):
             continue
         description = desc_by_item.get(item_code, "")
+        if row_words:
+            left = min(int(word.get("left", 0)) for word in row_words)
+            top = min(int(word.get("top", 0)) for word in row_words)
+            right = max(int(word.get("left", 0)) + int(word.get("width", 0)) for word in row_words)
+            bottom = max(int(word.get("top", 0)) + int(word.get("height", 0)) for word in row_words)
+            source_bbox = [left, top, right, bottom]
+        else:
+            source_bbox = []
         rows.append({
             "akun": akun,
             "jumlah": amount,
@@ -2250,6 +2310,12 @@ def parse_detail_sp2d_rows_from_tsv_lines(file_path, page_number, rotation, line
             "source_types": source_types,
             "source_row_id": item_code,
             "ocr_rotation": rotation,
+            "source_bbox": source_bbox,
+            "field_provenance": {
+                "akun": {"page": page_number, "bbox": source_bbox, "method": "tsv", "confidence": row.get("confidence", 0)},
+                "bruto": {"page": page_number, "bbox": source_bbox, "method": "tsv", "confidence": row.get("confidence", 0)},
+                "pembebanan": {"page": page_number, "bbox": source_bbox, "method": "tsv", "confidence": row.get("confidence", 0)},
+            },
             "source_priority": "DETAIL_SPP_SPM_SP2D",
             "needs_review": not bool(description),
             "review_note": "" if description else "Uraian Lampiran COA belum cocok pasti.",
@@ -2276,13 +2342,22 @@ def dedupe_detail_items(items):
 
 def parse_position_detail_items(file_path, page_details, default_description="", expected_total=None):
     best_by_page = {}
+    saw_detail_candidate = False
     for page in page_details:
         page_types = set(page.get("page_types") or [])
         if not page_types.intersection({"DETAIL_SPP_SPM_SP2D", "LAMPIRAN_COA", "SPM", "SPP"}):
             continue
-        confidence = page.get("confidence") or 0
-        rotations = (0, 90, 180, 270) if "DETAIL_SPP_SPM_SP2D" in page_types and confidence < 70 else (0,)
-        variants = ocr_page_table_variants(file_path, page.get("page_number") or page.get("page"), rotations)
+        if "DETAIL_SPP_SPM_SP2D" in page_types:
+            saw_detail_candidate = True
+        page_rotation = int(page.get("rotation") or 0)
+        existing_tsv_variant = table_variant_from_page_tsv(page, page_types)
+        if existing_tsv_variant:
+            variants = [existing_tsv_variant]
+            if "DETAIL_SPP_SPM_SP2D" in page_types:
+                variants.extend(ocr_page_table_variants(file_path, page.get("page_number") or page.get("page"), (page_rotation,)))
+        else:
+            rotations = (page_rotation,)
+            variants = ocr_page_table_variants(file_path, page.get("page_number") or page.get("page"), rotations)
         if not variants:
             continue
         best = max(variants, key=lambda item: item["score"])
@@ -2317,7 +2392,7 @@ def parse_position_detail_items(file_path, page_details, default_description="",
             desc_by_item,
         )
         detail_page_rows.extend(tsv_rows)
-        if not tsv_rows:
+        if not tsv_rows and page.get("source") != "existing_tsv":
             detail_page_rows.extend(parse_detail_sp2d_rows_by_crop(
                 file_path,
                 page["page"],
@@ -2339,6 +2414,7 @@ def parse_position_detail_items(file_path, page_details, default_description="",
         if has_detail_page:
             return [], {
                 "source": "PERLU_REVIEW_PARSER_TABEL",
+                "review_reason": "DETAIL_TSV_SCHEMA_NO_ROWS" if any((page.get("source") == "existing_tsv" and not detail_page_rows) for page in best_by_page.values()) else "DETAIL_SCHEMA_NO_ROWS_OR_TOTAL_MISMATCH",
                 "rows_before_dedupe": len(detail_page_rows),
                 "rows_after_dedupe": len(detail_page_rows),
                 "total": detail_total,
@@ -2361,6 +2437,15 @@ def parse_position_detail_items(file_path, page_details, default_description="",
                 "total": total,
                 "pages": best_by_page,
             }
+    if saw_detail_candidate:
+        return [], {
+            "source": "PERLU_REVIEW_PARSER_TABEL",
+            "review_reason": "DETAIL_TSV_SCHEMA_NO_ROWS" if any((page.get("source") == "existing_tsv") for page in best_by_page.values()) else "DETAIL_SCHEMA_NO_ROWS",
+            "rows_before_dedupe": len(detail_rows) or len(detail_page_rows),
+            "rows_after_dedupe": len(detail_rows) or len(detail_page_rows),
+            "total": sum((parse_decimal(item.get("jumlah")) for item in (detail_rows or detail_page_rows)), Decimal("0")),
+            "pages": best_by_page,
+        }
     return [], {
         "source": "DETAIL_SPP_SPM_SP2D_REVIEW" if detail_rows or detail_page_rows else "",
         "rows_before_dedupe": len(detail_rows) or len(detail_page_rows),
@@ -2375,11 +2460,11 @@ def extract_drpp_pembebanan_by_amount(text):
     mapping = {}
     amount_totals = {}
     compact = normalize_text(text)
-    starts = [match.start() for match in re.finditer(r"019937\.\d{3}\.5\d{5}\.", compact)]
+    starts = [match.start() for match in re.finditer(r"\d{4,6}\.\d{3}\.5\d{5}\.", compact)]
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else len(compact)
         block = compact[start:end]
-        akun_match = re.search(r"019937\.\d{3}\.(5\d{5})\.", block)
+        akun_match = re.search(r"\d{4,6}\.\d{3}\.(5\d{5})\.", block)
         if not akun_match:
             continue
         akun = akun_match.group(1)

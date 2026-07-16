@@ -15,7 +15,8 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from PIL import Image
 
-from apps.core.parsers import DOCUMENT_PARSER_REGISTRY, classify_document, extract_lampiran_descriptions, make_json_safe, parse_detail_sp2d_rows_by_crop, parse_detail_sp2d_rows_from_tsv_lines, parse_drpp_items_from_tsv, parse_drpp_pdf, parse_paket_spm_zip, parse_spm_pdf
+from apps.core.ocr import classify_page, extract_tesseract, ocr_cache_key
+from apps.core.parsers import DOCUMENT_PARSER_REGISTRY, classify_document, classify_page_types, extract_lampiran_descriptions, make_json_safe, parse_detail_sp2d_rows_by_crop, parse_detail_sp2d_rows_from_tsv_lines, parse_drpp_items_from_tsv, parse_drpp_pdf, parse_paket_spm_zip, parse_position_detail_items, parse_spm_pdf
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
 from apps.documents.models import ChecklistStatus, DocumentDriveLink
@@ -604,6 +605,29 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual({row["nomor_sp2d"] for row in parsed_rows}, {"260100000024403"})
         self.assertEqual({str(row["tanggal_sp2d"]) for row in parsed_rows}, {"2026-05-25"})
         self.assertFalse(any(re.search(r"\d{1,3}\.\d{3}$", row["pembebanan"]) for row in parsed_rows))
+
+    def test_real_00195a_ls_detail_page_uses_high_res_tsv(self):
+        if not shutil.which("tesseract"):
+            self.skipTest("tesseract binary tidak tersedia")
+        pdf_path = os.path.join(os.getcwd(), "media", "tmp", "SPM NOMOR 00195A.pdf")
+        self.assertTrue(os.path.exists(pdf_path), "PDF asli 00195A harus tersedia untuk targeted regression test lokal.")
+
+        spm = parse_spm_pdf(pdf_path, ocr=True)
+        items = spm.get("detail_items") or []
+
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["akun"], "512414")
+        self.assertEqual(item["bruto"], Decimal("16437279"))
+        self.assertEqual(item["netto"], Decimal("16299408.00"))
+        self.assertEqual(item["pph21"], Decimal("137871.00"))
+        self.assertEqual(item["pembebanan"], "2886.EBA.994.001.512414")
+        self.assertEqual(item["source_page"], 1)
+        self.assertTrue(item.get("source_bbox"))
+        self.assertEqual(spm["metadata"]["jumlah_pengeluaran"], Decimal("16437279.00"))
+        self.assertEqual(spm["metadata"]["jumlah_potongan"], Decimal("137871.00"))
+        self.assertEqual(spm["metadata"]["total_pembayaran"], Decimal("16299408.00"))
+        self.assertEqual(spm["metadata"]["detail_parse_summary"]["source"], "DETAIL_SPP_SPM_SP2D")
 
     def test_real_drpp_00029_and_00030_use_production_ocr_without_support_as_items(self):
         if not shutil.which("tesseract"):
@@ -1319,6 +1343,240 @@ class PaketSPMRegressionTests(TestCase):
             ),
             "LAMPIRAN_COA",
         )
+
+    def test_spm_scan_without_native_text_auto_calls_ocr(self):
+        ocr_text = (
+            "SURAT PERINTAH MEMBAYAR\n"
+            "NOMOR 00140T\n"
+            "TANGGAL 01 Juni 2026\n"
+            "SATKER 019937\n"
+            "JUMLAH PENGELUARAN 1.000,00\n"
+            "TOTAL PEMBAYARAN 1.000,00\n"
+        )
+        native_empty = {
+            "method": "text",
+            "best_engine": "text",
+            "status": "failed",
+            "pages": [],
+            "combined_text": "",
+            "page_details": [],
+            "warnings": [],
+            "page_count": 1,
+            "confidence": 0,
+            "engines_tried": ["text"],
+            "native_text_length": 0,
+            "tesseract_called": False,
+            "tesseract_text_length": 0,
+            "tesseract_reason": "Tesseract tidak dipanggil.",
+        }
+        ocr_result = {
+            "method": "tesseract",
+            "best_engine": "tesseract",
+            "status": "parsed_ocr",
+            "pages": [ocr_text],
+            "combined_text": ocr_text,
+            "page_details": [{
+                "text": ocr_text,
+                "extracted_text": ocr_text,
+                "page_number": 1,
+                "method": "tesseract",
+                "engine": "tesseract",
+            }],
+            "warnings": [],
+            "page_count": 1,
+            "confidence": 75,
+            "engines_tried": ["text", "tesseract"],
+            "native_text_length": 0,
+            "tesseract_called": True,
+            "tesseract_text_length": len(ocr_text),
+            "tesseract_reason": "Native text kosong; Tesseract dipanggil.",
+        }
+
+        with patch("apps.core.parsers.extract_pdf_text", side_effect=[native_empty, ocr_result]) as mocked:
+            parsed = parse_spm_pdf("SPM NOMOR 00140T.pdf", ocr=False)
+
+        self.assertEqual(mocked.call_count, 2)
+        self.assertFalse(mocked.call_args_list[0].kwargs["ocr"])
+        self.assertTrue(mocked.call_args_list[1].kwargs["ocr"])
+        self.assertTrue(parsed["tesseract_called"])
+        self.assertEqual(parsed["metadata"]["nomor_spm"], "00140T")
+
+    def test_tesseract_adaptive_rotation_stops_after_strong_anchor(self):
+        class FakeImage:
+            def __init__(self, name, rotation=0):
+                self.name = name
+                self.rotation = rotation
+
+            def rotate(self, rotation, expand=True):
+                return FakeImage(self.name, rotation)
+
+        attempts = []
+
+        def fake_tesseract_page_text(_pytesseract, image):
+            attempts.append((image.name, image.rotation))
+            expected_rotation = {"header": 0, "detail": 270}[image.name]
+            if image.rotation == expected_rotation:
+                text = (
+                    "SURAT PERINTAH MEMBAYAR 00100T TOTAL PEMBAYARAN JUMLAH PENGELUARAN POTONGAN KPPN"
+                    if image.name == "header"
+                    else "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D NO SP2D 260100000024403 521211 1.000.000"
+                )
+                return text, 90.0, [], [{"text": text.split()[0], "confidence": 90, "left": 1, "top": 1, "width": 10, "height": 10}]
+            return "noise", 20.0, [], [{"text": "noise", "confidence": 20, "left": 1, "top": 1, "width": 10, "height": 10}]
+
+        with patch("apps.core.ocr.optional_import", return_value=object()), \
+             patch("apps.core.ocr.shutil.which", return_value="tesseract"), \
+             patch("apps.core.ocr.preprocess_image", side_effect=lambda image: image), \
+             patch("apps.core.ocr.tesseract_page_text", side_effect=fake_tesseract_page_text), \
+             patch.dict("os.environ", {"OCR_ROTATION_STRONG_SCORE": "12"}):
+            result = extract_tesseract("dummy.pdf", images=[FakeImage("header"), FakeImage("detail")])
+
+        self.assertEqual([page.rotation for page in result.pages], [0, 270])
+        self.assertEqual([page.tsv_words[0]["rotation"] for page in result.pages], [0, 270])
+        self.assertEqual([page.tried_rotations for page in result.pages], [[0], [0, 90, 180, 270]])
+        self.assertEqual(attempts, [
+            ("header", 0),
+            ("detail", 0),
+            ("detail", 90),
+            ("detail", 180),
+            ("detail", 270),
+        ])
+        self.assertIn("SURAT PERINTAH MEMBAYAR", result.pages[0].extracted_text)
+        self.assertIn("DETAIL PENGELUARAN", result.pages[1].extracted_text)
+
+    def test_adaptive_rotation_21_upright_pages_does_not_make_84_calls(self):
+        class FakeImage:
+            rotation = 0
+
+            def rotate(self, rotation, expand=True):
+                clone = FakeImage()
+                clone.rotation = rotation
+                return clone
+
+        calls = []
+
+        def fake_tesseract_page_text(_pytesseract, image):
+            calls.append(image.rotation)
+            text = "SURAT PERINTAH MEMBAYAR 00100T TOTAL PEMBAYARAN JUMLAH PENGELUARAN POTONGAN KPPN"
+            return text, 90.0, [], [{"text": "SURAT", "confidence": 90, "left": 1, "top": 1, "width": 10, "height": 10}]
+
+        with patch("apps.core.ocr.optional_import", return_value=object()), \
+             patch("apps.core.ocr.shutil.which", return_value="tesseract"), \
+             patch("apps.core.ocr.preprocess_image", side_effect=lambda image: image), \
+             patch("apps.core.ocr.tesseract_page_text", side_effect=fake_tesseract_page_text), \
+             patch.dict("os.environ", {"OCR_ROTATION_STRONG_SCORE": "12"}):
+            result = extract_tesseract("dummy.pdf", images=[FakeImage() for _ in range(21)])
+
+        self.assertEqual(len(result.pages), 21)
+        self.assertEqual(len(calls), 21)
+        self.assertEqual(set(calls), {0})
+        self.assertTrue(all(page.high_res_ocr_called is False for page in result.pages))
+
+    def test_detail_parser_uses_selected_rotation_without_retrying_all_rotations(self):
+        calls = []
+
+        def fake_variants(_file_path, _page_number, rotations):
+            calls.append(tuple(rotations))
+            return []
+
+        page_details = [{
+            "page_number": 3,
+            "page_types": ["DETAIL_SPP_SPM_SP2D"],
+            "confidence": 95,
+            "rotation": 270,
+        }]
+
+        with patch("apps.core.parsers.ocr_page_table_variants", side_effect=fake_variants):
+            rows, summary = parse_position_detail_items("dummy.pdf", page_details, expected_total=Decimal("1000"))
+
+        self.assertEqual(rows, [])
+        self.assertEqual(calls, [(270,)])
+        self.assertEqual(summary["source"], "PERLU_REVIEW_PARSER_TABEL")
+
+    def test_classifier_prefers_detail_anchor_over_sp2d_token_and_keeps_multilabel(self):
+        text = "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D No. SP2D 260100000024403"
+
+        self.assertEqual(classify_page(text), "DETAIL_SPP_SPM_SP2D")
+        self.assertEqual(classify_page_types(text)[0], "DETAIL_SPP_SPM_SP2D")
+        self.assertIn("SP2D", classify_page_types(text))
+
+    def test_classifier_ssp_is_not_kw_from_payment_words(self):
+        text = "SURAT SETORAN PAJAK Kode Akun Pajak Kode Jenis Setoran Masa Pajak Bukti pembayaran"
+
+        self.assertEqual(classify_page(text), "SSP")
+        page_types = classify_page_types(text)
+        self.assertIn("SSP", page_types)
+        self.assertNotIn("KW", page_types)
+
+    def test_ocr_cache_key_uses_file_content_not_temp_filename(self):
+        left = os.path.join(self.media_tmp.name, "SPM NOMOR 001.pdf")
+        right = os.path.join(self.media_tmp.name, "SPM NOMOR 001_copy.pdf")
+        with open(left, "wb") as handle:
+            handle.write(b"same pdf content")
+        with open(right, "wb") as handle:
+            handle.write(b"same pdf content")
+
+        self.assertEqual(ocr_cache_key(left), ocr_cache_key(right))
+
+    def test_detail_parser_uses_existing_tsv_without_reocr_and_rejects_withholding_as_row(self):
+        words = [
+            {"text": "DETAIL", "left": 10, "top": 10, "width": 80, "height": 10, "confidence": 90},
+            {"text": "PENGELUARAN", "left": 100, "top": 10, "width": 120, "height": 10, "confidence": 90},
+            {"text": "019937.010.521211.0540ABC.001.002.AA.000001", "left": 100, "top": 100, "width": 850, "height": 20, "confidence": 90},
+            {"text": "1.000.000", "left": 2400, "top": 100, "width": 120, "height": 20, "confidence": 90},
+            {"text": "019937.010.411121.0540ABC.001.002.AA.000002", "left": 100, "top": 140, "width": 850, "height": 20, "confidence": 90},
+            {"text": "100.000", "left": 2400, "top": 140, "width": 120, "height": 20, "confidence": 90},
+        ]
+        page_details = [{
+            "page_number": 1,
+            "page_types": ["DETAIL_SPP_SPM_SP2D", "SP2D"],
+            "primary_page_type": "DETAIL_SPP_SPM_SP2D",
+            "rotation": 270,
+            "tsv_words": words,
+        }]
+
+        with patch("apps.core.parsers.ocr_page_table_variants") as mocked_ocr_variants, \
+             patch("apps.core.parsers.parse_detail_sp2d_rows_by_crop") as mocked_crop:
+            rows, summary = parse_position_detail_items("dummy.pdf", page_details, expected_total=Decimal("1000000"))
+
+        mocked_ocr_variants.assert_not_called()
+        mocked_crop.assert_not_called()
+        self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["akun"], "521211")
+        self.assertEqual(rows[0]["jumlah"], Decimal("1000000"))
+        self.assertEqual(rows[0]["ocr_rotation"], 270)
+
+    def test_upload_route_reaches_preview_with_mocked_parser(self):
+        self.client.login(username="operator", password="password")
+        parsed_spm = {
+            "status": "needs_manual_review",
+            "method": "mock",
+            "warnings": [],
+            "metadata": {
+                "nomor_spm": "00999T",
+                "satker_app_code": "1300",
+                "tahun": 2026,
+                "jenis_spm": "GUP",
+                "total_pembayaran": Decimal("1000"),
+            },
+            "akun_rows": [],
+            "detail_items": [],
+        }
+        with patch("apps.paket_spm.views.probe_package_identity", return_value={"needs_review": False}), \
+             patch("apps.paket_spm.views.extract_pdf_text", return_value={"pages": ["SURAT PERINTAH MEMBAYAR"], "page_details": []}), \
+             patch("apps.paket_spm.views.classify_document", return_value="SPM"), \
+             patch("apps.paket_spm.views.parse_spm_pdf", return_value=parsed_spm):
+            response = self.client.post(
+                reverse("paket_spm:list"),
+                {"document_files": [SimpleUploadedFile("SPM NOMOR 00999T.pdf", b"%PDF-mock", content_type="application/pdf")]},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("paket_spm:preview"))
+        paket = PaketSPMUpload.objects.latest("id")
+        self.assertEqual(paket.status, PaketSPMUpload.Status.PREVIEW)
+        self.assertEqual(self.client.session["paket_spm_preview_id"], paket.id)
 
     def test_upload_form_initial_context_fields_are_detected_in_preview_not_visible_inputs(self):
         self.client.login(username="operator", password="password")

@@ -5,6 +5,7 @@ import re
 import shutil
 import sys
 import hashlib
+import time
 from dataclasses import dataclass, field
 
 from PIL import Image, ImageOps, ImageFilter
@@ -14,38 +15,49 @@ OCR_CACHE_VERSION = "detail-tsv-v2"
 
 # ─── Klasifikasi halaman dokumen ─────────────────────────────────────────────
 PAGE_CLASS_KEYWORDS = {
-    "spm": [
+    "DETAIL_SPP_SPM_SP2D": [
+        "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D",
+        "DETAIL PENGELUARAN DAN POTONGAN",
+    ],
+    "SPM": [
         "SURAT PERINTAH MEMBAYAR",
         "NOMOR SPM",
         "SPM NOMOR",
     ],
-    "spp": [
+    "SPP": [
         "SURAT PERMINTAAN PEMBAYARAN",
         "NOMOR SPP",
         "NO SPP",
         "NO. SPP",
     ],
-    "sp2d": [
-        "DETAIL PENGELUARAN DAN POTONGAN",
-        "DAFTAR SP2D",
-        "NO SP2D",
-        "NO. SP2D",
-        "NOMOR SP2D",
-    ],
-    "drpp": [
-        "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN",
-        "BUKTI PENGELUARAN",
-        "NO BUKTI",
-    ],
-    "kw": [
-        "KUITANSI",
-        "TERBILANG",
-    ],
-    "coa": [
+    "LAMPIRAN_COA": [
+        "LAMPIRAN DAFTAR RINCIAN",
         "KODE AKUN",
         "COA",
         "PEMBEBANAN",
         "SEGMEN",
+    ],
+    "DRPP": [
+        "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN",
+        "BUKTI PENGELUARAN",
+        "NO BUKTI",
+    ],
+    "SSP": [
+        "SURAT SETORAN PAJAK",
+        "KODE AKUN PAJAK",
+        "KODE JENIS SETORAN",
+        "MASA PAJAK",
+    ],
+    "KW": [
+        "KUITANSI",
+        "KW/",
+        "TERBILANG",
+    ],
+    "SP2D": [
+        "DAFTAR SP2D",
+        "NO SP2D",
+        "NO. SP2D",
+        "NOMOR SP2D",
     ],
     "lampiran_spm": [
         "LAMPIRAN SPM",
@@ -56,6 +68,18 @@ PAGE_CLASS_KEYWORDS = {
         "LAMPIRAN SURAT PERMINTAAN",
     ],
 }
+
+PAGE_TYPE_PRIORITY = [
+    "DETAIL_SPP_SPM_SP2D",
+    "SPM",
+    "SPP",
+    "LAMPIRAN_COA",
+    "DRPP",
+    "KW",
+    "SSP",
+    "SP2D",
+    "UNKNOWN",
+]
 
 DOCUMENT_KEYWORDS = {
     "spm": [
@@ -101,6 +125,12 @@ class OCRPage:
     warnings: list = field(default_factory=list)
     page_classification: str = ""
     tsv_words: list = field(default_factory=list)
+    rotation: int = 0
+    tried_rotations: list = field(default_factory=list)
+    classification_score: float = 0.0
+    high_res_ocr_called: bool = False
+    duration_ms: int = 0
+    cache_hit: bool = False
 
     @property
     def method(self):
@@ -123,17 +153,27 @@ class EngineResult:
         return round(sum(values) / len(values), 2) if values else 0.0
 
 
-def classify_page(text):
-    """Klasifikasikan satu halaman berdasarkan keyword yang ditemukan."""
+def classify_page_types(text):
+    """Return multi-label evidence ordered by most specific page type."""
     upper = (text or "").upper()
-    scores = {}
+    found = []
     for page_type, keywords in PAGE_CLASS_KEYWORDS.items():
         score = sum(1 for kw in keywords if kw in upper)
         if score > 0:
-            scores[page_type] = score
-    if not scores:
-        return "lampiran"
-    return max(scores, key=scores.get)
+            found.append(page_type)
+    if "DETAIL_SPP_SPM_SP2D" in found and "SP2D" not in found:
+        found.append("SP2D")
+    if "SSP" in found and "LAMPIRAN_COA" in found and "LAMPIRAN DAFTAR RINCIAN" not in upper:
+        found.remove("LAMPIRAN_COA")
+    if "SSP" in found and "KW" in found and not re.search(r"\b\d{3,6}/KW/", upper):
+        found.remove("KW")
+    ordered = [page_type for page_type in PAGE_TYPE_PRIORITY if page_type in found]
+    return ordered or ["UNKNOWN"]
+
+
+def classify_page(text):
+    """Primary page type. Specific anchors beat general tokens."""
+    return classify_page_types(text)[0]
 
 
 def optional_import(module_name):
@@ -149,8 +189,11 @@ def ocr_log(message):
 
 def ocr_cache_key(file_path):
     try:
-        stat = os.stat(file_path)
-        raw = f"{OCR_CACHE_VERSION}|{os.path.abspath(file_path)}|{stat.st_size}|{stat.st_mtime_ns}|{','.join(engine_order())}"
+        digest = hashlib.sha256()
+        with open(file_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        raw = f"{OCR_CACHE_VERSION}|content:{digest.hexdigest()}|{','.join(engine_order())}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
     except OSError:
         return ""
@@ -172,6 +215,8 @@ def load_ocr_cache(file_path):
         with open(path, "r", encoding="utf-8") as handle:
             cached = json.load(handle)
         cached.setdefault("warnings", []).append("Hasil OCR diambil dari cache file aktif.")
+        for page in cached.get("page_details") or []:
+            page["cache_hit"] = True
         return cached
     except Exception as exc:
         ocr_log(f"cache OCR tidak bisa dibaca: {exc}")
@@ -275,6 +320,7 @@ def is_low_confidence(result):
 
 
 def page_dict(page):
+    page_types = classify_page_types(page.extracted_text)
     return {
         "page": page.page_number,
         "page_number": page.page_number,
@@ -285,8 +331,17 @@ def page_dict(page):
         "confidence": page.confidence,
         "status": page.status,
         "warnings": page.warnings,
-        "page_classification": page.page_classification,
+        "page_classification": page.page_classification or page_types[0],
+        "primary_page_type": page.page_classification or page_types[0],
+        "page_types": page_types,
         "tsv_words": page.tsv_words,
+        "rotation": page.rotation,
+        "selected_rotation": page.rotation,
+        "tried_rotations": page.tried_rotations,
+        "classification_score": page.classification_score,
+        "high_res_ocr_called": page.high_res_ocr_called,
+        "duration_ms": page.duration_ms,
+        "cache_hit": page.cache_hit,
     }
 
 
@@ -475,7 +530,38 @@ def tesseract_page_text(pytesseract, image):
     return "", 0.0, warnings, []
 
 
-def extract_tesseract(file_path, images=None):
+def rotation_score_is_strong(text, confidence, score):
+    min_score = float(os.getenv("OCR_ROTATION_STRONG_SCORE", "18"))
+    min_confidence = float(os.getenv("OCR_ROTATION_STRONG_CONFIDENCE", "45"))
+    if score >= min_score and confidence >= min_confidence:
+        return True
+    if score >= min_score + 8:
+        return True
+    return False
+
+
+def tesseract_page_text_best_rotation(pytesseract, image, document_type=None):
+    best = ("", 0.0, [], [], 0, 0.0)
+    warnings = []
+    tried_rotations = []
+    for rotation in (0, 90, 180, 270):
+        rotated = image.rotate(rotation, expand=True) if rotation else image
+        text, confidence, page_warnings, tsv_words = tesseract_page_text(pytesseract, rotated)
+        tried_rotations.append(rotation)
+        warnings.extend(page_warnings)
+        score = score_text(text, document_type=document_type, confidence=confidence)
+        if score > best[5]:
+            best = (text, confidence, page_warnings, tsv_words, rotation, score)
+        if rotation_score_is_strong(text, confidence, score):
+            best = (text, confidence, page_warnings, tsv_words, rotation, score)
+            break
+    text, confidence, page_warnings, tsv_words, rotation, score = best
+    for word in tsv_words:
+        word["rotation"] = rotation
+    return text, confidence, warnings or page_warnings, tsv_words, rotation, tried_rotations, score
+
+
+def extract_tesseract(file_path, images=None, high_res_ocr_called=False):
     """Jalankan Tesseract. Jika images sudah disediakan (dari render sebelumnya), gunakan langsung."""
     warnings = []
     pytesseract = optional_import("pytesseract")
@@ -486,7 +572,8 @@ def extract_tesseract(file_path, images=None):
 
     if images is None:
         try:
-            images = render_pdf_pages(file_path)
+            dpi = int(os.getenv("OCR_TABLE_DPI" if high_res_ocr_called else "OCR_CLASSIFY_DPI", "250" if high_res_ocr_called else "150"))
+            images = render_pdf_pages(file_path, dpi=dpi)
         except Exception as exc:
             warning = f"PDF scan gagal render: {exc}"
             ocr_log(warning)
@@ -495,14 +582,48 @@ def extract_tesseract(file_path, images=None):
     pages = []
     for index, image in enumerate(images, start=1):
         page_warnings = []
+        started_at = time.monotonic()
         try:
-            text, confidence, page_warnings, tsv_words = tesseract_page_text(pytesseract, auto_rotate_for_ocr(pytesseract, preprocess_image(image)))
+            processed = preprocess_image(image)
+            text, confidence, page_warnings, tsv_words, rotation, tried_rotations, score = tesseract_page_text_best_rotation(
+                pytesseract,
+                processed,
+            )
             for word in tsv_words:
                 word["page"] = index
             status = "parsed_ocr" if text.strip() else "empty"
             page_class = classify_page(text)
-            pages.append(OCRPage(index, "tesseract", text, status, confidence, page_warnings, page_class, tsv_words))
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            ocr_log(
+                "page=%s first_rotation=0 tried_rotations=%s selected_rotation=%s "
+                "classification=%s classification_score=%.2f high_res_ocr_called=%s "
+                "tsv_word_count=%s parser_method=tesseract duration_ms=%s cache_hit=False"
+                % (index, tried_rotations, rotation, page_class, score, high_res_ocr_called, len(tsv_words), duration_ms)
+            )
+            pages.append(OCRPage(
+                index,
+                "tesseract",
+                text,
+                status,
+                confidence,
+                page_warnings,
+                page_class,
+                tsv_words,
+                rotation,
+                tried_rotations,
+                round(score, 2),
+                high_res_ocr_called,
+                duration_ms,
+                False,
+            ))
         except Exception as exc:
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            ocr_log(
+                "page=%s first_rotation=0 tried_rotations=[] selected_rotation=0 "
+                "classification=failed classification_score=0 high_res_ocr_called=%s "
+                "tsv_word_count=0 parser_method=tesseract duration_ms=%s cache_hit=False"
+                % (index, high_res_ocr_called, duration_ms)
+            )
             pages.append(OCRPage(index, "tesseract", "", "failed", 0.0, [f"Tesseract halaman {index} gagal: {exc}"], ""))
     if not any(page.extracted_text.strip() for page in pages):
         warnings.append("OCR kosong: Tesseract tidak menghasilkan teks yang cukup untuk dipakai.")
@@ -660,7 +781,7 @@ def extract_document_text(file_path, document_type=None):
     rendered_images = None
     if "tesseract" in engine_order() or (parse_bool_env("OCR_ENABLE_PADDLEOCR", False) and "paddleocr" in engine_order()):
         try:
-            rendered_images = render_pdf_pages(file_path)
+            rendered_images = render_pdf_pages(file_path, dpi=int(os.getenv("OCR_CLASSIFY_DPI", "150")))
         except Exception as exc:
             warning = f"PDF render gagal: {exc}. OCR tidak bisa dijalankan."
             warnings.append(warning)
@@ -669,7 +790,7 @@ def extract_document_text(file_path, document_type=None):
     # ── Step 3: Tesseract (Level 2) ───────────────────────────────────────────
     if "tesseract" in engine_order() and rendered_images is not None:
         tried.append("tesseract")
-        tesseract_result = extract_tesseract(file_path, images=rendered_images)
+        tesseract_result = extract_tesseract(file_path, images=rendered_images, high_res_ocr_called=False)
         warnings.extend(tesseract_result.warnings)
         tesseract_text_len = len(tesseract_result.combined_text)
         ocr_log(f"engine=tesseract raw_text_length={tesseract_text_len}")
