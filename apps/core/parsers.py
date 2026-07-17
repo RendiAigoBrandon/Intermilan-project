@@ -660,6 +660,7 @@ def extract_jenis_spm(text):
     )
     if match:
         code = normalize_text(match.group(1))
+        code = re.sub(r"\bGAJI\s*LAINNYA\b", "GAJI LAINNYA", code, flags=re.IGNORECASE)
         label = re.sub(
             r"\b(?:NOMOR|NOM|NEM)\s*$",
             "",
@@ -677,6 +678,7 @@ def extract_jenis_spm(text):
     if simple_match:
         value = normalize_text(simple_match.group(1)).strip(" |:;,-")
         value = re.sub(r"\bGAJIKE\b", "GAJI KE", value, flags=re.IGNORECASE)
+        value = re.sub(r"\bGAJI\s*LAINNYA\b", "GAJI LAINNYA", value, flags=re.IGNORECASE)
         return title_with_acronyms(value)
     return parse_first_match(text, [
         r"(?:JENIS\s+SPM|JENIS\s+SPP)\s*[:\-]?\s*([A-Z0-9 /._-]{2,80})",
@@ -873,6 +875,32 @@ def resolve_spm_number(filename_spm, ocr_spm, confidence=0.0, method=""):
         "reason": "Nomor SPM belum terbaca.",
         "warning": "Parser gagal mengambil nomor SPM dari OCR maupun filename.",
     }
+
+
+def reconcile_spm_suffix_with_filename(ocr_spm, filename_spm, nomor_spp=""):
+    """Pulihkan suffix huruf SPM yang dibaca OCR sebagai angka.
+
+    Filename tidak cukup dipercaya sendirian. Koreksi hanya dilakukan bila nomor
+    SPP pada dokumen mengonfirmasi digit dasar yang sama dan ketiga nomor punya
+    panjang yang sama. Ini menangani kelas kesalahan OCR seperti A -> 4 tanpa
+    mengunci parser ke nomor dokumen tertentu.
+    """
+    ocr_spm = normalize_doc_number(ocr_spm)
+    filename_spm = normalize_doc_number(filename_spm)
+    nomor_spp = normalize_doc_number(nomor_spp)
+    if not (ocr_spm and filename_spm and nomor_spp):
+        return ""
+    if not (len(ocr_spm) == len(filename_spm) == len(nomor_spp) and len(ocr_spm) >= 4):
+        return ""
+    base = ocr_spm[:-1]
+    if (
+        base == filename_spm[:-1] == nomor_spp[:-1]
+        and ocr_spm[-1].isdigit()
+        and filename_spm[-1].isalpha()
+        and nomor_spp[-1].isalpha()
+    ):
+        return filename_spm
+    return ""
 
 
 def parse_spm_pdf(file_path, ocr=False):
@@ -1150,6 +1178,7 @@ def parse_spm_pdf(file_path, ocr=False):
     total_pembayaran = total_pembayaran_per_page or parse_money_from_text(
         upper_spm, ["TOTAL PEMBAYARAN", "JUMLAH YANG DIBAYARKAN", "NETO"]
     )
+    total_pembayaran_terbaca_langsung = total_pembayaran > 0
     # total fallback: pengeluaran - potongan, atau dari label generic
     if total_pembayaran <= 0 and jumlah_pengeluaran > 0 and jumlah_potongan > 0:
         total_pembayaran = jumlah_pengeluaran - jumlah_potongan
@@ -1157,12 +1186,29 @@ def parse_spm_pdf(file_path, ocr=False):
         total_pembayaran = parse_money_from_text(
             upper_spm, ["JUMLAH PENGELUARAN", "NILAI SPM", "JUMLAH"]
         )
+    # Pada scan tertentu label bruto tidak terbaca, sedangkan netto dan potongan
+    # terbaca jelas. Target tabel tetap harus bruto, bukan netto. Nilai turunan ini
+    # baru dipermanenkan setelah cocok dengan total baris tabel terstruktur.
+    bruto_turunan = Decimal("0")
+    if jumlah_pengeluaran <= 0 and total_pembayaran_terbaca_langsung:
+        bruto_turunan = total_pembayaran + max(jumlah_potongan, Decimal("0"))
     position_items, position_summary = parse_position_detail_items(
         file_path,
         page_details,
         uraian,
-        expected_total=jumlah_pengeluaran or total_pembayaran,
+        expected_total=jumlah_pengeluaran or bruto_turunan or total_pembayaran,
     )
+    if position_items and bruto_turunan > 0 and jumlah_pengeluaran <= 0:
+        total_rincian_posisi = sum(
+            (parse_decimal(item.get("jumlah")) for item in position_items),
+            Decimal("0"),
+        )
+        if abs(total_rincian_posisi - bruto_turunan) <= Decimal("1"):
+            jumlah_pengeluaran = bruto_turunan
+            extracted.setdefault("warnings", []).append(
+                "Bruto SPM tidak terbaca langsung; dihitung dari netto + potongan "
+                "dan telah cocok dengan total rincian tabel."
+            )
     table_ocr_text = "\n".join(
         chunk
         for page in (position_summary.get("pages") or {}).values()
@@ -1175,6 +1221,19 @@ def parse_spm_pdf(file_path, ocr=False):
             text_sp2d = table_sp2d.group(1)
     if text_sp2d and not tanggal_sp2d and table_ocr_text:
         tanggal_sp2d = extract_sp2d_date(table_ocr_text, text_sp2d)
+    # TSV tabel biasanya lebih stabil daripada OCR paragraf, terutama pada scan
+    # yang diputar. Gunakan field terstruktur sebagai fallback metadata SP2D.
+    if position_items:
+        if not text_sp2d:
+            text_sp2d = next(
+                (normalize_text(item.get("nomor_sp2d")) for item in position_items if re.fullmatch(r"2\d{14}", normalize_text(item.get("nomor_sp2d")))),
+                "",
+            )
+        if text_sp2d and not tanggal_sp2d:
+            tanggal_sp2d = next(
+                (parse_date(item.get("tanggal_sp2d")) for item in position_items if parse_date(item.get("tanggal_sp2d"))),
+                "",
+            )
     if position_items:
         detail_items = position_items
         for item in detail_items:
@@ -1224,7 +1283,18 @@ def parse_spm_pdf(file_path, ocr=False):
     # 1. Halaman SPM (text_spm)
     # 2. filename (sebagai low-confidence fallback)
     nomor_spm_candidates = collect_spm_number_candidates(text_spm, text_spp, filename_spm, text_invoice, detail_text)
-    if text_spm:
+    nomor_spm_terkoreksi = reconcile_spm_suffix_with_filename(text_spm, filename_spm, text_spp)
+    if nomor_spm_terkoreksi:
+        nomor_spm_utama = nomor_spm_terkoreksi
+        source_utama = "filename_confirmed_by_spp_prefix"
+        review_status = "OK"
+        reason = "Suffix huruf filename dikonfirmasi oleh digit dasar nomor SPP pada dokumen."
+        warning = ""
+        warnings.append(
+            f"Suffix Nomor SPM OCR {text_spm} dikoreksi menjadi {nomor_spm_terkoreksi}; "
+            "digit dasarnya cocok dengan nomor SPP dan filename."
+        )
+    elif text_spm:
         nomor_spm_utama = text_spm
         source_utama = "ocr"
         review_status = "OK"
@@ -2377,6 +2447,9 @@ def parse_detail_sp2d_rows_from_tsv_lines(file_path, page_number, rotation, line
     amount_x_min = page_width * 0.68
     for row in lines:
         row_words = row.get("words") or []
+        full_row_text = normalize_text(
+            row.get("text") or " ".join(str(word.get("text", "")) for word in row_words)
+        )
         coa_words = [word for word in row_words if int(word.get("left", 0)) < amount_x_min]
         row_text = " ".join(str(word.get("text", "")) for word in coa_words) if coa_words else (row.get("text") or "")
         row_text = normalize_coa_text(row_text)
@@ -2420,6 +2493,12 @@ def parse_detail_sp2d_rows_from_tsv_lines(file_path, page_number, rotation, line
             source_bbox = [left, top, right, bottom]
         else:
             source_bbox = []
+        sp2d_match = _RE_SP2D_BARE.search(full_row_text)
+        tanggal_sp2d_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", full_row_text)
+        nomor_spm_detail_match = re.search(
+            r"\b([0-9]{3,6}[A-Z0-9]?)/\d{4,6}/20\d{2}\b",
+            full_row_text.upper(),
+        )
         rows.append({
             "akun": akun,
             "jumlah": amount,
@@ -2428,6 +2507,10 @@ def parse_detail_sp2d_rows_from_tsv_lines(file_path, page_number, rotation, line
             "no_bukti": item_code.split(".")[-1],
             "keperluan": description or "Perlu Review Uraian",
             "pembebanan": pembebanan,
+            "satker": coa_match.group(1),
+            "nomor_sp2d": sp2d_match.group(1) if sp2d_match else "",
+            "tanggal_sp2d": parse_date(tanggal_sp2d_match.group(1)) if tanggal_sp2d_match else "",
+            "nomor_spm_detail": normalize_doc_number(nomor_spm_detail_match.group(1)) if nomor_spm_detail_match else "",
             "source_page": page_number,
             "source_types": source_types,
             "source_row_id": item_code,

@@ -36,6 +36,7 @@ from apps.core.parsers import (
     parse_position_detail_items,
     parse_spm_number_from_pages,
     parse_spm_pdf,
+    reconcile_spm_suffix_with_filename,
 )
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
@@ -1598,6 +1599,57 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(result["no_spm"], "00123A")
         self.assertEqual(result["no_spp"], "00999T")
 
+    def test_filename_suffix_is_used_only_when_spp_confirms_same_base(self):
+        self.assertEqual(
+            reconcile_spm_suffix_with_filename("001754", "00175A", "00175T"),
+            "00175A",
+        )
+        self.assertEqual(
+            reconcile_spm_suffix_with_filename("001754", "00175A", "00999T"),
+            "",
+        )
+
+    def test_missing_gross_is_derived_from_explicit_net_and_deduction_after_table_match(self):
+        page = (
+            "SURAT PERINTAH MEMBAYAR Nomor SPM : 00188A Tanggal 03 Juli 2026\n"
+            "Jenis Tagihan : Gajilainnya PPPK Dasar Pembayaran Reguler DIPA\n"
+            "JUMLAH POTONGAN 101.750,00\n"
+            "TOTAL PEMBAYARAN 3.928.250,00"
+        )
+        detail_item = {
+            "akun": "511628",
+            "jumlah": Decimal("4030000"),
+            "bruto": Decimal("4030000"),
+            "netto": Decimal("4030000"),
+            "no_bukti": "000212",
+            "keperluan": "Belanja uang makan PPPK",
+            "pembebanan": "2886.EBA.994.001.511628",
+            "nomor_sp2d": "260100000033821",
+            "tanggal_sp2d": "2026-07-03",
+        }
+
+        with patch("apps.core.parsers.extract_pdf_text", return_value=fake_extract([page], "tesseract")), patch(
+            "apps.core.parsers.parse_position_detail_items",
+            return_value=([detail_item], {
+                "source": "DETAIL_SPP_SPM_SP2D",
+                "rows_before_dedupe": 1,
+                "rows_after_dedupe": 1,
+                "total": Decimal("4030000"),
+                "pages": {},
+            }),
+        ) as position_parser:
+            parsed = parse_spm_pdf("SPM NOMOR 00188A.pdf", ocr=True)
+
+        self.assertEqual(position_parser.call_args.kwargs["expected_total"], Decimal("4030000"))
+        self.assertEqual(parsed["metadata"]["jumlah_pengeluaran"], Decimal("4030000"))
+        self.assertEqual(parsed["metadata"]["jumlah_potongan"], Decimal("101750"))
+        self.assertEqual(parsed["metadata"]["total_pembayaran"], Decimal("3928250"))
+        self.assertEqual(parsed["metadata"]["nomor_sp2d"], "260100000033821")
+        self.assertEqual(parsed["metadata"]["tanggal_sp2d"], datetime.date(2026, 7, 3))
+        self.assertEqual(len(parsed["detail_items"]), 1)
+        self.assertEqual(parsed["metadata"]["detail_parse_summary"]["source"], "DETAIL_SPP_SPM_SP2D")
+        self.assertTrue(any("netto + potongan" in warning for warning in parsed["warnings"]))
+
     def test_tunjangan_type_is_cleaned_and_uses_ls_payment_method(self):
         text = (
             "Jenis Tagihan : Tunjangan Kinerja Dasar Pembayaran "
@@ -1607,6 +1659,11 @@ class PaketSPMRegressionTests(TestCase):
 
         self.assertEqual(jenis_spm, "Tunjangan Kinerja Susulan")
         self.assertEqual(extract_cara_pembayaran("", jenis_spm), "LS Non Kontraktual")
+
+    def test_gajilainnya_without_space_is_normalized(self):
+        text = "Jenis Tagihan : Gajilainnya PPPK Dasar Pembayaran Reguler DIPA"
+
+        self.assertEqual(extract_jenis_spm(text), "Gaji Lainnya PPPK Reguler")
 
     def test_tesseract_command_can_be_loaded_from_environment(self):
         backend = type("Backend", (), {"tesseract_cmd": ""})()
@@ -2077,6 +2134,31 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(rows[0]["akun"], "523121")
         self.assertEqual(rows[0]["jumlah"], Decimal("1255956"))
         self.assertEqual(rows[0]["pembebanan"], "2886.EBA.994.002.523121")
+
+    def test_detail_sp2d_tsv_exposes_structured_sp2d_metadata(self):
+        coa = "019937.010.511628.05401WA.2886EBA.A000000001.00000.2.0800.2.000000.000000.994.001.0A.000212"
+        lines = [{
+            "text": f"260100000033821 2026-07-03 00188T/019937/2026 {coa} 4.030.000",
+            "words": [
+                {"text": coa, "left": 100, "top": 100, "width": 1700, "height": 20},
+                {"text": "4.030.000", "left": 2400, "top": 100, "width": 120, "height": 20},
+            ],
+        }]
+
+        rows = parse_detail_sp2d_rows_from_tsv_lines(
+            "dummy.pdf",
+            1,
+            270,
+            lines,
+            ["DETAIL_SPP_SPM_SP2D"],
+            {"994.001.0A.000212": "Belanja uang makan PPPK"},
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["jumlah"], Decimal("4030000"))
+        self.assertEqual(rows[0]["nomor_sp2d"], "260100000033821")
+        self.assertEqual(rows[0]["tanggal_sp2d"], datetime.date(2026, 7, 3))
+        self.assertEqual(rows[0]["nomor_spm_detail"], "00188T")
 
     def test_link_existing_updates_all_group_checklists_idempotently_without_changing_dk(self):
         parsed = make_json_safe({
