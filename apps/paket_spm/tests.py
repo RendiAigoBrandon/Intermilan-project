@@ -38,6 +38,8 @@ from apps.core.parsers import (
     parse_spm_number_from_pages,
     parse_spm_pdf,
     reconcile_spm_suffix_with_filename,
+    tesseract_image_to_data_with_fallback,
+    tesseract_image_to_string_with_fallback,
 )
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
@@ -1515,6 +1517,112 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(calls, [(270,), (0, 90, 180)])
         self.assertEqual(summary["source"], "PERLU_REVIEW_PARSER_TABEL")
 
+    def test_table_ocr_falls_back_to_english_when_indonesian_language_is_missing(self):
+        class FakeOutput:
+            DICT = "dict"
+
+        class FakeTesseract:
+            Output = FakeOutput
+
+            def __init__(self):
+                self.data_languages = []
+                self.string_languages = []
+
+            def image_to_data(self, _image, **kwargs):
+                language = kwargs.get("lang", "default")
+                self.data_languages.append(language)
+                if language == "ind+eng":
+                    raise RuntimeError("Error opening data file ind.traineddata")
+                return {"text": ["019937.010.511628"], "conf": ["90"]}
+
+            def image_to_string(self, _image, **kwargs):
+                language = kwargs.get("lang", "default")
+                self.string_languages.append(language)
+                if language == "ind+eng":
+                    raise RuntimeError("Error opening data file ind.traineddata")
+                return "019937.010.511628"
+
+        fake = FakeTesseract()
+        with patch.dict(os.environ, {"OCR_TESSERACT_LANGS": "ind+eng,eng"}):
+            data, data_language, data_errors = tesseract_image_to_data_with_fallback(
+                fake,
+                object(),
+                config="--psm 4",
+            )
+            text, text_language, text_errors = tesseract_image_to_string_with_fallback(
+                fake,
+                object(),
+                config="--psm 7",
+            )
+
+        self.assertEqual(data["text"], ["019937.010.511628"])
+        self.assertEqual(text, "019937.010.511628")
+        self.assertEqual(data_language, "eng")
+        self.assertEqual(text_language, "eng")
+        self.assertEqual(fake.data_languages, ["ind+eng", "eng"])
+        self.assertEqual(fake.string_languages, ["ind+eng", "eng"])
+        self.assertEqual(data_errors[0]["language"], "ind+eng")
+        self.assertEqual(text_errors[0]["language"], "ind+eng")
+
+    def test_rotation_is_validated_by_grid_when_windows_tsv_has_no_rows(self):
+        row = {
+            "akun": "511628",
+            "jumlah": Decimal("4030000"),
+            "bruto": Decimal("4030000"),
+            "netto": Decimal("4030000"),
+            "no_bukti": "000212",
+            "keperluan": "Perlu Review Uraian",
+            "pembebanan": "2886.EBA.994.001.511628",
+            "source_page": 1,
+            "source_types": ["DETAIL_SPP_SPM_SP2D"],
+            "source_row_id": "994.001.0A.000212",
+            "ocr_rotation": 270,
+            "source_priority": "DETAIL_SPP_SPM_SP2D",
+        }
+        pages = [{
+            "page_number": 1,
+            "rotation": 0,
+            "page_types": ["DETAIL_SPP_SPM_SP2D"],
+        }]
+        crop_rotations = []
+
+        def variants_for_rotation(_file_path, page_number, rotations):
+            return [
+                {
+                    "page": page_number,
+                    "psm": 4,
+                    "rotation": rotation,
+                    "confidence": 70,
+                    "score": 90 if rotation == 0 else 80,
+                    "text": "OCR words without a structured row",
+                    "lines": [],
+                }
+                for rotation in rotations
+            ]
+
+        def grid_rows(_file_path, _page_number, rotation, _source_types, _descriptions):
+            crop_rotations.append(rotation)
+            return [row] if rotation == 270 else []
+
+        with patch("apps.core.parsers.table_variant_from_page_tsv", return_value=None), patch(
+            "apps.core.parsers.ocr_page_table_variants",
+            side_effect=variants_for_rotation,
+        ), patch(
+            "apps.core.parsers.parse_detail_sp2d_rows_by_crop",
+            side_effect=grid_rows,
+        ):
+            rows, summary = parse_position_detail_items(
+                "dummy.pdf",
+                pages,
+                expected_total=Decimal("4030000"),
+            )
+
+        self.assertEqual({0, 90, 180, 270}, set(crop_rotations))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ocr_rotation"], 270)
+        self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
+        self.assertEqual(summary["total"], Decimal("4030000"))
+
     def test_repeated_ocr_separators_are_parsed_as_currency(self):
         self.assertEqual(parse_decimal("228,840,00"), Decimal("228840.00"))
         self.assertEqual(parse_decimal("83.000,00"), Decimal("83000.00"))
@@ -2216,6 +2324,22 @@ class PaketSPMRegressionTests(TestCase):
         candidates = fallback_detail_candidate_pages(pages)
 
         self.assertEqual([page["page_number"] for page in candidates], [1])
+
+    def test_uang_makan_supporting_sheet_is_not_official_spm_detail_table(self):
+        self.assertEqual(
+            classify_page(
+                "DAFTAR PERHITUNGAN UANG MAKAN "
+                "Satuan Kerja BADAN PUSAT STATISTIK Periode Juni 2026"
+            ),
+            "UNKNOWN",
+        )
+        self.assertEqual(
+            classify_page(
+                "REKAPITULASI PERHITUNGAN UANG MAKAN "
+                "Kehadiran Tarif Jumlah Kotor Bersih"
+            ),
+            "UNKNOWN",
+        )
 
     def test_unknown_landscape_page_is_rotated_only_until_table_total_matches(self):
         coa = "019937.010.511628.05401WA.2886EBA.A000000001.00000.2.0800.2.000000.000000.994.001.0A.000212"

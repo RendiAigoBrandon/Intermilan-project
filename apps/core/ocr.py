@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageOps, ImageFilter
 
-OCR_CACHE_VERSION = "detail-tsv-v2"
+OCR_CACHE_VERSION = "detail-tsv-v3"
 
 
 # ─── Klasifikasi halaman dokumen ─────────────────────────────────────────────
@@ -18,8 +18,6 @@ PAGE_CLASS_KEYWORDS = {
     "DETAIL_SPP_SPM_SP2D": [
         "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D",
         "DETAIL PENGELUARAN DAN POTONGAN",
-        "DAFTAR PERHITUNGAN UANG MAKAN",
-        "REKAPITULASI PERHITUNGAN UANG MAKAN",
     ],
     "SPM": [
         "SURAT PERINTAH MEMBAYAR",

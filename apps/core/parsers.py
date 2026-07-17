@@ -12,7 +12,7 @@ from statistics import median
 
 import pandas as pd
 
-from apps.core.ocr import configure_tesseract, extract_document_text, extract_pdf_pages
+from apps.core.ocr import configure_tesseract, extract_document_text, extract_pdf_pages, ocr_log
 
 
 # ─── Regex SP2D 15-digit (contoh: 260100000013375) ───────────────────────────
@@ -1866,6 +1866,51 @@ def ordered_table_rotations(selected_rotation=0):
     return tuple(output)
 
 
+def tesseract_table_language_attempts(preferred=None):
+    """Return a deterministic language fallback order for table OCR.
+
+    A Windows Tesseract installation often only ships ``eng`` and ``osd``.
+    The regular page OCR already tolerates that installation, so the table
+    parser must not fail merely because ``ind.traineddata`` is unavailable.
+    """
+    configured = os.getenv("OCR_TESSERACT_LANGS", "")
+    requested = list(preferred or ())
+    if configured:
+        requested = [item.strip() for item in re.split(r"[,;]", configured) if item.strip()] + requested
+    requested.extend(("ind+eng", "eng", ""))
+    output = []
+    for language in requested:
+        if language not in output:
+            output.append(language)
+    return tuple(output)
+
+
+def tesseract_image_to_data_with_fallback(pytesseract, image, *, config, languages=None):
+    errors = []
+    for language in tesseract_table_language_attempts(languages):
+        kwargs = {"config": config, "output_type": pytesseract.Output.DICT}
+        if language:
+            kwargs["lang"] = language
+        try:
+            return pytesseract.image_to_data(image, **kwargs), language or "default", errors
+        except Exception as exc:
+            errors.append({"language": language or "default", "error": str(exc)[:300]})
+    return None, "", errors
+
+
+def tesseract_image_to_string_with_fallback(pytesseract, image, *, config, languages=None):
+    errors = []
+    for language in tesseract_table_language_attempts(languages):
+        kwargs = {"config": config}
+        if language:
+            kwargs["lang"] = language
+        try:
+            return pytesseract.image_to_string(image, **kwargs), language or "default", errors
+        except Exception as exc:
+            errors.append({"language": language or "default", "error": str(exc)[:300]})
+    return "", "", errors
+
+
 def ocr_page_table_variants(file_path, page_number, rotations):
     try:
         import io
@@ -1891,14 +1936,17 @@ def ocr_page_table_variants(file_path, page_number, rotations):
     for rotation in rotations:
         for psm in (4, 11, 12, 6):
             image = base.rotate(rotation, expand=True) if rotation else base
-            try:
-                data = pytesseract.image_to_data(
-                    image,
-                    lang="ind+eng",
-                    config=f"--psm {psm}",
-                    output_type=pytesseract.Output.DICT,
-                )
-            except Exception:
+            data, language, language_errors = tesseract_image_to_data_with_fallback(
+                pytesseract,
+                image,
+                config=f"--psm {psm}",
+            )
+            if data is None:
+                if language_errors:
+                    ocr_log(
+                        f"table OCR page={page_number} rotation={rotation} psm={psm} gagal untuk semua bahasa: "
+                        f"{language_errors[-1]['error']}"
+                    )
                 continue
             words = []
             confs = []
@@ -1926,6 +1974,9 @@ def ocr_page_table_variants(file_path, page_number, rotations):
                 "page": page_number,
                 "psm": psm,
                 "rotation": rotation,
+                "language": language,
+                "language_fallback_used": bool(language_errors),
+                "language_errors": language_errors,
                 "confidence": confidence,
                 "score": score_detail_tsv(text, confidence),
                 "text": text,
@@ -2182,14 +2233,17 @@ def ocr_cell_text(image, pytesseract, *, numeric=False):
         return ""
     crop = ImageOps.autocontrast(image).resize((image.width * 2, image.height * 2))
     config = "--psm 7"
-    lang = "ind+eng"
+    languages = ("ind+eng", "eng", "")
     if numeric:
         config += " -c tessedit_char_whitelist=0123456789.,"
-        lang = "eng"
-    try:
-        return normalize_text(pytesseract.image_to_string(crop, lang=lang, config=config))
-    except Exception:
-        return ""
+        languages = ("eng", "")
+    text, _language, _errors = tesseract_image_to_string_with_fallback(
+        pytesseract,
+        crop,
+        config=config,
+        languages=languages,
+    )
+    return normalize_text(text)
 
 
 def table_row_bands(horizontal_groups):
@@ -2319,7 +2373,13 @@ def parse_detail_sp2d_rows_by_crop(file_path, page_number, rotation, source_type
         )
         if grid_rows:
             return grid_rows
-        data = pytesseract.image_to_data(image, lang="ind+eng", config="--psm 4", output_type=pytesseract.Output.DICT)
+        data, _language, _language_errors = tesseract_image_to_data_with_fallback(
+            pytesseract,
+            image,
+            config="--psm 4",
+        )
+        if data is None:
+            return []
     except Exception:
         return []
 
@@ -2623,11 +2683,12 @@ def parse_position_detail_items(file_path, page_details, default_description="",
             continue
 
         variant_rows_cache = {}
+        structured_rows_by_rotation = {}
 
         def rows_for_variant(variant):
             cache_key = id(variant)
             if cache_key not in variant_rows_cache:
-                variant_rows_cache[cache_key] = parse_detail_sp2d_rows_from_tsv_lines(
+                rows = parse_detail_sp2d_rows_from_tsv_lines(
                     file_path,
                     variant.get("page"),
                     variant.get("rotation", 0),
@@ -2635,6 +2696,25 @@ def parse_position_detail_items(file_path, page_details, default_description="",
                     list(page_types),
                     {},
                 )
+                # Windows and Linux can produce different TSV word grouping for
+                # the same scan.  Do not choose a rotation from text score alone:
+                # when TSV rows are empty, validate that rotation through the
+                # ruled-table/grid parser before rejecting it.
+                if not rows and is_detail_page:
+                    rotation_key = (
+                        variant.get("page"),
+                        int(variant.get("rotation") or 0),
+                    )
+                    if rotation_key not in structured_rows_by_rotation:
+                        structured_rows_by_rotation[rotation_key] = parse_detail_sp2d_rows_by_crop(
+                            file_path,
+                            rotation_key[0],
+                            rotation_key[1],
+                            list(page_types),
+                            {},
+                        )
+                    rows = structured_rows_by_rotation[rotation_key]
+                variant_rows_cache[cache_key] = rows
             return variant_rows_cache[cache_key]
 
         def exact_total_variants(candidates):
@@ -2693,6 +2773,9 @@ def parse_position_detail_items(file_path, page_details, default_description="",
             continue
         best_by_page[best["page"]] = {**best, "source_types": list(page_types), "variants": variants}
         page["table_ocr_rotation"] = best["rotation"]
+        page["table_ocr_language"] = best.get("language") or "cached_tsv"
+        page["table_ocr_language_fallback_used"] = bool(best.get("language_fallback_used"))
+        page["table_ocr_language_errors"] = best.get("language_errors") or []
         page["table_ocr_confidence"] = best["confidence"]
         page["table_ocr_score"] = round(best["score"], 2)
         if is_fallback_candidate and exact_variants:
