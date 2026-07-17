@@ -35,6 +35,7 @@ from apps.core.parsers import (
     parse_drpp_pdf,
     parse_paket_spm_zip,
     parse_position_detail_items,
+    parse_validated_lampiran_coa_pages,
     parse_spm_number_from_pages,
     parse_spm_pdf,
     reconcile_spm_suffix_with_filename,
@@ -1622,6 +1623,45 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(rows[0]["ocr_rotation"], 270)
         self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
         self.assertEqual(summary["total"], Decimal("4030000"))
+
+    def test_readable_coa_attachment_recovers_row_when_landscape_table_is_unreadable(self):
+        pages = [{
+            "page_number": 4,
+            "page_types": ["SPM"],
+            "rotation": 0,
+            "text": (
+                "LAMPIRAN SURAT PERINTAH MEMBAYAR Ro.Komp.Subkomp.Item - Uraian "
+                "019999.010.511628.05401WA.2886EBA.A000000001,00000,2,0800,2.000000.000000 "
+                "994.001.0A.000212-Belanja Uang Makan PPPK 4.030.000,00"
+            ),
+        }]
+
+        rows = parse_validated_lampiran_coa_pages(
+            pages,
+            Decimal("4030000"),
+            "Pembayaran uang makan PPPK",
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["akun"], "511628")
+        self.assertEqual(rows[0]["jumlah"], Decimal("4030000"))
+        self.assertEqual(rows[0]["pembebanan"], "2886.EBA.994.001.511628")
+        self.assertEqual(rows[0]["no_bukti"], "000212")
+        self.assertEqual(rows[0]["source_priority"], "LAMPIRAN_COA_VALIDATED")
+
+    def test_coa_attachment_is_rejected_when_its_total_does_not_match_spm_gross(self):
+        pages = [{
+            "page_number": 2,
+            "text": (
+                "LAMPIRAN SPM Ro.Komp.Subkomp.Item "
+                "019999.010.512211.05401WA.2886EBA.A000000001.00000.2.0800.2.000000.000000 "
+                "994.001.0A.000300-Belanja lainnya 3.000.000,00"
+            ),
+        }]
+
+        rows = parse_validated_lampiran_coa_pages(pages, Decimal("4030000"))
+
+        self.assertEqual(rows, [])
 
     def test_repeated_ocr_separators_are_parsed_as_currency(self):
         self.assertEqual(parse_decimal("228,840,00"), Decimal("228840.00"))

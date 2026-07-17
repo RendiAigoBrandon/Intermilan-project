@@ -1192,12 +1192,36 @@ def parse_spm_pdf(file_path, ocr=False):
     bruto_turunan = Decimal("0")
     if jumlah_pengeluaran <= 0 and total_pembayaran_terbaca_langsung:
         bruto_turunan = total_pembayaran + max(jumlah_potongan, Decimal("0"))
+    expected_position_total = jumlah_pengeluaran or bruto_turunan or total_pembayaran
     position_items, position_summary = parse_position_detail_items(
         file_path,
         page_details,
         uraian,
-        expected_total=jumlah_pengeluaran or bruto_turunan or total_pembayaran,
+        expected_total=expected_position_total,
     )
+    # Tabel resmi pada halaman scan landscape dapat gagal dikelompokkan oleh
+    # Tesseract Windows walaupun lampiran COA portrait terbaca jelas. Jangan
+    # mengubahnya menjadi baris 0: terima lampiran COA hanya bila akun, program,
+    # item, pembebanan, dan total bruto semuanya tervalidasi secara terstruktur.
+    if not position_items and expected_position_total:
+        validated_lampiran_rows = parse_validated_lampiran_coa_pages(
+            page_details,
+            expected_position_total,
+            uraian,
+        )
+        if validated_lampiran_rows:
+            validated_total = sum(
+                (parse_decimal(item.get("jumlah")) for item in validated_lampiran_rows),
+                Decimal("0"),
+            )
+            position_items = validated_lampiran_rows
+            position_summary = {
+                "source": "LAMPIRAN_COA_VALIDATED",
+                "rows_before_dedupe": len(validated_lampiran_rows),
+                "rows_after_dedupe": len(validated_lampiran_rows),
+                "total": validated_total,
+                "pages": position_summary.get("pages") or {},
+            }
     if position_items and bruto_turunan > 0 and jumlah_pengeluaran <= 0:
         total_rincian_posisi = sum(
             (parse_decimal(item.get("jumlah")) for item in position_items),
@@ -1809,6 +1833,129 @@ def pembebanan_from_full_coa(value, akun=""):
     if not (account and program_match and item_match):
         return ""
     return f"{program_match.group(1)}.{program_match.group(2)}.{item_match[0]}.{item_match[1]}.{account}"
+
+
+def parse_validated_lampiran_coa_pages(page_details, expected_total, default_description=""):
+    """Recover rows from a readable SPM COA attachment with strict validation.
+
+    This is intentionally independent from page number, paper colour, filename,
+    and document-specific amounts. A row is accepted only when the OCR text
+    contains the account, output/program, item code, a valid compact charging
+    code, and the resulting row total equals the SPM gross amount.
+    """
+    expected = parse_decimal(expected_total)
+    if expected <= 0:
+        return []
+
+    output = []
+    amount_pattern = re.compile(r"\d{1,3}(?:[.,]\d{3}){2,}(?:[.,]\d{2})?")
+    item_pattern = re.compile(
+        r"(?<![A-Z0-9])(\d{3})[.\s]+(\d{3})[.\s]+([0-9A-Z]{2})[.\s]+(\d{3,6})\b",
+        re.IGNORECASE,
+    )
+    account_pattern = re.compile(r"\b\d{4,6}[.\s]+\d{3}[.\s]+(5\d{5})[.\s]", re.IGNORECASE)
+    program_pattern = re.compile(r"(?:^|[.\s])(\d{4})[.\s]*([A-Z]{3})(?:[.\s]|$)", re.IGNORECASE)
+
+    for page_index, page in enumerate(page_details or [], start=1):
+        page_output = []
+        raw_text = normalize_text(page.get("text") or page.get("extracted_text") or "")
+        # Keep whitespace between two numeric groups. The general COA
+        # normalizer intentionally removes it, but on flattened OCR that can
+        # merge the end of one segment with the next item code.
+        normalized = raw_text.upper().replace(",", ".")
+        normalized = re.sub(r"\s*\.\s*", ".", normalized)
+        if not re.search(r"\b(?:LAMPIRAN|RO[.\s]*KOMP|KODE[.\s]+COA)\b", normalized):
+            continue
+
+        item_matches = list(item_pattern.finditer(normalized))
+        for item_index, item_match in enumerate(item_matches):
+            prefix = normalized[: item_match.start()]
+            account_matches = list(account_pattern.finditer(prefix))
+            program_matches = list(program_pattern.finditer(prefix))
+            if not (account_matches and program_matches):
+                continue
+
+            account = account_matches[-1].group(1)
+            program = program_matches[-1]
+            item_parts = tuple(part.upper() for part in item_match.groups())
+            if item_parts[0] == "000" or item_parts[1] == "000":
+                continue
+
+            next_item_start = (
+                item_matches[item_index + 1].start()
+                if item_index + 1 < len(item_matches)
+                else min(len(normalized), item_match.end() + 600)
+            )
+            after_item = normalized[item_match.end() : next_item_start]
+            amount_matches = list(amount_pattern.finditer(after_item))
+            amount_candidates = [
+                (match, parse_decimal(match.group(0)))
+                for match in amount_matches
+                if parse_decimal(match.group(0)) > 0
+            ]
+
+            # A one-row attachment commonly prints its gross total only once.
+            # Prefer the value confirmed by the SPM header; otherwise use the
+            # first grouped monetary value following this item.
+            selected_amount_match = next(
+                ((match, amount) for match, amount in amount_candidates if amount == expected),
+                amount_candidates[0] if amount_candidates else None,
+            )
+            if selected_amount_match is None and len(item_matches) == 1:
+                page_amounts = [
+                    (match, parse_decimal(match.group(0)))
+                    for match in amount_pattern.finditer(normalized)
+                ]
+                selected_amount_match = next(
+                    ((match, amount) for match, amount in page_amounts if amount == expected),
+                    None,
+                )
+            if selected_amount_match is None:
+                continue
+
+            amount_match, amount = selected_amount_match
+            pembebanan = (
+                f"{program.group(1)}.{program.group(2).upper()}."
+                f"{item_parts[0]}.{item_parts[1]}.{account}"
+            )
+            if not is_valid_pembebanan(pembebanan, amount):
+                continue
+
+            description = ""
+            if amount_match in amount_matches:
+                description_text = after_item[: amount_match.start()]
+                description_text = re.sub(r"^[\s|:;,.\-–]+", "", description_text)
+                description = clean_description(description_text)
+            if not description or not re.search(r"[A-Z]{3}", description.upper()):
+                description = clean_description(default_description) or "Perlu Review Uraian"
+
+            item_code = ".".join(item_parts)
+            page_output.append({
+                "akun": account,
+                "jumlah": amount,
+                "bruto": amount,
+                "netto": amount,
+                "no_bukti": item_parts[-1],
+                "keperluan": description,
+                "pembebanan": pembebanan,
+                "source_page": page.get("page_number") or page.get("page") or page_index,
+                "source_types": list(page.get("page_types") or []),
+                "source_row_id": item_code,
+                "ocr_rotation": int(page.get("rotation") or 0),
+                "source_priority": "LAMPIRAN_COA_VALIDATED",
+                "needs_review": description == "Perlu Review Uraian",
+                "review_note": "" if description != "Perlu Review Uraian" else "Uraian lampiran perlu review.",
+            })
+
+        page_rows = dedupe_detail_items(page_output)
+        page_total = sum((parse_decimal(item.get("jumlah")) for item in page_rows), Decimal("0"))
+        if page_rows and page_total == expected:
+            return page_rows
+        output.extend(page_rows)
+
+    rows = dedupe_detail_items(output)
+    total = sum((parse_decimal(item.get("jumlah")) for item in rows), Decimal("0"))
+    return rows if rows and total == expected else []
 
 
 def is_valid_pembebanan(value, jumlah=None):
