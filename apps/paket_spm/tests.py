@@ -1493,7 +1493,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(set(calls), {0})
         self.assertTrue(all(page.high_res_ocr_called is False for page in result.pages))
 
-    def test_detail_parser_uses_selected_rotation_without_retrying_all_rotations(self):
+    def test_detail_parser_retries_other_rotations_when_selected_rotation_has_no_rows(self):
         calls = []
 
         def fake_variants(_file_path, _page_number, rotations):
@@ -1511,7 +1511,7 @@ class PaketSPMRegressionTests(TestCase):
             rows, summary = parse_position_detail_items("dummy.pdf", page_details, expected_total=Decimal("1000"))
 
         self.assertEqual(rows, [])
-        self.assertEqual(calls, [(270,)])
+        self.assertEqual(calls, [(270,), (0, 90, 180)])
         self.assertEqual(summary["source"], "PERLU_REVIEW_PARSER_TABEL")
 
     def test_repeated_ocr_separators_are_parsed_as_currency(self):
@@ -2159,6 +2159,49 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(rows[0]["nomor_sp2d"], "260100000033821")
         self.assertEqual(rows[0]["tanggal_sp2d"], datetime.date(2026, 7, 3))
         self.assertEqual(rows[0]["nomor_spm_detail"], "00188T")
+
+    def test_detail_table_retries_all_rotations_after_wrong_cached_orientation(self):
+        coa = "019937.010.511628.05401WA.2886EBA.A000000001.00000.2.0800.2.000000.000000.994.001.0A.000212"
+        valid_variant = {
+            "page": 1,
+            "psm": 4,
+            "rotation": 270,
+            "confidence": 80,
+            "score": 100,
+            "text": f"{coa} 4.030.000",
+            "lines": [{
+                "text": f"{coa} 4.030.000",
+                "words": [
+                    {"text": coa, "left": 100, "top": 100, "width": 1700, "height": 20},
+                    {"text": "4.030.000", "left": 2400, "top": 100, "width": 120, "height": 20},
+                ],
+            }],
+        }
+        pages = [{
+            "page_number": 1,
+            "rotation": 0,
+            "page_types": ["DETAIL_SPP_SPM_SP2D", "SP2D"],
+        }]
+
+        def variants_for_rotation(_file_path, _page_number, rotations):
+            return [valid_variant] if 270 in rotations else []
+
+        with patch("apps.core.parsers.table_variant_from_page_tsv", return_value=None), patch(
+            "apps.core.parsers.ocr_page_table_variants",
+            side_effect=variants_for_rotation,
+        ) as table_ocr:
+            rows, summary = parse_position_detail_items(
+                "dummy.pdf",
+                pages,
+                "Belanja uang makan PPPK",
+                expected_total=Decimal("4030000"),
+            )
+
+        self.assertEqual([call.args[2] for call in table_ocr.call_args_list], [(0,), (90, 180, 270)])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["akun"], "511628")
+        self.assertEqual(rows[0]["ocr_rotation"], 270)
+        self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
 
     def test_link_existing_updates_all_group_checklists_idempotently_without_changing_dk(self):
         parsed = make_json_safe({

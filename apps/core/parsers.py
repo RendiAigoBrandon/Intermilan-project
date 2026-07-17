@@ -1857,6 +1857,15 @@ def score_detail_tsv(text, confidence):
     return keyword_score + coa_count * 20 + item_count * 12 + item_desc_count * 25 + amount_count * 5 + (confidence / 10)
 
 
+def ordered_table_rotations(selected_rotation=0):
+    """Coba orientasi pilihan engine lebih dulu, lalu semua orientasi lain."""
+    output = []
+    for rotation in (int(selected_rotation or 0), 0, 90, 180, 270):
+        if rotation not in output:
+            output.append(rotation)
+    return tuple(output)
+
+
 def ocr_page_table_variants(file_path, page_number, rotations):
     try:
         import io
@@ -1879,8 +1888,8 @@ def ocr_page_table_variants(file_path, page_number, rotations):
         return []
 
     variants = []
-    for psm in (4, 11, 12, 6):
-        for rotation in rotations:
+    for rotation in rotations:
+        for psm in (4, 11, 12, 6):
             image = base.rotate(rotation, expand=True) if rotation else base
             try:
                 data = pytesseract.image_to_data(
@@ -1913,7 +1922,7 @@ def ocr_page_table_variants(file_path, page_number, rotations):
                 })
             text = " ".join(item["text"] for item in words)
             confidence = round(sum(confs) / len(confs), 2) if confs else 0.0
-            variants.append({
+            variant = {
                 "page": page_number,
                 "psm": psm,
                 "rotation": rotation,
@@ -1921,7 +1930,8 @@ def ocr_page_table_variants(file_path, page_number, rotations):
                 "score": score_detail_tsv(text, confidence),
                 "text": text,
                 "lines": detail_line_rows_from_tsv(words),
-            })
+            }
+            variants.append(variant)
     return variants
 
 
@@ -2556,16 +2566,85 @@ def parse_position_detail_items(file_path, page_details, default_description="",
             saw_detail_candidate = True
         page_rotation = int(page.get("rotation") or 0)
         existing_tsv_variant = table_variant_from_page_tsv(page, page_types)
+        is_detail_page = "DETAIL_SPP_SPM_SP2D" in page_types
         if existing_tsv_variant:
             variants = [existing_tsv_variant]
-            if "DETAIL_SPP_SPM_SP2D" in page_types:
-                variants.extend(ocr_page_table_variants(file_path, page.get("page_number") or page.get("page"), (page_rotation,)))
         else:
-            rotations = (page_rotation,)
-            variants = ocr_page_table_variants(file_path, page.get("page_number") or page.get("page"), rotations)
+            variants = ocr_page_table_variants(
+                file_path,
+                page.get("page_number") or page.get("page"),
+                (page_rotation,),
+            )
+        if not variants and not is_detail_page:
+            continue
+
+        variant_rows_cache = {}
+
+        def rows_for_variant(variant):
+            cache_key = id(variant)
+            if cache_key not in variant_rows_cache:
+                variant_rows_cache[cache_key] = parse_detail_sp2d_rows_from_tsv_lines(
+                    file_path,
+                    variant.get("page"),
+                    variant.get("rotation", 0),
+                    variant.get("lines") or [],
+                    list(page_types),
+                    {},
+                )
+            return variant_rows_cache[cache_key]
+
+        def exact_total_variants(candidates):
+            if not expected_total:
+                return []
+            expected = parse_decimal(expected_total)
+            return [
+                variant
+                for variant in candidates
+                if rows_for_variant(variant)
+                and sum(
+                    (parse_decimal(item.get("jumlah")) for item in rows_for_variant(variant)),
+                    Decimal("0"),
+                ) == expected
+            ]
+
+        def retry_needed(candidates, exact_candidates):
+            if not is_detail_page:
+                return False
+            if expected_total:
+                return not exact_candidates
+            return not any(rows_for_variant(variant) for variant in candidates)
+
+        exact_variants = exact_total_variants(variants) if is_detail_page else []
+        # TSV dari cache adalah fast path. OCR 300 DPI pada rotasi terpilih baru
+        # dijalankan jika TSV cache tidak menghasilkan total yang tervalidasi.
+        if existing_tsv_variant and retry_needed(variants, exact_variants):
+            variants.extend(ocr_page_table_variants(
+                file_path,
+                page.get("page_number") or page.get("page"),
+                (page_rotation,),
+            ))
+            exact_variants = exact_total_variants(variants)
+
+        if retry_needed(variants, exact_variants):
+            remaining_rotations = tuple(
+                rotation for rotation in ordered_table_rotations(page_rotation)
+                if rotation != page_rotation
+            )
+            if remaining_rotations:
+                variants.extend(ocr_page_table_variants(
+                    file_path,
+                    page.get("page_number") or page.get("page"),
+                    remaining_rotations,
+                ))
+                exact_variants = exact_total_variants(variants)
+
         if not variants:
             continue
-        best = max(variants, key=lambda item: item["score"])
+
+        variants_with_rows = [variant for variant in variants if rows_for_variant(variant)] if is_detail_page else []
+        # Nilai total adalah validator utama. Keyword/score hanya menjadi pemilih
+        # di antara varian yang sama-sama menghasilkan baris tabel.
+        best = max(exact_variants or variants_with_rows or variants, key=lambda item: item["score"])
         if best["score"] <= 0:
             continue
         best_by_page[best["page"]] = {**best, "source_types": list(page_types), "variants": variants}
