@@ -2555,13 +2555,57 @@ def dedupe_detail_items(items):
     return output
 
 
+def fallback_detail_candidate_pages(page_details):
+    """Pilih sedikit halaman UNKNOWN ber-confidence rendah untuk rotasi tabel.
+
+    Fallback hanya aktif ketika classifier tidak menemukan halaman detail sama
+    sekali. Kandidat diprioritaskan berdasarkan kedekatan dengan blok SPM/SPP,
+    bukan berdasarkan nomor halaman tetap atau warna kertas.
+    """
+    if any("DETAIL_SPP_SPM_SP2D" in set(page.get("page_types") or []) for page in page_details):
+        return []
+
+    reference_pages = [
+        int(page.get("page_number") or page.get("page") or 0)
+        for page in page_details
+        if set(page.get("page_types") or []).intersection({"SPM", "SPP"})
+    ]
+    max_confidence = float(os.getenv("OCR_TABLE_FALLBACK_MAX_CONFIDENCE", "55"))
+    max_pages = max(1, int(os.getenv("OCR_TABLE_FALLBACK_MAX_PAGES", "3")))
+    allowed_types = {"UNKNOWN", "SP2D", "SP2D_DETAIL"}
+    candidates = []
+    for page in page_details:
+        page_types = set(page.get("page_types") or ["UNKNOWN"])
+        if page_types - allowed_types:
+            continue
+        try:
+            confidence = float(page.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence > max_confidence:
+            continue
+        page_number = int(page.get("page_number") or page.get("page") or 0)
+        distance = min((abs(page_number - reference) for reference in reference_pages), default=9999)
+        candidates.append((distance, confidence, page_number, page))
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in candidates[:max_pages]]
+
+
 def parse_position_detail_items(file_path, page_details, default_description="", expected_total=None):
     best_by_page = {}
     saw_detail_candidate = False
-    for page in page_details:
+    regular_pages = [
+        page for page in page_details
+        if set(page.get("page_types") or []).intersection({"DETAIL_SPP_SPM_SP2D", "LAMPIRAN_COA", "SPM", "SPP"})
+    ]
+    fallback_pages = fallback_detail_candidate_pages(page_details) if expected_total else []
+    fallback_page_ids = {id(page) for page in fallback_pages}
+    for page in regular_pages + fallback_pages:
         page_types = set(page.get("page_types") or [])
-        if not page_types.intersection({"DETAIL_SPP_SPM_SP2D", "LAMPIRAN_COA", "SPM", "SPP"}):
-            continue
+        is_fallback_candidate = id(page) in fallback_page_ids
+        if is_fallback_candidate:
+            page_types.update({"DETAIL_SPP_SPM_SP2D", "SP2D_DETAIL"})
+            page["table_candidate_reason"] = "low_confidence_unknown_near_spm_spp"
         if "DETAIL_SPP_SPM_SP2D" in page_types:
             saw_detail_candidate = True
         page_rotation = int(page.get("rotation") or 0)
@@ -2651,6 +2695,10 @@ def parse_position_detail_items(file_path, page_details, default_description="",
         page["table_ocr_rotation"] = best["rotation"]
         page["table_ocr_confidence"] = best["confidence"]
         page["table_ocr_score"] = round(best["score"], 2)
+        if is_fallback_candidate and exact_variants:
+            # Kandidat fallback berikutnya tidak perlu di-OCR setelah satu tabel
+            # menghasilkan total yang sama dengan bruto tervalidasi.
+            break
 
     coa_rows = []
     for page in best_by_page.values():

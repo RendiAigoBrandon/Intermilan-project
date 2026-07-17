@@ -25,6 +25,7 @@ from apps.core.parsers import (
     extract_jenis_spm,
     extract_lampiran_descriptions,
     extract_uraian,
+    fallback_detail_candidate_pages,
     make_json_safe,
     parse_decimal,
     parse_detail_sp2d_rows_by_grid,
@@ -2200,6 +2201,65 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual([call.args[2] for call in table_ocr.call_args_list], [(0,), (90, 180, 270)])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["akun"], "511628")
+        self.assertEqual(rows[0]["ocr_rotation"], 270)
+        self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
+
+    def test_unknown_low_confidence_page_near_spm_is_limited_table_fallback(self):
+        pages = [
+            {"page_number": 1, "page_types": ["UNKNOWN"], "confidence": 46},
+            {"page_number": 2, "page_types": ["SPM"], "confidence": 81},
+            {"page_number": 3, "page_types": ["SPM"], "confidence": 78},
+            {"page_number": 8, "page_types": ["UNKNOWN"], "confidence": 72},
+            {"page_number": 9, "page_types": ["SSP"], "confidence": 40},
+        ]
+
+        candidates = fallback_detail_candidate_pages(pages)
+
+        self.assertEqual([page["page_number"] for page in candidates], [1])
+
+    def test_unknown_landscape_page_is_rotated_only_until_table_total_matches(self):
+        coa = "019937.010.511628.05401WA.2886EBA.A000000001.00000.2.0800.2.000000.000000.994.001.0A.000212"
+        valid_variant = {
+            "page": 1,
+            "psm": 4,
+            "rotation": 270,
+            "confidence": 80,
+            "score": 100,
+            "text": f"{coa} 4.030.000",
+            "lines": [{
+                "text": f"{coa} 4.030.000",
+                "words": [
+                    {"text": coa, "left": 100, "top": 100, "width": 1700, "height": 20},
+                    {"text": "4.030.000", "left": 2400, "top": 100, "width": 120, "height": 20},
+                ],
+            }],
+        }
+        pages = [
+            {"page_number": 1, "page_types": ["UNKNOWN"], "confidence": 46, "rotation": 0},
+            {"page_number": 2, "page_types": ["SPM"], "confidence": 81, "rotation": 0},
+        ]
+        calls = []
+
+        def variants_for_page(_file_path, page_number, rotations):
+            calls.append((page_number, tuple(rotations)))
+            if page_number == 1 and 270 in rotations:
+                return [valid_variant]
+            return []
+
+        with patch("apps.core.parsers.table_variant_from_page_tsv", return_value=None), patch(
+            "apps.core.parsers.ocr_page_table_variants",
+            side_effect=variants_for_page,
+        ):
+            rows, summary = parse_position_detail_items(
+                "dummy.pdf",
+                pages,
+                "Belanja uang makan PPPK",
+                expected_total=Decimal("4030000"),
+            )
+
+        self.assertIn((1, (0,)), calls)
+        self.assertIn((1, (90, 180, 270)), calls)
+        self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["ocr_rotation"], 270)
         self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
 
