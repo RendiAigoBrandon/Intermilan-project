@@ -94,12 +94,21 @@
   {% endif %}
 
   <h3 class="section-title mt">Satker: {{ spm_meta.satker_app_name|default:paket.satker_code }}</h3>
-  <form method="post" style="margin-bottom: 24px;">
+  <form method="post" id="preview-edit-form" style="margin-bottom: 24px;">
     {% csrf_token %}
-    <input type="hidden" name="action" value="recalculate">
+    {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
+      <input type="hidden" name="commit_choice" value="link_existing">
+    {% elif decision.commit_action == 'update_existing' %}
+      <input type="hidden" name="commit_choice" value="update_existing">
+    {% elif decision.commit_action == 'create_from_package' %}
+      <input type="hidden" name="commit_choice" value="create_from_package">
+    {% endif %}
+    {% if decision.matched_transaction %}
+      <input type="hidden" name="matched_transaction_id" value="{{ decision.matched_transaction.id }}">
+    {% endif %}
     <!-- Tombol navigasi aksi form -->
     <div style="margin-bottom: 12px; display: flex; gap: 8px;">
-        <button type="submit" class="btn btn-sm btn-info">SIMPAN PERUBAHAN &amp; VALIDASI ULANG</button>
+        <button type="submit" name="action" value="recalculate" class="btn btn-sm btn-info">SIMPAN PERUBAHAN &amp; VALIDASI ULANG</button>
     </div>
 
     <div class="table-wrap">
@@ -390,9 +399,7 @@
     </div>
   </details>
 
-  <form method="post" class="mt" style="background: var(--bg-card); padding: 20px; border: 1px solid var(--border-color, #ddd); border-radius: 8px;">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="commit">
+  <div class="mt" style="background: var(--bg-card); padding: 20px; border: 1px solid var(--border-color, #ddd); border-radius: 8px;">
 
     {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
       <h3 class="section-title" style="margin-bottom: 16px;">Kaitkan ke D_K</h3>
@@ -403,22 +410,19 @@
 
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 12px;">
       {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
-        <button class="btn primary" type="submit" name="commit_choice" value="link_existing" {% if not can_commit %}disabled{% endif %}>KAITKAN KE D_K EXISTING</button>
-        {% if decision.matched_transaction %}
-        <input type="hidden" name="matched_transaction_id" value="{{ decision.matched_transaction.id }}">
-        {% endif %}
+        <button class="btn primary" type="submit" form="preview-edit-form" name="action" value="commit" {% if not can_commit %}disabled{% endif %}>KAITKAN KE D_K EXISTING</button>
       {% elif decision.commit_action == 'update_existing' %}
-        <button class="btn primary" type="submit" name="commit_choice" value="update_existing" {% if not can_commit %}disabled title="Perbaiki error rekonsiliasi sebelum menyimpan."{% endif %}>PERBARUI D_K EXISTING</button>
+        <button class="btn primary" type="submit" form="preview-edit-form" name="action" value="commit" {% if not can_commit %}disabled title="Perbaiki error rekonsiliasi sebelum menyimpan."{% endif %}>PERBARUI D_K EXISTING</button>
         {% if decision.matched_transaction %}
         <span class="muted">Target D_K: {{ decision.matched_transaction.satker_code }} / {{ decision.matched_transaction.nomor_spm }}</span>
         {% endif %}
       {% elif decision.commit_action == 'create_from_package' and decision.document_status != 'Perlu Review Field' and decision.document_status != 'Perlu Review OCR' %}
-        <button class="btn primary" type="submit" name="commit_choice" value="create_from_package" {% if not can_commit %}disabled title="Perbaiki error rekonsiliasi sebelum menyimpan."{% endif %}>SIMPAN KE D_K</button>
+        <button class="btn primary" type="submit" form="preview-edit-form" name="action" value="commit" {% if not can_commit %}disabled title="Perbaiki error rekonsiliasi sebelum menyimpan."{% endif %}>SIMPAN KE D_K</button>
       {% else %}
         <button class="btn primary" style="opacity: 0.5; cursor: not-allowed;" disabled title="Data belum lengkap atau rekonsiliasi gagal.">SIMPAN KE D_K</button>
       {% endif %}
       
-      <button class="btn ghost" type="submit" name="action" value="cancel" formnovalidate style="color:var(--danger); border-color:var(--danger);">BATAL</button>
+      <button class="btn ghost" type="submit" form="preview-edit-form" name="action" value="cancel" formnovalidate style="color:var(--danger); border-color:var(--danger);">BATAL</button>
     </div>
 
     <div class="muted" style="font-size: 13px;">
@@ -432,6 +436,6 @@
         Terdapat isian yang perlu dilengkapi/diperbaiki atau rekonsiliasi belum tepat.
       {% endif %}
     </div>
-  </form>
+  </div>
 </section>
 {% endblock %}

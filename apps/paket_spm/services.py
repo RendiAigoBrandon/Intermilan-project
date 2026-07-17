@@ -943,7 +943,7 @@ def transaction_from_values(values, defaults, user=None, sp2d_raw=None, document
         sp2d_raw=sp2d_raw,
         akun=clean_optional(values.get("akun"))[:32],
         kategori="",
-        bulan_sp2d=parse_month_number(values.get("bulan_sp2d")),
+        bulan_sp2d=parse_month_number(values.get("bulan_sp2d")) or defaults.get("bulan_sp2d"),
         cara_pembayaran=clean_optional(values.get("cara_pembayaran"))[:100],
         nomor_spm=clean_optional(values.get("nomor_spm") or defaults["nomor_spm"])[:100],
         tanggal_spm=date_value(values.get("tanggal_spm")) or defaults["tanggal_spm"],
@@ -1006,6 +1006,11 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
         "nomor_spm": nomor_spm,
         "tanggal_spm": tanggal_spm,
         "jenis_spm": meta["jenis_spm"] or paket.jenis_spm_label or paket.jenis_spm_asli,
+        "bulan_sp2d": (
+            getattr(sp2d_raw, "bulan_sp2d", None)
+            or getattr(meta.get("tanggal_sp2d"), "month", None)
+            or paket.bulan
+        ),
     }
 
     # Pre-fetch existing rows for this exact package

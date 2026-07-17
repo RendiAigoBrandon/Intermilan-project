@@ -814,6 +814,29 @@ class PaketSPMRegressionTests(TestCase):
 
         self.assertEqual(rows[0].bulan_sp2d, 5)
 
+    def test_preview_row_blank_month_falls_back_to_extracted_sp2d_date(self):
+        parsed = self.parsed_package()
+        parsed["spm"]["metadata"]["tanggal_sp2d"] = "2026-07-01"
+        parsed["preview_rows"] = [{
+            "akun": "512211",
+            "bulan_sp2d": "",
+            "cara_pembayaran": "LS Non Kontraktual",
+            "nomor_spm": "00175A",
+            "tanggal_spm": "2026-06-30",
+            "jenis_spm": "Gaji Lainnya",
+            "no_kuitansi": "00175A",
+            "deskripsi": "Pembayaran lembur",
+            "nilai_bruto": "3259000",
+            "nilai_netto": "3096050",
+            "pembebanan": "2886.EBA.994.001.512211",
+            "pph21": "162950",
+        }]
+        paket = self.paket_for(parsed, bulan=None)
+
+        rows = build_transaction_rows_from_package(parsed, paket, self.user, save=False, skip_existing=False)
+
+        self.assertEqual(rows[0].bulan_sp2d, 7)
+
     def test_preview_row_edit_persists_helper_and_commit_values(self):
         parsed = self.parsed_package()
         paket = self.paket_for(parsed, with_file=True)
@@ -842,6 +865,56 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(rows[0].pph21, Decimal("2360100"))
         committed = build_transaction_rows_from_package(paket.parsed_data, paket, self.user, save=True)
         self.assertEqual(committed[0].pembebanan, "2886.EBA.994.001.511129")
+
+    def test_direct_commit_persists_unsaved_preview_row_edits(self):
+        parsed = self.parsed_package()
+        paket = self.paket_for(parsed, with_file=True)
+        self.client.login(username="operator", password="password")
+        session = self.client.session
+        session["paket_spm_preview_id"] = paket.id
+        session.save()
+        expected_description = (
+            "Pembayaran belanja pegawai berupa lembur dan uang makan lembur "
+            "bulan Maret 2026 untuk 2 pegawai"
+        )
+
+        response = self.client.post(reverse("paket_spm:preview"), {
+            "action": "commit",
+            "commit_choice": "create_from_package",
+            "preview_row_count": "1",
+            "rows-0-akun": "512211",
+            "rows-0-bulan_sp2d": "Juli",
+            "rows-0-cara_pembayaran": "LS Non Kontraktual",
+            "rows-0-nomor_spm": paket.nomor_spm,
+            "rows-0-tanggal_spm": paket.tanggal_spm.isoformat(),
+            "rows-0-jenis_spm": paket.jenis_spm_label,
+            "rows-0-no_kuitansi": paket.nomor_spm,
+            "rows-0-no_drpp": "",
+            "rows-0-deskripsi": expected_description,
+            "rows-0-nilai_bruto": "3.259.000",
+            "rows-0-nilai_netto": "3.096.050",
+            "rows-0-pembebanan": "2886.EBA.994.001.512211",
+            "rows-0-fp": "",
+            "rows-0-pph21": "162.950",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        row = TransactionDetail.objects.get(nomor_spm=paket.nomor_spm)
+        self.assertEqual(row.deskripsi, expected_description)
+        self.assertEqual(row.bulan_sp2d, 7)
+        self.assertEqual(row.nilai_netto, Decimal("3096050"))
+
+    def test_commit_button_is_bound_to_preview_edit_form(self):
+        paket = self.paket_for(self.parsed_package())
+        self.client.login(username="operator", password="password")
+        session = self.client.session
+        session["paket_spm_preview_id"] = paket.id
+        session.save()
+
+        response = self.client.get(reverse("paket_spm:preview"))
+
+        self.assertContains(response, 'id="preview-edit-form"')
+        self.assertContains(response, 'form="preview-edit-form" name="action" value="commit"')
 
     def test_editing_second_preview_row_does_not_change_first(self):
         parsed = self.parsed_package()
@@ -1624,6 +1697,62 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
         self.assertEqual(summary["total"], Decimal("4030000"))
 
+    def test_grid_rows_recovered_for_existing_windows_tsv_are_kept_in_final_output(self):
+        row = {
+            "akun": "512211",
+            "jumlah": Decimal("3259000"),
+            "bruto": Decimal("3259000"),
+            "netto": Decimal("3259000"),
+            "no_bukti": "000213",
+            "keperluan": "Belanja Uang Lembur",
+            "pembebanan": "2886.EBA.994.001.512211",
+            "source_page": 1,
+            "source_types": ["DETAIL_SPP_SPM_SP2D"],
+            "source_row_id": "994.001.0A.000213",
+            "ocr_rotation": 270,
+            "source_priority": "DETAIL_SPP_SPM_SP2D",
+            "nomor_sp2d": "260100000032865",
+            "tanggal_sp2d": datetime.date(2026, 7, 1),
+        }
+        existing_variant = {
+            "page": 1,
+            "rotation": 270,
+            "confidence": 42,
+            "score": 24,
+            "text": "DETAIL PENGELUARAN TSV Windows",
+            "lines": [],
+            "source": "existing_tsv",
+        }
+        pages = [{
+            "page_number": 1,
+            "rotation": 270,
+            "page_types": ["DETAIL_SPP_SPM_SP2D"],
+        }]
+
+        with patch("apps.core.parsers.table_variant_from_page_tsv", return_value=existing_variant), patch(
+            "apps.core.parsers.parse_detail_sp2d_rows_from_tsv_lines",
+            return_value=[],
+        ), patch(
+            "apps.core.parsers.parse_detail_sp2d_rows_by_crop",
+            return_value=[row],
+        ), patch(
+            "apps.core.parsers.ocr_page_table_variants",
+            side_effect=AssertionError("exact grid row must avoid retrying every rotation"),
+        ):
+            rows, summary = parse_position_detail_items(
+                "dummy.pdf",
+                pages,
+                "Pembayaran belanja pegawai berupa lembur dan uang makan lembur bulan Maret 2026",
+                expected_total=Decimal("3259000"),
+            )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["nomor_sp2d"], "260100000032865")
+        self.assertEqual(rows[0]["tanggal_sp2d"], datetime.date(2026, 7, 1))
+        self.assertTrue(rows[0]["keperluan"].startswith("Pembayaran belanja pegawai"))
+        self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
+        self.assertEqual(summary["total"], Decimal("3259000"))
+
     def test_readable_coa_attachment_recovers_row_when_landscape_table_is_unreadable(self):
         pages = [{
             "page_number": 4,
@@ -1663,6 +1792,29 @@ class PaketSPMRegressionTests(TestCase):
 
         self.assertEqual(rows, [])
 
+    def test_coa_attachment_prefers_full_payment_narrative_over_generic_label(self):
+        expected_description = (
+            "Pembayaran belanja pegawai berupa lembur dan uang makan lembur bulan Maret 2026 "
+            "untuk 2 pegawai sesuai SPKL No. B-338.1/13000/KP.650/2026 tanggal 27 Februari 2026, "
+            "dll (terlampir)"
+        )
+        pages = [{
+            "page_number": 4,
+            "text": (
+                "LAMPIRAN SPM Ro.Komp.Subkomp.Item "
+                "019937.010.512211.05401WA.2886EBA.A000000001.00000.2.0800.2.000000.000000 "
+                "994.001.0A.000213-Belanja Uang Lembur 3.259.000,00"
+            ),
+        }]
+
+        rows = parse_validated_lampiran_coa_pages(
+            pages,
+            Decimal("3259000"),
+            expected_description,
+        )
+
+        self.assertEqual(rows[0]["keperluan"], expected_description)
+
     def test_repeated_ocr_separators_are_parsed_as_currency(self):
         self.assertEqual(parse_decimal("228,840,00"), Decimal("228840.00"))
         self.assertEqual(parse_decimal("83.000,00"), Decimal("83000.00"))
@@ -1679,6 +1831,58 @@ class PaketSPMRegressionTests(TestCase):
             extract_uraian(text),
             "Pembayaran uang lembur PPPK bulan Juni 2026",
         )
+
+    def test_uraian_keeps_text_after_interleaved_npwp_nop_and_address_labels(self):
+        text = (
+            "raian : Pembayaran belanja pegawai berupa lembur dan uang "
+            "NPWP2 + 0001858539201000 makan lembur bulan Maret 2026 untuk 2 pegawai sesuai "
+            "NOP : SPKL No, B-338.1/13000/KP.650/2026 tanggal 27 "
+            "ALAMAT ; JI. Khatib Sulaiman No. 48 Februari 2026, dll (terlampir) "
+            "Semua bukti-bukti pendukung telah diuji"
+        )
+
+        self.assertEqual(
+            extract_uraian(text),
+            "Pembayaran belanja pegawai berupa lembur dan uang makan lembur bulan Maret 2026 "
+            "untuk 2 pegawai sesuai SPKL No. B-338.1/13000/KP.650/2026 tanggal 27 "
+            "Februari 2026, dll (terlampir)",
+        )
+
+    def test_sp2d_date_is_recovered_from_table_ocr_without_readable_sp2d_number(self):
+        detail_row = {
+            "akun": "522191",
+            "jumlah": Decimal("9744780"),
+            "bruto": Decimal("9744780"),
+            "netto": Decimal("9744780"),
+            "no_bukti": "000001",
+            "keperluan": "Pembayaran honor PPNPN",
+            "pembebanan": "2886.EBA.994.001.522191",
+            "source_page": 1,
+            "source_types": ["DETAIL_SPP_SPM_SP2D"],
+            "source_row_id": "994.001.0A.000001",
+            "source_priority": "DETAIL_SPP_SPM_SP2D",
+        }
+        summary = {
+            "source": "DETAIL_SPP_SPM_SP2D",
+            "pages": {
+                1: {
+                    "text": "Nomor SP2D tidak terbaca",
+                    "variants": [{"text": "Tgl. SP2D 2026-07-01"}],
+                },
+            },
+        }
+        with patch(
+            "apps.core.parsers.parse_position_detail_items",
+            return_value=([detail_row], summary),
+        ):
+            pages_without_sp2d_number = [
+                re.sub(r"\b20\d{2}-\d{2}-\d{2}\b", "", re.sub(r"\b2\d{14}\b", "", page))
+                for page in FIXTURE_00074T_PAGES
+            ]
+            parsed = self.parse_fixture(pages=pages_without_sp2d_number)
+
+        self.assertEqual(parsed["metadata"]["nomor_sp2d"], "")
+        self.assertEqual(parsed["metadata"]["tanggal_sp2d"], datetime.date(2026, 7, 1))
 
     def test_amount_below_one_hundred_thousand_is_not_replaced_by_account(self):
         self.assertEqual(best_amount_from_text("83.000,00"), Decimal("83000.00"))
@@ -1735,6 +1939,10 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(rows[0]["akun"], "512212")
         self.assertEqual(rows[0]["jumlah"], Decimal("83000"))
         self.assertEqual(rows[0]["pembebanan"], "2886.EBA.994.001.512212")
+        self.assertEqual(rows[0]["satker"], "019937")
+        self.assertEqual(rows[0]["nomor_spm_detail"], "00123T/019937/2026")
+        self.assertEqual(rows[0]["nomor_sp2d"], "260100000000001")
+        self.assertEqual(rows[0]["tanggal_sp2d"], datetime.date(2026, 7, 1))
 
     def test_lampiran_corrects_letter_suffix_misread_as_digit(self):
         pages = [

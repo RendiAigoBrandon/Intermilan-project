@@ -605,6 +605,7 @@ def collect_spm_number_candidates(text_spm="", text_spp="", filename_spm="", tex
 def clean_description(value):
     text = normalize_text(value)
     text = re.sub(r"^Pembayaran\s*[:\-]\s*Pembayaran\b", "Pembayaran", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bNo,\s*(?=[A-Z0-9])", "No. ", text, flags=re.IGNORECASE)
     text = re.sub(
         r"\s+Kode\s+Akun\s+Pajak\b.*?(?:\|\s*)?(makan\s+bulan\b)",
         r" \1",
@@ -617,8 +618,16 @@ def clean_description(value):
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0]
-    text = re.sub(r"\bNPWP\s*[12]?\b\s*[:;|]?\s*[0-9 .-]*", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bNOP\b.*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bNPWP\s*[12]?\b\s*[:;+|]?\s*[0-9 .-]*", " ", text, flags=re.IGNORECASE)
+    # Pada OCR dua kolom, label NOP/ALAMAT dapat tersisip di tengah uraian.
+    # Buang label/nilai alamatnya saja; jangan memotong kelanjutan uraian.
+    text = re.sub(r"\bNOP\b\s*[:;|]?", " ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\bALAMAT\b\s*[:;|]?\s*(?:J(?:L|I)\.?\s*)?[^,;|]*?\bNO\.?\s*\d+[A-Z]?\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"(\bsebanyak\s+\d+\s+pegawai\b).*$", r"\1", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip(" .")
     return text
@@ -633,8 +642,13 @@ def title_with_acronyms(value):
 
 def extract_uraian(text):
     for match in re.finditer(
-        r"URAIAN\s*[:;]?\s*(Pembayaran\b.*?)(?="
-        r"\s+(?:NOP|ALAMAT|Semua|Padang|JUMLAH\s+PENGELUARAN)\b)",
+        # Scan SPM sering kehilangan huruf awal U ("raian") dan formulir SSP
+        # memakai label "Uraian Pembayaran" sebelum isi yang juga diawali kata
+        # Pembayaran. Keduanya tetap harus menghasilkan isi uraian, bukan baris
+        # COA setelah header kolom "... - Uraian".
+        r"(?:U?RAIAN|KEPERLUAN)(?:\s+PEMBAYARAN)?\s*[:;]?\s*"
+        r"(Pembayaran\b.*?)(?="
+        r"\s+(?:Semua|JUMLAH\s+PENGELUARAN|Kebenaran\s+perhitungan)\b)",
         text,
         re.IGNORECASE | re.DOTALL,
     ):
@@ -650,6 +664,30 @@ def extract_uraian(text):
         if description:
             return description
     return ""
+
+
+def prefer_richer_description(primary, fallback):
+    """Prefer an explanatory payment narrative over a short account label."""
+    primary = clean_description(primary)
+    fallback = clean_description(fallback)
+    if not primary:
+        return fallback
+    if not fallback:
+        return primary
+
+    primary_words = re.findall(r"[A-Z0-9]+", primary.upper())
+    fallback_words = re.findall(r"[A-Z0-9]+", fallback.upper())
+    primary_is_generic_label = (
+        len(primary_words) <= 6
+        and bool(re.match(r"^(?:BE[LT]ANJA|PEMBAYARAN|BIAYA)\b", primary.upper()))
+    )
+    fallback_is_explanatory = (
+        len(fallback_words) >= len(primary_words) + 4
+        and len(fallback) >= len(primary) * 2
+    )
+    if primary_is_generic_label and fallback_is_explanatory:
+        return fallback
+    return primary
 
 
 def extract_jenis_spm(text):
@@ -1243,7 +1281,10 @@ def parse_spm_pdf(file_path, ocr=False):
         table_sp2d = _RE_SP2D_LABELED.search(table_ocr_text.upper()) or _RE_SP2D_BARE.search(table_ocr_text.upper())
         if table_sp2d:
             text_sp2d = table_sp2d.group(1)
-    if text_sp2d and not tanggal_sp2d and table_ocr_text:
+    # Nomor SP2D kadang rusak oleh garis tabel, sedangkan tanggal ISO pada sel
+    # sebelahnya tetap jelas. Tanggal tidak boleh ikut dibuang hanya karena
+    # nomor 15 digit gagal dikenali.
+    if not tanggal_sp2d and table_ocr_text:
         tanggal_sp2d = extract_sp2d_date(table_ocr_text, text_sp2d)
     # TSV tabel biasanya lebih stabil daripada OCR paragraf, terutama pada scan
     # yang diputar. Gunakan field terstruktur sebagai fallback metadata SP2D.
@@ -1253,7 +1294,7 @@ def parse_spm_pdf(file_path, ocr=False):
                 (normalize_text(item.get("nomor_sp2d")) for item in position_items if re.fullmatch(r"2\d{14}", normalize_text(item.get("nomor_sp2d")))),
                 "",
             )
-        if text_sp2d and not tanggal_sp2d:
+        if not tanggal_sp2d:
             tanggal_sp2d = next(
                 (parse_date(item.get("tanggal_sp2d")) for item in position_items if parse_date(item.get("tanggal_sp2d"))),
                 "",
@@ -1928,6 +1969,8 @@ def parse_validated_lampiran_coa_pages(page_details, expected_total, default_des
                 description = clean_description(description_text)
             if not description or not re.search(r"[A-Z]{3}", description.upper()):
                 description = clean_description(default_description) or "Perlu Review Uraian"
+            else:
+                description = prefer_richer_description(description, default_description)
 
             item_code = ".".join(item_parts)
             page_output.append({
@@ -2461,10 +2504,17 @@ def parse_detail_sp2d_rows_by_grid(image, pytesseract, page_number, rotation, so
         if not (amount and pembebanan and is_valid_pembebanan(pembebanan, amount)):
             continue
 
-        satker = ocr_cell_text(row_cells[1], pytesseract) if len(row_cells) > 1 else ""
-        no_spm = ocr_cell_text(row_cells[2], pytesseract) if len(row_cells) > 2 else ""
-        no_sp2d = ocr_cell_text(row_cells[3], pytesseract) if len(row_cells) > 3 else ""
-        tanggal_sp2d = ocr_cell_text(row_cells[4], pytesseract) if len(row_cells) > 4 else ""
+        # Jumlah garis tepi kiri berbeda antar hasil scan/driver, sehingga
+        # indeks kolom dapat bergeser satu. Kenali metadata dari isi seluruh
+        # sel sebelum COA alih-alih mengandalkan posisi kolom tetap.
+        identity_text = " | ".join(
+            ocr_cell_text(cell, pytesseract)
+            for cell in row_cells[:coa_col]
+        )
+        satker_match = re.search(r"\b(\d{6})\b", identity_text)
+        no_spm_match = re.search(r"\b([0-9]{3,6}[A-Z]?/\d{4,6}/20\d{2})\b", identity_text.upper())
+        no_sp2d_match = _RE_SP2D_BARE.search(identity_text)
+        tanggal_sp2d_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", identity_text)
         description = desc_by_item.get(item_code, "")
         rows.append({
             "akun": akun,
@@ -2481,10 +2531,10 @@ def parse_detail_sp2d_rows_by_grid(image, pytesseract, page_number, rotation, so
             "source_priority": "DETAIL_SPP_SPM_SP2D",
             "needs_review": not bool(description),
             "review_note": "" if description else "Uraian Lampiran COA belum cocok pasti.",
-            "satker": normalize_text(satker).strip("|: "),
-            "nomor_spm_detail": normalize_text(no_spm).strip("|: "),
-            "nomor_sp2d": normalize_text(no_sp2d).strip("|: "),
-            "tanggal_sp2d": parse_date(normalize_text(tanggal_sp2d).strip("|: ")),
+            "satker": satker_match.group(1) if satker_match else "",
+            "nomor_spm_detail": no_spm_match.group(1) if no_spm_match else "",
+            "nomor_sp2d": no_sp2d_match.group(1) if no_sp2d_match else "",
+            "tanggal_sp2d": parse_date(tanggal_sp2d_match.group(1)) if tanggal_sp2d_match else None,
             "grid_row": row_index,
         })
     return dedupe_detail_items(rows), {"grid_rows": len(row_bands), "grid_columns": len(column_bands)}
@@ -2918,7 +2968,15 @@ def parse_position_detail_items(file_path, page_details, default_description="",
         best = max(exact_variants or variants_with_rows or variants, key=lambda item: item["score"])
         if best["score"] <= 0:
             continue
-        best_by_page[best["page"]] = {**best, "source_types": list(page_types), "variants": variants}
+        best_by_page[best["page"]] = {
+            **best,
+            "source_types": list(page_types),
+            "variants": variants,
+            # rows_for_variant dapat memulihkan tabel melalui parser grid saat
+            # TSV Windows kosong. Simpan hasil valid itu; jangan hitung ulang
+            # dari TSV kosong pada tahap final.
+            "validated_rows": rows_for_variant(best) if is_detail_page else [],
+        }
         page["table_ocr_rotation"] = best["rotation"]
         page["table_ocr_language"] = best.get("language") or "cached_tsv"
         page["table_ocr_language_fallback_used"] = bool(best.get("language_fallback_used"))
@@ -2945,14 +3003,26 @@ def parse_position_detail_items(file_path, page_details, default_description="",
         if "DETAIL_SPP_SPM_SP2D" not in set(page.get("source_types") or []):
             continue
         has_detail_page = True
-        tsv_rows = parse_detail_sp2d_rows_from_tsv_lines(
-            file_path,
-            page["page"],
-            page["rotation"],
-            page.get("lines") or [],
-            page["source_types"],
-            desc_by_item,
-        )
+        tsv_rows = [dict(row) for row in page.get("validated_rows") or []]
+        if not tsv_rows:
+            tsv_rows = parse_detail_sp2d_rows_from_tsv_lines(
+                file_path,
+                page["page"],
+                page["rotation"],
+                page.get("lines") or [],
+                page["source_types"],
+                desc_by_item,
+            )
+        for row in tsv_rows:
+            item_code = normalize_text(row.get("source_row_id")).upper()
+            description = prefer_richer_description(
+                desc_by_item.get(item_code) or row.get("keperluan"),
+                default_description,
+            )
+            if description:
+                row["keperluan"] = description
+                row["needs_review"] = description == "Perlu Review Uraian"
+                row["review_note"] = "" if not row["needs_review"] else "Uraian Lampiran COA belum cocok pasti."
         detail_page_rows.extend(tsv_rows)
         if not tsv_rows and page.get("source") != "existing_tsv":
             detail_page_rows.extend(parse_detail_sp2d_rows_by_crop(

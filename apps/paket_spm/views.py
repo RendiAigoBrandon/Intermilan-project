@@ -289,7 +289,9 @@ def paket_spm_preview(request):
             messages.info(request, "Preview Paket SPM dibatalkan.")
             return redirect("paket_spm:list")
 
-        if action == "recalculate":
+        # Form preview juga dikirim saat commit supaya edit manual pada baris
+        # tidak hilang ketika pengguna langsung menekan Simpan ke D_K.
+        if action in {"recalculate", "commit"}:
             def clean_text(val):
                 v = str(val or "").strip()
                 return "" if v == "-" else v
@@ -442,8 +444,9 @@ def paket_spm_preview(request):
             if keterangan and "notes" in decision:
                 decision["notes"].insert(0, keterangan)
 
-            messages.success(request, "Data diupdate, matching dihitung ulang.")
-            return redirect("paket_spm:preview")
+            if action == "recalculate":
+                messages.success(request, "Data diupdate, matching dihitung ulang.")
+                return redirect("paket_spm:preview")
 
         if action == "commit":
             commit_choice = request.POST.get("commit_choice") # 'link_existing', 'create_from_package', 'review_manual', 'save_draft'
