@@ -8,7 +8,7 @@ Default `.env`:
 
 ```env
 OCR_ENGINE_ORDER=text,tesseract,paddleocr
-OCR_ENABLE_PADDLEOCR=false
+OCR_ENABLE_PADDLEOCR=true
 OCR_ENABLE_CLOUD=false
 ```
 
@@ -76,21 +76,35 @@ Jalankan server Django dengan interpreter `.venv` yang sama:
 
 Jika command import di atas gagal, install ulang requirements ke `.venv` terlebih dahulu. Jika package Python sudah OK tetapi OCR tetap gagal pada scan, cek Tesseract binary Windows.
 
-## PaddleOCR Opsional
+## PaddleOCR 3.x
 
-PaddleOCR tidak diwajibkan karena dependency-nya besar. Jika ingin mencoba:
+PaddleOCR dipakai sebagai fallback untuk halaman yang hasil Tesseract-nya kosong
+atau confidence-nya rendah. Install ke virtual environment project dengan file
+dependency khusus agar instalasi dasar tetap ringan:
 
 ```powershell
-pip install paddleocr paddlepaddle
+.\.venv\Scripts\python.exe -m pip install -r requirements-paddleocr.txt
 ```
 
-Lalu aktifkan:
+Atau jalankan setup Windows satu langkah dari root project:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_paddleocr.ps1
+```
+
+Pastikan `.env` berisi:
 
 ```env
 OCR_ENABLE_PADDLEOCR=true
+OCR_PADDLEOCR_DEVICE=cpu
+OCR_PADDLEOCR_DOC_ORIENTATION=true
+OCR_PADDLEOCR_DOC_UNWARPING=false
+OCR_PADDLEOCR_TEXTLINE_ORIENTATION=true
 ```
 
-Jika PaddleOCR tidak tersedia, INTERMILAN hanya memberi warning dan lanjut memakai engine lain.
+Implementasi mendukung API PaddleOCR 3.x (`predict`) dan tetap menerima format
+hasil 2.x untuk instalasi lama. Model PaddleOCR dapat diunduh saat pemakaian
+pertama, sehingga proses pertama biasanya lebih lama daripada proses berikutnya.
 
 ## Cloud OCR Opsional
 

@@ -83,7 +83,7 @@ def _unique(values: Iterable[str]) -> List[str]:
 
 def _page_types(page: Dict[str, Any]) -> List[str]:
     text = page.get("text") or page.get("extracted_text") or ""
-    types = page.get("page_types") or classify_page_types(text)
+    types = classify_page_types(text)
     return list(dict.fromkeys(types or ["UNKNOWN"]))
 
 
@@ -214,9 +214,9 @@ def validate_transaction_rows(
     drpp_meta = (drpp or {}).get("metadata") or {}
     expected = parse_decimal(spm_meta.get("jumlah_pengeluaran"))
     if expected <= 0:
-        expected = parse_decimal(drpp_meta.get("total"))
-    if expected <= 0:
         expected = parse_decimal(spm_meta.get("total_pembayaran")) + parse_decimal(spm_meta.get("jumlah_potongan"))
+    if expected <= 0:
+        expected = parse_decimal(drpp_meta.get("total"))
 
     actual = sum((_row_amount(row) for row in rows), Decimal("0"))
     issues: List[str] = []
@@ -332,21 +332,39 @@ def _parse_pdf_package(file_path: str, original_filename: str) -> Dict[str, Any]
     should_parse_drpp = bool(graph_types.intersection(DRPP_CONTEXT_TYPES)) or "DRPP" in filename_upper
 
     if should_parse_spm and not support_only:
-        candidate = parse_spm_pdf(file_path, ocr=True)
+        candidate = parse_spm_pdf(
+            file_path,
+            ocr=True,
+            extracted=extracted,
+            parse_details=not should_parse_drpp,
+        )
         if _meaningful_spm(candidate, graph_types):
             spm = candidate
     if should_parse_drpp:
-        candidate = parse_drpp_pdf(file_path, ocr=True)
+        candidate = parse_drpp_pdf(file_path, ocr=True, extracted=extracted)
         if _meaningful_drpp(candidate):
             drpp = candidate
 
+    # Bila halaman berlabel DRPP ternyata tidak menghasilkan transaksi valid,
+    # baru jalankan recovery tabel SPM yang lebih mahal. Ini menghindari OCR
+    # 300-DPI berulang pada paket yang sudah memiliki sumber transaksi DRPP.
+    if spm and should_parse_drpp and not (drpp or {}).get("items"):
+        recovered_spm = parse_spm_pdf(
+            file_path,
+            ocr=True,
+            extracted=extracted,
+            parse_details=True,
+        )
+        if _meaningful_spm(recovered_spm, graph_types):
+            spm = recovered_spm
+
     # Dokumen baru dengan nama generik tetap harus dicoba sebagai paket SPM.
     if not spm and not drpp and not support_only:
-        candidate = parse_spm_pdf(file_path, ocr=True)
+        candidate = parse_spm_pdf(file_path, ocr=True, extracted=extracted)
         if _meaningful_spm(candidate, graph_types):
             spm = candidate
         elif "DRPP" in graph_types:
-            candidate_drpp = parse_drpp_pdf(file_path, ocr=True)
+            candidate_drpp = parse_drpp_pdf(file_path, ocr=True, extracted=extracted)
             if _meaningful_drpp(candidate_drpp):
                 drpp = candidate_drpp
 

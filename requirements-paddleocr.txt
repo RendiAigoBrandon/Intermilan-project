@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Install PaddlePaddle lebih dulu, lalu pipeline PaddleOCR 3.x lengkap.
+paddlepaddle>=3.0,<4.0
+paddleocr[all]>=3.0,<4.0

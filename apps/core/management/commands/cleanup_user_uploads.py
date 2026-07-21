@@ -30,6 +30,7 @@ class Command(BaseCommand):
         parser.add_argument("--include-doclinks", action="store_true", help="Ikut hapus DocumentDriveLink yang jelas berasal dari upload test.")
         parser.add_argument("--include-archive-files", action="store_true", help="Ikut hapus file upload/archive lokal yang terkait data upload test.")
         parser.add_argument("--include-temp-files", action="store_true", help="Ikut hapus file sementara di media/tmp.")
+        parser.add_argument("--include-ocr-cache", action="store_true", help="Ikut hapus seluruh folder .ocr_cache di MEDIA_ROOT.")
         parser.add_argument("--uploaded-after", default="", help="Filter data upload setelah tanggal YYYY-MM-DD.")
 
     def handle(self, *args, **options):
@@ -39,6 +40,7 @@ class Command(BaseCommand):
         include_doclinks = options["include_doclinks"]
         include_archive_files = options["include_archive_files"]
         include_temp_files = options["include_temp_files"]
+        include_ocr_cache = options["include_ocr_cache"]
         uploaded_after = self.parse_uploaded_after(options["uploaded_after"])
 
         before = self.baseline_counts()
@@ -49,13 +51,14 @@ class Command(BaseCommand):
         self.stdout.write(f"Include doclinks     : {include_doclinks}")
         self.stdout.write(f"Include archive files: {include_archive_files}")
         self.stdout.write(f"Include temp files   : {include_temp_files}")
+        self.stdout.write(f"Include OCR cache    : {include_ocr_cache}")
         self.print_baseline("Sebelum cleanup", before)
-        self.stdout.write("Tidak akan menghapus baseline D_K 5684")
-        self.stdout.write("Tidak akan menghapus MonitoringSummary 480")
-        self.stdout.write("Tidak akan menghapus DocumentDriveLink baseline lama")
+        self.stdout.write("D_K existing dilindungi; hanya transaksi dengan provenance Paket SPM OCR yang menjadi target.")
+        self.stdout.write("MonitoringSummary tidak pernah menjadi target cleanup.")
 
         targets = self.build_targets(feature, filename, uploaded_after, include_doclinks)
         temp_paths = self.collect_temp_paths(filename) if include_temp_files else []
+        cache_paths = self.collect_ocr_cache_paths() if include_ocr_cache else []
         managed_file_paths = self.collect_managed_file_paths(targets, include_doclinks) if include_archive_files else []
 
         self.stdout.write("")
@@ -72,6 +75,7 @@ class Command(BaseCommand):
         self.stdout.write(f"TransactionDetail Paket SPM test       : {targets['package_transactions'].count()}")
         self.stdout.write(f"File upload/archive terkait test       : {len(managed_file_paths)}")
         self.stdout.write(f"File temporary yang akan dihapus       : {len(temp_paths)}")
+        self.stdout.write(f"Folder OCR cache yang akan dihapus     : {len(cache_paths)}")
         self.stdout.write("=" * 64)
 
         self.print_samples("SP2D batch", targets["sp2d_batches"], "original_filename")
@@ -80,6 +84,7 @@ class Command(BaseCommand):
         self.print_samples("DocumentDriveLink", targets["doclinks"], "nama_file")
         self.print_temp_samples(managed_file_paths, title="Contoh upload/archive files")
         self.print_temp_samples(temp_paths)
+        self.print_temp_samples(cache_paths, title="Contoh folder OCR cache")
 
         if not commit:
             self.stdout.write(self.style.WARNING("\nDry-run selesai. Tidak ada data atau file yang dihapus."))
@@ -105,6 +110,8 @@ class Command(BaseCommand):
         deleted_files += self.delete_temp_paths(managed_file_paths)
         if include_temp_files:
             deleted_files += self.delete_temp_paths(temp_paths)
+        if include_ocr_cache:
+            deleted_files += self.delete_temp_paths(cache_paths)
 
         after = self.baseline_counts()
         self.stdout.write("")
@@ -131,7 +138,7 @@ class Command(BaseCommand):
 
         sp2d_raw = SP2DRaw.objects.filter(import_batch__in=sp2d_batches)
         paket_items = PaketSPMPreviewItem.objects.filter(paket__in=paket_uploads)
-        package_transaction_ids = list(
+        package_transaction_ids = set(
             PaketSPMPreviewItem.objects.filter(
                 paket__in=paket_uploads,
                 matched_transaction__isnull=False,
@@ -139,6 +146,7 @@ class Command(BaseCommand):
                 matched_transaction__pembebanan="Paket SPM OCR",
             ).values_list("matched_transaction_id", flat=True).distinct()
         )
+        package_transaction_ids.update(self.package_transaction_ids_from_links(paket_uploads))
         package_transactions = TransactionDetail.objects.filter(id__in=package_transaction_ids)
         drpp_items = DRPPItem.objects.filter(drpp_upload__in=drpp_uploads)
         drpp_matches = DRPPMatch.objects.filter(Q(drpp_upload__in=drpp_uploads) | Q(drpp_item__in=drpp_items))
@@ -200,12 +208,15 @@ class Command(BaseCommand):
                 | Q(no_kuitansi__icontains=filename)
             )
             safe_filter = safe_filter & filename_filter
+        related_filter = Q(pk__in=[])
         for name in sp2d_batches.values_list("original_filename", flat=True):
-            safe_filter |= Q(nama_file=name) | Q(catatan__icontains=name)
+            related_filter |= Q(nama_file=name) | Q(catatan__icontains=name)
         for upload in paket_uploads:
-            safe_filter |= Q(nama_file=upload.original_filename) | Q(catatan__icontains=upload.original_filename) | Q(nomor_spm__iexact=upload.nomor_spm)
+            related_filter |= Q(catatan__icontains=f"paket_spm_id={upload.id}")
+            related_filter |= Q(nama_file=upload.original_filename, nomor_spm__iexact=upload.nomor_spm)
         for upload in drpp_uploads:
-            safe_filter |= Q(no_drpp__iexact=upload.nomor_drpp) | Q(nomor_spm__iexact=upload.nomor_spm)
+            related_filter |= Q(no_drpp__iexact=upload.nomor_drpp) | Q(nomor_spm__iexact=upload.nomor_spm)
+        safe_filter &= related_filter
         qs = DocumentDriveLink.objects.filter(safe_filter).distinct()
         if uploaded_after:
             qs = qs.filter(created_at__gte=uploaded_after)
@@ -226,6 +237,40 @@ class Command(BaseCommand):
             lowered = filename.lower()
             paths = [path for path in paths if lowered in path.name.lower()]
         return self.unique_safe_media_paths(paths)
+
+    def collect_ocr_cache_paths(self):
+        media_root = Path(settings.MEDIA_ROOT)
+        if not media_root.exists():
+            return []
+        return self.unique_safe_media_paths(path for path in media_root.rglob(".ocr_cache") if path.is_dir())
+
+    def package_transaction_ids_from_links(self, paket_uploads):
+        """Ambil transaksi buatan upload, bukan D_K lama yang hanya ditautkan.
+
+        Commit baru memiliki marker transaction_origin. Untuk commit lama sebelum
+        marker tersedia, gunakan aturan konservatif: transaksi harus dibuat
+        setelah upload paket, tidak punya SP2D sumber, dan link tidak bertanda
+        existing D_K.
+        """
+        transaction_ids = set()
+        for paket in paket_uploads.only("id", "uploaded_at"):
+            links = DocumentDriveLink.objects.filter(
+                catatan__icontains=f"paket_spm_id={paket.id}",
+                transaction_detail__isnull=False,
+            ).select_related("transaction_detail")
+            for link in links:
+                transaction_row = link.transaction_detail
+                note = link.catatan or ""
+                explicit_origin = "transaction_origin=Paket SPM OCR" in note
+                legacy_origin = (
+                    "existing_dk=true" not in note
+                    and "existing D_K" not in note
+                    and transaction_row.sp2d_raw_id is None
+                    and transaction_row.created_at >= paket.uploaded_at
+                )
+                if explicit_origin or legacy_origin:
+                    transaction_ids.add(transaction_row.id)
+        return transaction_ids
 
     def collect_managed_file_paths(self, targets, include_doclinks):
         paths = []
@@ -310,8 +355,12 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR("MonitoringSummary berubah. Ini tidak aman."))
         if after["DocumentDriveLink"] != expected_doclinks:
             self.stdout.write(self.style.ERROR(f"DocumentDriveLink berubah di luar target: expected {expected_doclinks}, actual {after['DocumentDriveLink']}"))
-        if after["TransactionDetail"] == 5684 and after["MonitoringSummary"] == 480 and after["DocumentDriveLink"] == 3081 and after["SP2DImportBatch"] == 0 and after["SP2DRaw"] == 0:
-            self.stdout.write(self.style.SUCCESS("Baseline target aman: 5684 480 3081 0 0"))
+        if (
+            after["TransactionDetail"] == expected_dk
+            and after["MonitoringSummary"] == before["MonitoringSummary"]
+            and after["DocumentDriveLink"] == expected_doclinks
+        ):
+            self.stdout.write(self.style.SUCCESS("Verifikasi aman: tidak ada baseline di luar target yang berubah."))
 
     def print_samples(self, label, queryset, field):
         rows = list(queryset[:10])

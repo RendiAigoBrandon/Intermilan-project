@@ -70,6 +70,9 @@ def paket_spm_list(request):
         input_satker = str(
             request.POST.get("satker_code") or getattr(sp2d_row, "satker_code", "") or ""
         ).split(" - ")[0].strip()
+        access_context = permission_context(request.user)
+        if not input_satker and not access_context.get("can_view_all_satker"):
+            input_satker = access_context.get("user_satker_code") or ""
 
         identity_probe = probe_package_identity(
             file_path,

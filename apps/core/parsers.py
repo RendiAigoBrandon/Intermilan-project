@@ -318,17 +318,37 @@ def parse_spm_number_from_pages(page_details):
 def classify_page_types(text):
     upper = normalize_text(text).upper()
     types = []
-    is_ssp = "SURAT SETORAN PAJAK" in upper or "KODE AKUN PAJAK" in upper or "KODE JENIS SETORAN" in upper or re.search(r"\bSSP\b", upper)
-    is_detail = "DETAIL PENGELUARAN DAN POTONGAN" in upper or "SPP/SPM/SP2D" in upper
+    is_ssp = "SURAT SETORAN PAJAK" in upper or sum(
+        anchor in upper for anchor in ("KODE AKUN PAJAK", "KODE JENIS SETORAN", "MASA PAJAK")
+    ) >= 2
+    detail_anchor_count = sum(
+        anchor in upper
+        for anchor in ("SPP/SPM/SP2D", "NO SP2D", "KODE COA", "PENGELUARAN", "POTONGAN")
+    )
+    is_detail = "DETAIL PENGELUARAN DAN POTONGAN" in upper or detail_anchor_count >= 4
     if is_detail:
         types.extend(["DETAIL_SPP_SPM_SP2D", "SP2D_DETAIL"])
     if "SURAT PERINTAH MEMBAYAR" in upper:
         types.extend(["SPM_HEADER", "SPM"])
     if "SURAT PERMINTAAN PEMBAYARAN" in upper or re.search(r"(?:NOMOR|NO\.?)\s+SPP\s*[:\-]", upper):
         types.append("SPP")
-    if not is_ssp and (re.search(r"\b\d{4,6}[\s.,]+\d{3}[\s.,]+5\d{5}[\s.,]", upper) or " COA " in f" {upper} "):
+    if not is_ssp and (
+        "LAMPIRAN DAFTAR RINCIAN" in upper
+        or "DETAIL COA" in upper
+        or (
+            re.search(r"\b\d{4,6}[\s.,]+\d{3}[\s.,]+5\d{5}[\s.,]", upper)
+            and any(anchor in upper for anchor in ("COA", "PEMBEBANAN", "KODE AKUN"))
+        )
+    ):
         types.append("LAMPIRAN_COA")
-    if "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN" in upper or re.search(r"\bDRPP\b", upper):
+    drpp_table_anchor_count = sum(
+        anchor in upper for anchor in ("NO BUKTI", "NAMA PENERIMA", "PENERIMA", "NPWP", "AKUN", "JUMLAH KOTOR")
+    )
+    if (
+        "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN" in upper
+        or re.search(r"(?:NOMOR\s+DRPP|\b\d{3,6}/DRPP/)", upper)
+        or ("BUKTI PENGELUARAN" in upper and drpp_table_anchor_count >= 3)
+    ):
         types.append("DRPP")
     if is_ssp:
         types.append("SSP")
@@ -338,8 +358,9 @@ def classify_page_types(text):
         types.append("INVOICE")
     if "BAST" in upper or "BERITA ACARA SERAH TERIMA" in upper:
         types.append("BAST")
-    if not is_ssp and re.search(r"\bKW\b|\bKUITANSI\b|BUKTI\s+PENGELUARAN", upper):
-        types.append("KW_MAIN" if "BUKTI PENGELUARAN" in upper else "KW_SUPPORT")
+    kw_pattern = bool(re.search(r"\b\d{3,6}/KW/", upper))
+    if not is_ssp and (kw_pattern or ("KUITANSI" in upper and "TERBILANG" in upper)):
+        types.append("KW_MAIN" if "BUKTI PENGELUARAN" in upper and kw_pattern else "KW_SUPPORT")
         types.append("KW")
     if "FORMULIR PERMINTAAN BELANJA" in upper or re.search(r"\bFP\s*-\s*20\d{2}", upper):
         types.append("FORM_FP")
@@ -353,7 +374,8 @@ def annotate_page_details(page_details):
     for index, page in enumerate(page_details or [], start=1):
         item = dict(page)
         text = item.get("text") or item.get("extracted_text") or ""
-        types = item.get("page_types") or classify_page_types(text)
+        types = classify_page_types(text)
+        item["ocr_page_types"] = item.get("page_types") or []
         item["page_types"] = types
         item["primary_page_type"] = types[0] if types else "UNKNOWN"
         item["page_classification"] = item["primary_page_type"]
@@ -941,8 +963,8 @@ def reconcile_spm_suffix_with_filename(ocr_spm, filename_spm, nomor_spp=""):
     return ""
 
 
-def parse_spm_pdf(file_path, ocr=False):
-    extracted = extract_pdf_text(file_path, ocr=ocr)
+def parse_spm_pdf(file_path, ocr=False, extracted=None, parse_details=True):
+    extracted = extracted or extract_pdf_text(file_path, ocr=ocr)
     page_details = annotate_page_details(extracted.get("page_details", []))
     if not page_details:
         page_details = annotate_page_details([
@@ -1196,8 +1218,8 @@ def parse_spm_pdf(file_path, ocr=False):
     if pembebanan_utama:
         pembebanan_values = [pembebanan_utama] + [item for item in pembebanan_values if item != pembebanan_utama]
     fp_number = extract_fp_number(field_text)
-    detail_items = parse_spm_detail_items_from_pages(page_details, uraian)
-    if not detail_items:
+    detail_items = parse_spm_detail_items_from_pages(page_details, uraian) if parse_details else []
+    if parse_details and not detail_items:
         detail_items = parse_spm_detail_items(detail_text or spm_text, uraian)
 
     # Format untuk backward compatibility
@@ -1231,17 +1253,26 @@ def parse_spm_pdf(file_path, ocr=False):
     if jumlah_pengeluaran <= 0 and total_pembayaran_terbaca_langsung:
         bruto_turunan = total_pembayaran + max(jumlah_potongan, Decimal("0"))
     expected_position_total = jumlah_pengeluaran or bruto_turunan or total_pembayaran
-    position_items, position_summary = parse_position_detail_items(
-        file_path,
-        page_details,
-        uraian,
-        expected_total=expected_position_total,
-    )
+    if parse_details:
+        position_items, position_summary = parse_position_detail_items(
+            file_path,
+            page_details,
+            uraian,
+            expected_total=expected_position_total,
+        )
+    else:
+        position_items, position_summary = [], {
+            "source": "DEFERRED_TO_DRPP",
+            "rows_before_dedupe": 0,
+            "rows_after_dedupe": 0,
+            "total": Decimal("0"),
+            "pages": {},
+        }
     # Tabel resmi pada halaman scan landscape dapat gagal dikelompokkan oleh
     # Tesseract Windows walaupun lampiran COA portrait terbaca jelas. Jangan
     # mengubahnya menjadi baris 0: terima lampiran COA hanya bila akun, program,
     # item, pembebanan, dan total bruto semuanya tervalidasi secara terstruktur.
-    if not position_items and expected_position_total:
+    if parse_details and not position_items and expected_position_total:
         validated_lampiran_rows = parse_validated_lampiran_coa_pages(
             page_details,
             expected_position_total,
@@ -1834,6 +1865,109 @@ def parse_drpp_items_from_tsv(raw_words, page_number=1, confidence_threshold=55)
             item["needs_review"] = True
             item["review_fields"] = review_reasons
             item["status"] = "Perlu Review"
+        items.append(item)
+    return items
+
+
+def _normalize_ocr_kw_number(value):
+    parts = normalize_text(value).upper().strip("—–-|:;,. ").split("/")
+    if len(parts) < 4 or parts[1] != "KW":
+        return ""
+    for index in (0, 2, 3):
+        parts[index] = parts[index].replace("O", "0").replace("I", "1").replace("L", "1")
+    normalized = "/".join(parts[:4])
+    return normalized if re.fullmatch(r"\d{3,6}/KW/\d{5,9}/20\d{2}", normalized) else ""
+
+
+def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshold=45):
+    """Recovery baris DRPP berbasis koordinat ketika judul kolom rusak OCR.
+
+    Baris hanya dimulai bila satu kelompok-Y memuat nomor KW, akun/nominal, dan
+    nominal terformat. Teks lanjutan pada kelompok-Y berikutnya digabung sebagai
+    tanggal/deskripsi sampai anchor KW baris berikutnya. Ini tetap parser TSV
+    terstruktur, bukan fallback dari flat text seluruh halaman.
+    """
+    words = [word for word in (_to_tsv_word(raw_word) for raw_word in (raw_words or [])) if word]
+    lines = _group_tsv_words_by_line(words)
+    kw_re = re.compile(r"[0-9OIL]{3,6}/KW/[0-9OIL]{5,9}/20[0-9OIL]{2}", re.IGNORECASE)
+    amount_re = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?")
+    row_starts = []
+    for index, line in enumerate(lines):
+        line_words = sorted(line["words"], key=lambda item: item["left"])
+        text = normalize_text(" ".join(word["text"] for word in line_words))
+        kw_match = kw_re.search(text)
+        amounts = list(amount_re.finditer(text))
+        if kw_match and amounts:
+            row_starts.append((index, line_words, text, kw_match, amounts[-1]))
+
+    items = []
+    for row_index, (line_index, line_words, text, kw_match, amount_match) in enumerate(row_starts):
+        next_line_index = row_starts[row_index + 1][0] if row_index + 1 < len(row_starts) else len(lines)
+        continuation_lines = lines[line_index + 1 : next_line_index]
+        continuation_words = [
+            word
+            for line in continuation_lines
+            for word in sorted(line["words"], key=lambda item: item["left"])
+        ]
+        continuation_text = normalize_text(" ".join(word["text"] for word in continuation_words))
+        date_match = re.search(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", continuation_text)
+        description = continuation_text
+        if date_match:
+            description = normalize_text(continuation_text[date_match.end() :])
+        description = clean_description(description)
+
+        prefix = text[: kw_match.start()]
+        no_match = re.search(r"(?:^|\s)(\d{1,3})(?:\s|$)", prefix)
+        suffix_before_amount = text[kw_match.end() : amount_match.start()]
+        account_matches = list(re.finditer(r"\b(5\d{5})\b", suffix_before_amount))
+        account = account_matches[-1].group(1) if account_matches else ""
+        npwp_matches = list(re.finditer(r"\b\d{14,16}\b", suffix_before_amount))
+        npwp = npwp_matches[-1].group(0) if npwp_matches else ""
+        receiver_end = npwp_matches[-1].start() if npwp_matches else (
+            account_matches[-1].start() if account_matches else len(suffix_before_amount)
+        )
+        receiver = clean_description(suffix_before_amount[:receiver_end])[:200]
+        all_words = line_words + continuation_words
+        confidence_values = [word["confidence"] for word in all_words if word["confidence"] >= 0]
+        confidence = round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
+        no_bukti = _normalize_ocr_kw_number(kw_match.group(0))
+        amount = parse_decimal(amount_match.group(0))
+        review_fields = []
+        if not no_bukti:
+            review_fields.append("no_bukti_invalid")
+        if not account:
+            review_fields.append("akun_invalid")
+        if amount <= 0:
+            review_fields.append("jumlah_invalid")
+        if not description:
+            review_fields.append("deskripsi_missing")
+        if confidence and confidence < confidence_threshold:
+            review_fields.append("confidence_low")
+        top = min((word["top"] for word in all_words), default=0)
+        item = {
+            "no_urut": int(no_match.group(1)) if no_match else len(items) + 1,
+            "no_bukti": no_bukti,
+            "tanggal_bukti": date_match.group(0) if date_match else "",
+            "penerima": receiver,
+            "npwp": npwp,
+            "akun": account,
+            "jumlah": amount,
+            "keperluan": description[:500],
+            "source_page": page_number,
+            "source_row_id": f"page:{page_number}:y:{top}",
+            "bounding_box": [
+                min((word["left"] for word in all_words), default=0),
+                top,
+                max((word["right"] for word in all_words), default=0),
+                max((word["bottom"] for word in all_words), default=0),
+            ],
+            "method": "tsv_row_anchor",
+            "confidence": confidence,
+            "raw_fields": {"row": text, "continuation": continuation_text},
+            "needs_review": bool(review_fields),
+            "review_fields": review_fields,
+            "status": "Perlu Review" if review_fields else "Terbaca",
+        }
         items.append(item)
     return items
 
@@ -3148,8 +3282,8 @@ def extract_drpp_date(text):
     return parse_date(match.group(1)) if match else None
 
 
-def parse_drpp_pdf(file_path, ocr=False):
-    extracted = extract_pdf_text(file_path, ocr=ocr)
+def parse_drpp_pdf(file_path, ocr=False, extracted=None):
+    extracted = extracted or extract_pdf_text(file_path, ocr=ocr)
     page_details = annotate_page_details(extracted.get("page_details", []))
     if not page_details:
         page_details = annotate_page_details([
@@ -3198,6 +3332,11 @@ def parse_drpp_pdf(file_path, ocr=False):
     for page in item_pages:
         page_words = page.get("tsv_words") or page.get("words") or page.get("ocr_words") or []
         page_items = parse_drpp_items_from_tsv(page_words, page_number=page.get("page_number") or page.get("page") or 1)
+        if not page_items and page_words:
+            page_items = parse_drpp_items_from_tsv_rows(
+                page_words,
+                page_number=page.get("page_number") or page.get("page") or 1,
+            )
         items.extend(page_items)
         ocr_trace.append({
             "file": os.path.basename(file_path),
@@ -3208,7 +3347,7 @@ def parse_drpp_pdf(file_path, ocr=False):
             "ocr_called": page.get("engine") == "tesseract" or page.get("method") == "tesseract",
             "rotation": next((word.get("rotation", 0) for word in page_words if isinstance(word, dict)), 0),
             "tsv_word_count": len(page_words),
-            "parser_method": "tsv_cell" if page_words else "",
+            "parser_method": (page_items[0].get("method") if page_items else "tsv_cell") if page_words else "",
             "parsed_item_count": len(page_items),
             "total": sum((item.get("jumlah") or Decimal("0") for item in page_items), Decimal("0")),
             "fallback": "",
@@ -3239,6 +3378,12 @@ def parse_drpp_pdf(file_path, ocr=False):
                 pembebanan = pembebanan_by_amount.get((corrected_akun, amount))
         if pembebanan:
             item["pembebanan"] = pembebanan
+            if re.fullmatch(r"5\d{5}", normalize_text(item.get("akun"))):
+                item["review_fields"] = [
+                    field for field in (item.get("review_fields") or []) if field != "akun_invalid"
+                ]
+                item["needs_review"] = bool(item["review_fields"])
+                item["status"] = "Perlu Review" if item["needs_review"] else "Terbaca"
     allow_legacy_item_fallback = not tsv_attempted
     if not items and allow_legacy_item_fallback:
         for idx, kw in enumerate(kw_numbers[:100], start=1):

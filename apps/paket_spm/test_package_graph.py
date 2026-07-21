@@ -78,12 +78,13 @@ class PackageGraphParserTests(SimpleTestCase):
         ]
         with patch("apps.core.package_graph.extract_pdf_text", return_value=self.extracted(pages)), patch(
             "apps.core.package_graph.parse_spm_pdf", return_value=self.spm(spm_rows)
-        ), patch("apps.core.package_graph.parse_drpp_pdf", return_value=self.drpp(drpp_rows)):
+        ) as parse_spm, patch("apps.core.package_graph.parse_drpp_pdf", return_value=self.drpp(drpp_rows)):
             parsed = parse_uploaded_package("dummy.pdf", "scan-baru.pdf", kind="pdf")
 
         self.assertEqual(parsed["transaction_source"], "DRPP")
         self.assertEqual(len(parsed["kw_items"]), 2)
         self.assertEqual(parsed["validation"]["status"], "VALID")
+        self.assertIs(parse_spm.call_args.kwargs.get("parse_details"), False)
 
     def test_total_mismatch_preserves_rows_and_marks_review(self):
         rows = [{"akun": "521111", "jumlah": Decimal("200"), "pembebanan": "2886.EBA.994.001.521111", "keperluan": "Belanja operasional"}]

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageOps, ImageFilter
 
-OCR_CACHE_VERSION = "detail-tsv-v3"
+OCR_CACHE_VERSION = "detail-tsv-v4-paddle-v3"
 
 
 # ─── Klasifikasi halaman dokumen ─────────────────────────────────────────────
@@ -154,19 +154,54 @@ class EngineResult:
 
 
 def classify_page_types(text):
-    """Return multi-label evidence ordered by most specific page type."""
-    upper = (text or "").upper()
+    """Return tipe halaman dari kombinasi anchor, bukan satu token umum."""
+    upper = " ".join((text or "").upper().split())
     found = []
-    for page_type, keywords in PAGE_CLASS_KEYWORDS.items():
-        score = sum(1 for kw in keywords if kw in upper)
-        if score > 0:
-            found.append(page_type)
-    if "DETAIL_SPP_SPM_SP2D" in found and "SP2D" not in found:
+    detail_anchor_count = sum(
+        anchor in upper
+        for anchor in ("SPP/SPM/SP2D", "NO SP2D", "KODE COA", "PENGELUARAN", "POTONGAN")
+    )
+    is_detail = "DETAIL PENGELUARAN DAN POTONGAN" in upper or detail_anchor_count >= 4
+    is_spm = "SURAT PERINTAH MEMBAYAR" in upper
+    is_spp = "SURAT PERMINTAAN PEMBAYARAN" in upper
+    drpp_table_anchor_count = sum(
+        anchor in upper for anchor in ("NO BUKTI", "NAMA PENERIMA", "PENERIMA", "NPWP", "AKUN", "JUMLAH KOTOR")
+    )
+    is_drpp = (
+        "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN" in upper
+        or bool(re.search(r"(?:NOMOR\s+DRPP|\b\d{3,6}/DRPP/)", upper))
+        or ("BUKTI PENGELUARAN" in upper and drpp_table_anchor_count >= 3)
+    )
+    is_ssp = "SURAT SETORAN PAJAK" in upper or sum(
+        anchor in upper for anchor in ("KODE AKUN PAJAK", "KODE JENIS SETORAN", "MASA PAJAK")
+    ) >= 2
+    is_coa = not is_ssp and (
+        "LAMPIRAN DAFTAR RINCIAN" in upper
+        or "DETAIL COA" in upper
+        or (
+            bool(re.search(r"\b\d{4,6}[\s.,]+\d{3}[\s.,]+5\d{5}[\s.,]", upper))
+            and any(anchor in upper for anchor in ("COA", "PEMBEBANAN", "KODE AKUN"))
+        )
+    )
+    kw_pattern = bool(re.search(r"\b\d{3,6}/KW/", upper))
+
+    if is_detail:
+        found.extend(["DETAIL_SPP_SPM_SP2D", "SP2D"])
+    if is_spm:
+        found.append("SPM")
+    if is_spp:
+        found.append("SPP")
+    if is_coa:
+        found.append("LAMPIRAN_COA")
+    if is_drpp:
+        found.append("DRPP")
+    if kw_pattern or ("KUITANSI" in upper and "TERBILANG" in upper):
+        found.append("KW")
+    if is_ssp:
+        found.append("SSP")
+    if "DAFTAR SP2D" in upper or "NOMOR SP2D" in upper or re.search(r"\b2\d{14}\b", upper):
         found.append("SP2D")
-    if "SSP" in found and "LAMPIRAN_COA" in found and "LAMPIRAN DAFTAR RINCIAN" not in upper:
-        found.remove("LAMPIRAN_COA")
-    if "SSP" in found and "KW" in found and not re.search(r"\b\d{3,6}/KW/", upper):
-        found.remove("KW")
+
     ordered = [page_type for page_type in PAGE_TYPE_PRIORITY if page_type in found]
     return ordered or ["UNKNOWN"]
 
@@ -193,7 +228,20 @@ def ocr_cache_key(file_path):
         with open(file_path, "rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
-        raw = f"{OCR_CACHE_VERSION}|content:{digest.hexdigest()}|{','.join(engine_order())}"
+        settings_fingerprint = "|".join(
+            [
+                f"engines:{','.join(engine_order())}",
+                f"force_image:{int(parse_bool_env('OCR_FORCE_IMAGE_FOR_SCANNED_DOCS', False))}",
+                f"paddle:{int(parse_bool_env('OCR_ENABLE_PADDLEOCR', False))}",
+                f"paddle_lang:{os.getenv('OCR_PADDLEOCR_LANG', 'en')}",
+                f"paddle_orientation:{int(parse_bool_env('OCR_PADDLEOCR_DOC_ORIENTATION', True))}",
+                f"paddle_textline:{int(parse_bool_env('OCR_PADDLEOCR_TEXTLINE_ORIENTATION', True))}",
+                f"auto_rotate:{int(parse_bool_env('OCR_AUTO_ROTATE', True))}",
+                f"classify_dpi:{os.getenv('OCR_CLASSIFY_DPI', '150')}",
+                f"threshold:{int(parse_bool_env('OCR_ENABLE_THRESHOLD', True))}",
+            ]
+        )
+        raw = f"{OCR_CACHE_VERSION}|content:{digest.hexdigest()}|{settings_fingerprint}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
     except OSError:
         return ""
@@ -214,6 +262,13 @@ def load_ocr_cache(file_path):
     try:
         with open(path, "r", encoding="utf-8") as handle:
             cached = json.load(handle)
+        cached_text = cached.get("combined_text") or "\n".join(
+            page.get("text") or page.get("extracted_text") or ""
+            for page in (cached.get("page_details") or [])
+        )
+        if not normalize_cache_text(cached_text):
+            ocr_log("cache OCR kosong/gagal diabaikan agar engine boleh mencoba ulang.")
+            return None
         cached.setdefault("warnings", []).append("Hasil OCR diambil dari cache file aktif.")
         for page in cached.get("page_details") or []:
             page["cache_hit"] = True
@@ -227,12 +282,23 @@ def save_ocr_cache(file_path, result):
     path = ocr_cache_path(file_path)
     if not path:
         return
+    result_text = (result or {}).get("combined_text") or "\n".join(
+        page.get("text") or page.get("extracted_text") or ""
+        for page in ((result or {}).get("page_details") or [])
+    )
+    if not normalize_cache_text(result_text):
+        ocr_log("hasil OCR kosong/gagal tidak disimpan ke cache.")
+        return
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(result, handle, ensure_ascii=False, default=str)
     except Exception as exc:
         ocr_log(f"cache OCR tidak bisa disimpan: {exc}")
+
+
+def normalize_cache_text(value):
+    return " ".join(str(value or "").split())
 
 
 def pdf_page_count(file_path):
@@ -661,6 +727,104 @@ def extract_tesseract(file_path, images=None, high_res_ocr_called=False):
     return EngineResult("tesseract", pages, warnings)
 
 
+def _paddle_payload(value):
+    """Normalisasi objek result PaddleOCR 3.x menjadi dictionary biasa."""
+    for attribute in ("json", "to_dict"):
+        candidate = getattr(value, attribute, None)
+        if candidate is None:
+            continue
+        try:
+            candidate = candidate() if callable(candidate) else candidate
+        except Exception:
+            continue
+        if isinstance(candidate, str):
+            try:
+                candidate = json.loads(candidate)
+            except Exception:
+                continue
+        if isinstance(candidate, dict):
+            value = candidate
+            break
+    if not isinstance(value, dict):
+        return {}
+    for key in ("res", "result", "ocr_res"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            return nested
+    return value
+
+
+def _paddle_box(word, polygon, confidence):
+    points = polygon or []
+    try:
+        xs = [float(point[0]) for point in points]
+        ys = [float(point[1]) for point in points]
+    except (TypeError, ValueError, IndexError):
+        xs = ys = []
+    left = int(min(xs)) if xs else 0
+    top = int(min(ys)) if ys else 0
+    right = int(max(xs)) if xs else left
+    bottom = int(max(ys)) if ys else top
+    return {
+        "text": str(word or "").strip(),
+        "confidence": confidence,
+        "left": left,
+        "top": top,
+        "width": max(0, right - left),
+        "height": max(0, bottom - top),
+        "page": 0,
+        "rotation": 0,
+    }
+
+
+def _parse_paddle_v3_result(result):
+    lines = []
+    confidences = []
+    words = []
+    for item in result or []:
+        payload = _paddle_payload(item)
+        texts = payload.get("rec_texts") or payload.get("texts") or []
+        scores = payload.get("rec_scores") or payload.get("scores") or []
+        polygons = payload.get("rec_polys") or payload.get("dt_polys") or payload.get("polys") or []
+        for index, text in enumerate(texts):
+            clean = str(text or "").strip()
+            if not clean:
+                continue
+            try:
+                score = float(scores[index])
+            except (TypeError, ValueError, IndexError):
+                score = 0.0
+            confidence = score * 100 if 0 <= score <= 1 else score
+            polygon = polygons[index] if index < len(polygons) else []
+            lines.append(clean)
+            if confidence >= 0:
+                confidences.append(confidence)
+            words.append(_paddle_box(clean, polygon, confidence))
+    return lines, confidences, words
+
+
+def _parse_paddle_v2_result(result):
+    lines = []
+    confidences = []
+    words = []
+    for block in result or []:
+        for row in block or []:
+            if not isinstance(row, (list, tuple)) or len(row) < 2 or not row[1]:
+                continue
+            clean = str(row[1][0] or "").strip()
+            if not clean:
+                continue
+            try:
+                score = float(row[1][1])
+            except (TypeError, ValueError, IndexError):
+                score = 0.0
+            confidence = score * 100 if 0 <= score <= 1 else score
+            lines.append(clean)
+            confidences.append(confidence)
+            words.append(_paddle_box(clean, row[0] if row else [], confidence))
+    return lines, confidences, words
+
+
 def extract_paddleocr(file_path, images=None):
     if not parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
         return EngineResult("paddleocr", [], ["PaddleOCR dilewati karena OCR_ENABLE_PADDLEOCR=false."])
@@ -668,7 +832,28 @@ def extract_paddleocr(file_path, images=None):
         paddleocr_module = optional_import("paddleocr")
         if not paddleocr_module:
             return EngineResult("paddleocr", [], ["PaddleOCR belum terpasang."])
-        ocr = paddleocr_module.PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+        version = str(getattr(paddleocr_module, "__version__", "3"))
+        try:
+            major_version = int(version.split(".", 1)[0])
+        except (TypeError, ValueError):
+            major_version = 3
+        if major_version >= 3:
+            options = {
+                "lang": os.getenv("OCR_PADDLEOCR_LANG", "en"),
+                "use_doc_orientation_classify": parse_bool_env("OCR_PADDLEOCR_DOC_ORIENTATION", True),
+                "use_doc_unwarping": parse_bool_env("OCR_PADDLEOCR_DOC_UNWARPING", False),
+                "use_textline_orientation": parse_bool_env("OCR_PADDLEOCR_TEXTLINE_ORIENTATION", True),
+            }
+            device = os.getenv("OCR_PADDLEOCR_DEVICE", "").strip()
+            if device:
+                options["device"] = device
+            ocr = paddleocr_module.PaddleOCR(**options)
+        else:
+            ocr = paddleocr_module.PaddleOCR(
+                use_angle_cls=True,
+                lang=os.getenv("OCR_PADDLEOCR_LANG", "en"),
+                show_log=False,
+            )
         if images is None:
             images = render_pdf_pages(file_path)
     except Exception as exc:
@@ -677,20 +862,20 @@ def extract_paddleocr(file_path, images=None):
     pages = []
     for index, image in enumerate(images, start=1):
         try:
-            result = ocr.ocr(preprocess_image(image), cls=True)
-            lines = []
-            confidences = []
-            for block in result or []:
-                for row in block or []:
-                    if len(row) >= 2 and row[1]:
-                        lines.append(str(row[1][0]))
-                        if len(row[1]) > 1:
-                            confidences.append(float(row[1][1]) * 100)
+            processed = preprocess_image(image).convert("RGB")
+            numpy = optional_import("numpy")
+            paddle_input = numpy.asarray(processed) if numpy else processed
+            if major_version >= 3 and hasattr(ocr, "predict"):
+                result = ocr.predict(paddle_input)
+                lines, confidences, tsv_words = _parse_paddle_v3_result(result)
+            else:
+                result = ocr.ocr(paddle_input, cls=True)
+                lines, confidences, tsv_words = _parse_paddle_v2_result(result)
             text = "\n".join(lines)
             confidence = round(sum(confidences) / len(confidences), 2) if confidences else 0.0
             page_class = classify_page(text)
             pages.append(OCRPage(index, "paddleocr", text, "parsed_ocr" if text.strip() else "empty",
-                                 confidence, [], page_class))
+                                 confidence, [], page_class, tsv_words))
         except Exception as exc:
             pages.append(OCRPage(index, "paddleocr", "", "failed", 0.0, [f"PaddleOCR halaman {index} gagal: {exc}"], ""))
     return EngineResult("paddleocr", pages, [])
