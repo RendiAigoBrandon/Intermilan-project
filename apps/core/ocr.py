@@ -218,6 +218,39 @@ def optional_import(module_name):
         return None
 
 
+# ─── Singleton cache untuk PaddleOCR model ────────────────────────────────────
+# PaddleOCR v3.x memerlukan waktu ~1-2 menit untuk load model pertama kali.
+# Cache di level modul memastikan model hanya dimuat sekali per proses Django.
+_PADDLE_OCR_INSTANCE = None
+_PADDLE_OCR_LOCK = None
+
+
+def _get_paddle_lock():
+    global _PADDLE_OCR_LOCK
+    if _PADDLE_OCR_LOCK is None:
+        import threading
+        _PADDLE_OCR_LOCK = threading.Lock()
+    return _PADDLE_OCR_LOCK
+
+
+def _get_paddle_ocr_instance(paddleocr_module, major_version, options):
+    """Return singleton PaddleOCR instance. Load once, reuse forever."""
+    global _PADDLE_OCR_INSTANCE
+    if _PADDLE_OCR_INSTANCE is not None:
+        return _PADDLE_OCR_INSTANCE
+    with _get_paddle_lock():
+        if _PADDLE_OCR_INSTANCE is None:
+            if major_version >= 3:
+                _PADDLE_OCR_INSTANCE = paddleocr_module.PaddleOCR(**options)
+            else:
+                _PADDLE_OCR_INSTANCE = paddleocr_module.PaddleOCR(
+                    use_angle_cls=True,
+                    lang=options.get("lang", "en"),
+                    show_log=False,
+                )
+    return _PADDLE_OCR_INSTANCE
+
+
 def ocr_log(message):
     print(f"[INTERMILAN OCR] {message}", flush=True)
 
@@ -778,14 +811,26 @@ def _paddle_box(word, polygon, confidence):
 
 
 def _parse_paddle_v3_result(result):
+    """Parse hasil predict() dari PaddleOCR 3.x.
+
+    PaddleOCR 3.7.x mengembalikan list of dict langsung (bukan nested).
+    Setiap item dict berisi 'rec_texts', 'rec_scores', 'rec_polys'.
+    """
     lines = []
     confidences = []
     words = []
     for item in result or []:
-        payload = _paddle_payload(item)
+        # item bisa berupa dict langsung (v3.7+) atau object dengan method json/to_dict
+        if isinstance(item, dict):
+            payload = item
+        else:
+            payload = _paddle_payload(item)
         texts = payload.get("rec_texts") or payload.get("texts") or []
         scores = payload.get("rec_scores") or payload.get("scores") or []
         polygons = payload.get("rec_polys") or payload.get("dt_polys") or payload.get("polys") or []
+        if not texts and hasattr(item, '__iter__') and not isinstance(item, (str, bytes, dict)):
+            # fallback: mungkin list of (polygon, (text, score))
+            return _parse_paddle_v2_result([list(result or [])])
         for index, text in enumerate(texts):
             clean = str(text or "").strip()
             if not clean:
@@ -795,7 +840,10 @@ def _parse_paddle_v3_result(result):
             except (TypeError, ValueError, IndexError):
                 score = 0.0
             confidence = score * 100 if 0 <= score <= 1 else score
-            polygon = polygons[index] if index < len(polygons) else []
+            try:
+                polygon = polygons[index].tolist() if hasattr(polygons[index], 'tolist') else polygons[index]
+            except (IndexError, TypeError):
+                polygon = []
             lines.append(clean)
             if confidence >= 0:
                 confidences.append(confidence)
@@ -829,6 +877,11 @@ def extract_paddleocr(file_path, images=None):
     if not parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
         return EngineResult("paddleocr", [], ["PaddleOCR dilewati karena OCR_ENABLE_PADDLEOCR=false."])
     try:
+        # Disable oneDNN/MKLDNN SEBELUM import paddleocr untuk menghindari
+        # bug NotImplementedError di PaddlePaddle 3.3.x pada Windows CPU.
+        # Harus dilakukan sebelum modul paddlepaddle di-load.
+        os.environ.setdefault("FLAGS_use_mkldnn", "0")
+        os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
         paddleocr_module = optional_import("paddleocr")
         if not paddleocr_module:
             return EngineResult("paddleocr", [], ["PaddleOCR belum terpasang."])
@@ -840,20 +893,19 @@ def extract_paddleocr(file_path, images=None):
         if major_version >= 3:
             options = {
                 "lang": os.getenv("OCR_PADDLEOCR_LANG", "en"),
-                "use_doc_orientation_classify": parse_bool_env("OCR_PADDLEOCR_DOC_ORIENTATION", True),
+                # Nonaktifkan model orientasi dokumen untuk mempercepat loading
+                # (default=True menyebabkan 4 model dimuat; False hanya 2 model)
+                "use_doc_orientation_classify": parse_bool_env("OCR_PADDLEOCR_DOC_ORIENTATION", False),
                 "use_doc_unwarping": parse_bool_env("OCR_PADDLEOCR_DOC_UNWARPING", False),
-                "use_textline_orientation": parse_bool_env("OCR_PADDLEOCR_TEXTLINE_ORIENTATION", True),
+                "use_textline_orientation": parse_bool_env("OCR_PADDLEOCR_TEXTLINE_ORIENTATION", False),
             }
             device = os.getenv("OCR_PADDLEOCR_DEVICE", "").strip()
             if device:
                 options["device"] = device
-            ocr = paddleocr_module.PaddleOCR(**options)
         else:
-            ocr = paddleocr_module.PaddleOCR(
-                use_angle_cls=True,
-                lang=os.getenv("OCR_PADDLEOCR_LANG", "en"),
-                show_log=False,
-            )
+            options = {"lang": os.getenv("OCR_PADDLEOCR_LANG", "en")}
+        # Gunakan singleton agar model tidak di-reload setiap request
+        ocr = _get_paddle_ocr_instance(paddleocr_module, major_version, options)
         if images is None:
             images = render_pdf_pages(file_path)
     except Exception as exc:
