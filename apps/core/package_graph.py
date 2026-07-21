@@ -310,8 +310,14 @@ def _file_summary(
     }
 
 
-def _parse_pdf_package(file_path: str, original_filename: str) -> Dict[str, Any]:
-    extracted = extract_pdf_text(file_path, ocr=True)
+def _parse_pdf_package(
+    file_path: str,
+    original_filename: str,
+    extracted: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    # Identity probe sudah melakukan OCR penuh pada PDF scan. Gunakan hasil yang
+    # sama agar satu upload tidak memindai semua halaman dua kali.
+    extracted = extracted or extract_pdf_text(file_path, ocr=True)
     page_details = extracted.get("page_details") or []
     graph = build_document_graph(page_details)
     graph_types = {
@@ -458,6 +464,7 @@ def parse_uploaded_package(
     original_filename: str = "",
     *,
     kind: str = "",
+    extracted: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Parse PDF atau ZIP dengan satu pintu masuk arsitektur document graph."""
     original_filename = original_filename or os.path.basename(file_path)
@@ -481,4 +488,4 @@ def parse_uploaded_package(
         parsed["ok"] = parsed["validation"]["status"] != "GAGAL"
         return parsed
 
-    return _parse_pdf_package(file_path, original_filename)
+    return _parse_pdf_package(file_path, original_filename, extracted=extracted)

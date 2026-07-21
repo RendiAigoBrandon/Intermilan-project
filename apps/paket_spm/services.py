@@ -76,17 +76,11 @@ def _year_from_text(text):
     return int(match.group(1)) if match else None
 
 
-def _unique_existing_dk_group(numbers, satker="", tahun=None):
-    """Temukan satu grup D_K yang tidak ambigu tanpa menebak isi transaksi.
-
-    Nomor dari filename boleh dipakai sebagai kunci pencarian existing D_K,
-    tetapi tidak pernah dipakai untuk membuat transaksi baru. Tanpa satker atau
-    tahun dari form, auto-link hanya aman bila seluruh kandidat mengarah ke satu
-    kombinasi nomor+satker dan paling banyak satu tahun bertanggal.
-    """
+def _existing_dk_groups(numbers, satker="", tahun=None):
+    """Kembalikan grup D_K untuk nomor yang terbukti berlabel di dokumen."""
     normalized_numbers = sorted({normalize_key(number) for number in numbers if normalize_key(number)})
     if not normalized_numbers:
-        return [], "", "", None, False
+        return {}
 
     nomor_query = Q()
     for number in normalized_numbers:
@@ -98,52 +92,118 @@ def _unique_existing_dk_group(numbers, satker="", tahun=None):
         query = query.filter(Q(tanggal_spm__year=tahun) | Q(tanggal_spm__isnull=True))
     rows = list(query.order_by("id"))
     if not rows:
-        return [], "", "", None, False
+        return {}
 
     groups = {}
     for row in rows:
-        key = (normalize_key(row.nomor_spm), normalize_key(row.satker_code))
+        row_year = row.tanggal_spm.year if row.tanggal_spm else None
+        key = (normalize_key(row.nomor_spm), normalize_key(row.satker_code), row_year)
         groups.setdefault(key, []).append(row)
-    if len(groups) != 1:
-        return [], "", "", None, True
-
-    (matched_number, matched_satker), matched_rows = next(iter(groups.items()))
-    known_years = {row.tanggal_spm.year for row in matched_rows if row.tanggal_spm}
-    if tahun:
-        known_years.discard(int(tahun))
-        if known_years:
-            return [], "", "", None, True
-        matched_year = int(tahun)
-    elif len(known_years) > 1:
-        return [], "", "", None, True
-    else:
-        matched_year = next(iter(known_years), None)
-    return matched_rows, matched_number, matched_satker, matched_year, False
+    return groups
 
 
-def _related_existing_numbers(number, satker="", tahun=None):
-    """Cari kemungkinan nomor cetak/nomor D_K dengan digit dasar yang sama.
+def _money_close(left, right, tolerance=Decimal("1")):
+    return left > 0 and right > 0 and abs(left - right) <= tolerance
 
-    Hasil fungsi ini hanya menjadi pemicu OCR identitas. Nomor terkait tidak
-    pernah langsung dipercaya atau dimasukkan sebagai kandidat tanpa bukti dari
-    isi PDF (misalnya SPP yang mencetak suffix berbeda dari badan SPM).
+
+def _group_total_candidates(rows, field):
+    """Hitung kandidat total tanpa menggandakan baris ringkasan D_K lama.
+
+    Beberapa impor lama menyimpan satu baris ringkasan SPM bersama seluruh
+    rincian transaksi. Raw sum pada grup tersebut menjadi dua kali total. Baris
+    ringkasan hanya diakui bila satu nilainya sama dengan jumlah sedikitnya dua
+    baris lain, atau bila baris tanpa identitas KW/DRPP/pembebanan sama dengan
+    jumlah baris rincian. Semua baris tetap dipertahankan sebagai D_K existing.
     """
-    normalized = normalize_key(number)
-    match = re.fullmatch(r"(\d{3,})([A-Z])", normalized)
-    if not match:
-        return []
-    query = TransactionDetail.objects.filter(nomor_spm__istartswith=match.group(1))
-    if satker:
-        query = query.filter(satker_code=satker)
-    if tahun:
-        query = query.filter(Q(tanggal_spm__year=tahun) | Q(tanggal_spm__isnull=True))
-    return sorted(
-        {
-            normalize_key(value)
-            for value in query.values_list("nomor_spm", flat=True).distinct()[:20]
-            if len(normalize_key(value)) == len(normalized) and normalize_key(value) != normalized
-        }
-    )
+    positive = [money_value(getattr(row, field, 0)) for row in rows if money_value(getattr(row, field, 0)) > 0]
+    if not positive:
+        return {Decimal("0")}
+    raw_total = sum(positive, Decimal("0"))
+    candidates = {raw_total}
+    if len(positive) >= 3:
+        for index, amount in enumerate(positive):
+            remainder = raw_total - amount
+            if _money_close(amount, remainder):
+                candidates.add(amount)
+
+    detail_values = [
+        money_value(getattr(row, field, 0))
+        for row in rows
+        if any(
+            clean_optional(getattr(row, marker, ""))
+            for marker in ("no_kuitansi", "no_drpp", "pembebanan")
+        )
+        and money_value(getattr(row, field, 0)) > 0
+    ]
+    summary_values = [
+        money_value(getattr(row, field, 0))
+        for row in rows
+        if not any(
+            clean_optional(getattr(row, marker, ""))
+            for marker in ("no_kuitansi", "no_drpp", "pembebanan")
+        )
+        and money_value(getattr(row, field, 0)) > 0
+    ]
+    if detail_values and summary_values:
+        detail_total = sum(detail_values, Decimal("0"))
+        if any(_money_close(summary, detail_total) for summary in summary_values):
+            candidates.add(detail_total)
+    return candidates
+
+
+def _document_total_candidates(identity):
+    bruto = money_value(identity.get("jumlah_pengeluaran"))
+    potongan = money_value(identity.get("jumlah_potongan"))
+    netto = money_value(identity.get("total_pembayaran"))
+    if bruto <= 0 and netto > 0 and potongan > 0:
+        bruto = netto + potongan
+    return {
+        "bruto": {bruto} if bruto > 0 else set(),
+        "netto": {netto} if netto > 0 else set(),
+    }
+
+
+def _group_matches_document_total(rows, expected):
+    checks = []
+    if expected.get("bruto"):
+        checks.append(
+            any(
+                _money_close(actual, wanted)
+                for actual in _group_total_candidates(rows, "nilai_bruto")
+                for wanted in expected["bruto"]
+            )
+        )
+    if expected.get("netto"):
+        checks.append(
+            any(
+                _money_close(actual, wanted)
+                for actual in _group_total_candidates(rows, "nilai_netto")
+                for wanted in expected["netto"]
+            )
+        )
+    return not checks or all(checks)
+
+
+def _select_existing_dk_group(numbers, identity, satker="", tahun=None):
+    groups = _existing_dk_groups(numbers, satker=satker, tahun=tahun)
+    if not groups:
+        return [], "", "", None, False, False
+
+    expected = _document_total_candidates(identity)
+    total_available = bool(expected["bruto"] or expected["netto"])
+    matching = {
+        key: rows
+        for key, rows in groups.items()
+        if _group_matches_document_total(rows, expected)
+    }
+    if total_available and not matching:
+        return [], "", "", None, len(groups) > 1, True
+    eligible = matching if total_available else groups
+    if len(eligible) != 1:
+        return [], "", "", None, True, False
+
+    (matched_number, matched_satker, matched_year), matched_rows = next(iter(eligible.items()))
+    return matched_rows, matched_number, matched_satker, matched_year or tahun, False, False
 
 
 def probe_package_identity(file_path, original_filename, input_satker="", input_tahun=None, kind=""):
@@ -152,9 +212,11 @@ def probe_package_identity(file_path, original_filename, input_satker="", input_
     warnings = []
     document_types = set()
     filename_number = guess_number_from_filename(original_filename or file_path, "SPM")
-    _add_probe_candidate(candidates, filename_number, "filename", 55)
+    _add_probe_candidate(candidates, filename_number, "filename_hint", 0)
 
     native_text = ""
+    extracted_for_reuse = None
+    identity = {}
     if kind == "zip" or str(original_filename).lower().endswith(".zip"):
         try:
             with zipfile.ZipFile(file_path) as archive:
@@ -168,14 +230,15 @@ def probe_package_identity(file_path, original_filename, input_satker="", input_
     elif str(original_filename).lower().endswith(".pdf"):
         try:
             extracted = extract_pdf_text(file_path, ocr=False)
+            extracted_for_reuse = extracted
             page_details = extracted.get("page_details") or [
                 {"text": text, "extracted_text": text, "page_number": index}
                 for index, text in enumerate(extracted.get("pages", [])[:2], start=1)
             ]
-            page_details = page_details[:2]
             native_text = "\n".join((page.get("text") or page.get("extracted_text") or "") for page in page_details)
             document_types.add(classify_document(original_filename, native_text))
             per_page = parse_spm_number_from_pages(page_details)
+            identity = per_page
             _add_probe_candidate(candidates, per_page.get("no_spm"), "header_spm_native", 85)
             _add_probe_candidate(candidates, per_page.get("no_spp"), "header_spp_native", 80)
         except Exception as exc:
@@ -187,30 +250,31 @@ def probe_package_identity(file_path, original_filename, input_satker="", input_
     document_types.discard("UNKNOWN")
     tahun = int(input_tahun) if str(input_tahun or "").isdigit() else _year_from_text(native_text)
     satker = str(input_satker or "").strip()
-    numbers = [item["number"] for item in candidates]
-    distinct_numbers = sorted(set(numbers))
-    exact_matches, matched_number, matched_satker, matched_year, ambiguous_existing = _unique_existing_dk_group(
-        distinct_numbers,
-        satker=satker,
-        tahun=tahun,
-    )
+    evidence_sources = {"header_spm_native", "header_spp_native", "header_spm_ocr", "header_spp_ocr"}
+    evidence_numbers = sorted({
+        item["number"] for item in candidates if item.get("source") in evidence_sources
+    })
+    exact_matches = []
+    matched_number = ""
+    matched_satker = ""
+    matched_year = None
+    ambiguous_existing = False
+    total_mismatch = False
     used_identity_ocr = False
-    related_numbers = _related_existing_numbers(filename_number, satker=satker, tahun=tahun)
     if (
-        not exact_matches
-        and not ambiguous_existing
-        and related_numbers
+        not evidence_numbers
         and str(original_filename).lower().endswith(".pdf")
     ):
-        # Ada kemungkinan nomor cetak dan nomor D_K berbeda suffix. Buktikan
-        # lewat isi PDF; jangan pernah menukar A/T hanya dari nama berkas.
+        # PDF scan wajib dibaca sebelum D_K boleh dipilih. Filename hanya petunjuk.
         try:
             identity_ocr = extract_pdf_text(file_path, ocr=True)
+            extracted_for_reuse = identity_ocr
             ocr_pages = identity_ocr.get("page_details") or [
                 {"text": text, "extracted_text": text, "page_number": index}
                 for index, text in enumerate(identity_ocr.get("pages", []), start=1)
             ]
             per_page_ocr = parse_spm_number_from_pages(ocr_pages)
+            identity = per_page_ocr
             _add_probe_candidate(candidates, per_page_ocr.get("no_spm"), "header_spm_ocr", 90)
             _add_probe_candidate(candidates, per_page_ocr.get("no_spp"), "header_spp_ocr", 90)
             ocr_text = "\n".join(
@@ -218,27 +282,38 @@ def probe_package_identity(file_path, original_filename, input_satker="", input_
             )
             if not tahun:
                 tahun = _year_from_text(ocr_text)
-            distinct_numbers = sorted({item["number"] for item in candidates})
-            exact_matches, matched_number, matched_satker, matched_year, ambiguous_existing = _unique_existing_dk_group(
-                distinct_numbers,
-                satker=satker,
-                tahun=tahun,
-            )
+            evidence_numbers = sorted({
+                item["number"] for item in candidates if item.get("source") in evidence_sources
+            })
             used_identity_ocr = True
         except Exception as exc:
             warnings.append(f"OCR probe identitas gagal: {exc}")
+    if evidence_numbers:
+        exact_matches, matched_number, matched_satker, matched_year, ambiguous_existing, total_mismatch = _select_existing_dk_group(
+            evidence_numbers,
+            identity,
+            satker=satker,
+            tahun=tahun,
+        )
     if exact_matches:
         satker = matched_satker
         tahun = matched_year or tahun
-    conflicting_numbers = len(distinct_numbers) > 1
+    conflicting_numbers = len(evidence_numbers) > 1
     needs_review = ambiguous_existing or (conflicting_numbers and not matched_number)
-    if conflicting_numbers:
+    if conflicting_numbers and not matched_number:
         warnings.append("Identity probe menemukan beberapa kandidat nomor SPM/SPP; perlu review sebelum kait otomatis.")
+    elif conflicting_numbers and matched_number:
+        warnings.append(
+            f"Nomor badan SPM dan SPP berbeda; total dokumen mengonfirmasi grup D_K {matched_number}."
+        )
     if ambiguous_existing:
         warnings.append(
             "Nomor dokumen cocok dengan lebih dari satu grup D_K; satker/tahun harus dipastikan sebelum kait otomatis."
         )
-    if exact_matches and conflicting_numbers and matched_number not in distinct_numbers:
+    if total_mismatch:
+        needs_review = True
+        warnings.append("Total D_K tidak cocok dengan total yang terbaca pada dokumen; kait otomatis dibatalkan.")
+    if exact_matches and conflicting_numbers and matched_number not in evidence_numbers:
         needs_review = True
     first_dated = next((row for row in exact_matches if row.tanggal_spm), None)
     first_typed = next((row for row in exact_matches if row.jenis_spm), None)
@@ -250,14 +325,16 @@ def probe_package_identity(file_path, original_filename, input_satker="", input_
         "tahun": tahun,
         "matched_number": matched_number,
         "exact_transaction_ids": [item.id for item in exact_matches],
-        "matched_total_bruto": str(sum((item.nilai_bruto or Decimal("0") for item in exact_matches), Decimal("0"))),
-        "matched_total_netto": str(sum((item.nilai_netto or Decimal("0") for item in exact_matches), Decimal("0"))),
+        "matched_total_bruto": str(next(iter(sorted(_group_total_candidates(exact_matches, "nilai_bruto"))), Decimal("0"))),
+        "matched_total_netto": str(next(iter(sorted(_group_total_candidates(exact_matches, "nilai_netto"))), Decimal("0"))),
         "matched_tanggal_spm": first_dated.tanggal_spm.isoformat() if first_dated else "",
         "matched_jenis_spm": first_typed.jenis_spm if first_typed else "",
         "matched_bulan_sp2d": first_month.bulan_sp2d if first_month else None,
         "needs_review": needs_review,
+        "total_mismatch": total_mismatch,
         "warnings": warnings,
         "method": "identity_probe_ocr" if used_identity_ocr else "identity_probe_native",
+        "_extracted": extracted_for_reuse,
     }
 
 
@@ -281,9 +358,10 @@ def parsed_from_identity_probe(probe, original_filename):
         "nomor_spm_review_status": "Perlu Review" if probe.get("needs_review") else "OK",
         "nomor_spm_reason": "; ".join(probe.get("warnings") or []),
     }
+    public_probe = {key: value for key, value in probe.items() if key != "_extracted"}
     return {
         "ok": not probe.get("needs_review"),
-        "identity_probe": probe,
+        "identity_probe": public_probe,
         "files": [
             {
                 "file_name": original_filename,

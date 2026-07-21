@@ -81,6 +81,7 @@ def paket_spm_list(request):
             input_tahun=input_tahun,
             kind=kind,
         )
+        extracted_identity_ocr = identity_probe.pop("_extracted", None)
 
         try:
             # Hanya identitas yang pasti dan sudah memiliki transaksi D_K yang
@@ -94,6 +95,7 @@ def paket_spm_list(request):
                     file_path,
                     original_filename,
                     kind=kind,
+                    extracted=extracted_identity_ocr,
                 )
                 parsed["identity_probe"] = identity_probe
                 if identity_probe.get("warnings"):

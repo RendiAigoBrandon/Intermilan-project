@@ -1216,9 +1216,21 @@ class PaketSPMRegressionTests(TestCase):
         )
         self.client.login(username="operator", password="password")
         upload = SimpleUploadedFile("SPM NOMOR 00999A.pdf", b"%PDF-1.4\nprobe only\n", content_type="application/pdf")
+        native = {"pages": [], "page_details": []}
+        ocr = {
+            "pages": [],
+            "page_details": [{
+                "page_number": 1,
+                "text": (
+                    "SURAT PERINTAH MEMBAYAR Nomor SPM 00999A "
+                    "JUMLAH PENGELUARAN 3.000 TOTAL PEMBAYARAN 3.000"
+                ),
+                "page_types": ["SPM"],
+            }],
+        }
 
-        with patch("apps.paket_spm.views.parse_spm_pdf", side_effect=AssertionError("full SPM OCR/parser must not run")), \
-             patch("apps.paket_spm.views.parse_paket_spm_zip", side_effect=AssertionError("full ZIP parser must not run")), \
+        with patch("apps.paket_spm.services.extract_pdf_text", side_effect=[native, ocr]), \
+             patch("apps.paket_spm.package_views.parse_uploaded_package", side_effect=AssertionError("full parser must not run")), \
              patch("apps.paket_spm.views.build_transaction_rows_from_package", side_effect=AssertionError("row builder must not run for existing D_K")):
             response = self.client.post(
                 reverse("paket_spm:list"),
