@@ -670,7 +670,7 @@ def extract_uraian(text):
         # COA setelah header kolom "... - Uraian".
         r"(?:U?RAIAN|KEPERLUAN)(?:\s+PEMBAYARAN)?\s*[:;]?\s*"
         r"(Pembayaran\b.*?)(?="
-        r"\s+(?:Semua|JUMLAH\s+PENGELUARAN|Kebenaran\s+perhitungan)\b)",
+        r"\s+(?:Semua|JUMLAH\s+PENGELUARAN|Kebenaran\s+perhitungan|U?RAIAN|KEPERLUAN)\b)",
         text,
         re.IGNORECASE | re.DOTALL,
     ):

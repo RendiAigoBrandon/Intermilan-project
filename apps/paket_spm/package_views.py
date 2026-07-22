@@ -18,7 +18,7 @@ from django.shortcuts import redirect, render
 
 from apps.accounts.access import filter_by_satker, permission_context
 from apps.core.ocr import check_ocr_environment
-from apps.core.package_graph import parse_uploaded_package
+from apps.core.package_graph_v2 import parse_uploaded_package
 from apps.core.parsers import make_json_safe, parse_decimal, parse_month
 from apps.paket_spm.services import parsed_from_identity_probe, probe_package_identity
 
@@ -80,6 +80,7 @@ def paket_spm_list(request):
             input_satker=input_satker,
             input_tahun=input_tahun,
             kind=kind,
+            allow_ocr=False,
         )
         extracted_identity_ocr = identity_probe.pop("_extracted", None)
 
@@ -183,9 +184,15 @@ def paket_spm_list(request):
 
         request.session["paket_spm_preview_id"] = paket.id
         request.session["sp2d_raw_id"] = request.POST.get("sp2d_raw_id", "")
+        ocr_summary = parsed.get("ocr_summary") or {}
+
         print(
             f"[INTERMILAN PaketSPM Upload] document_graph saved PREVIEW id={paket.id} "
-            f"validation={(parsed.get('validation') or {}).get('status', '-')}",
+            f"validation={(parsed.get('validation') or {}).get('status', '-')} "
+            f"full_ocr_called={ocr_summary.get('full_ocr_called', False)} "
+            f"method={ocr_summary.get('selected_method') or ocr_summary.get('method') or '-'} "
+            f"text_length={ocr_summary.get('selected_text_length', 0)} "
+            f"rows={len(parsed.get('kw_items') or [])}",
             flush=True,
         )
         return redirect("paket_spm:preview")

@@ -206,7 +206,14 @@ def _select_existing_dk_group(numbers, identity, satker="", tahun=None):
     return matched_rows, matched_number, matched_satker, matched_year or tahun, False, False
 
 
-def probe_package_identity(file_path, original_filename, input_satker="", input_tahun=None, kind=""):
+def probe_package_identity(
+    file_path,
+    original_filename,
+    input_satker="",
+    input_tahun=None,
+    kind="",
+    allow_ocr=True,
+):
     """Lightweight identity probe before expensive OCR/parser work."""
     candidates = []
     warnings = []
@@ -262,7 +269,8 @@ def probe_package_identity(file_path, original_filename, input_satker="", input_
     total_mismatch = False
     used_identity_ocr = False
     if (
-        not evidence_numbers
+        allow_ocr
+        and not evidence_numbers
         and str(original_filename).lower().endswith(".pdf")
     ):
         # PDF scan wajib dibaca sebelum D_K boleh dipilih. Filename hanya petunjuk.

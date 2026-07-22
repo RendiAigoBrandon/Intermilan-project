@@ -2742,7 +2742,7 @@ class PaketSPMRegressionTests(TestCase):
         ]
         with zipfile.ZipFile(zip_path, "w") as archive:
             for name in pdf_names:
-                archive.writestr(name, b"%PDF-1.4\nscan fixture\n")
+                archive.writestr(name, f"%PDF-1.4\nscan fixture {name}\n".encode("utf-8"))
 
         drpp_numbers = iter(["00029", "00030", "00031", "00032"])
 

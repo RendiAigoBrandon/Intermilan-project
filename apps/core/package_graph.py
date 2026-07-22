@@ -81,6 +81,25 @@ def _unique(values: Iterable[str]) -> List[str]:
     return output
 
 
+def has_usable_extracted(extracted: Optional[Dict[str, Any]]) -> bool:
+    """Pastikan hasil reuse benar-benar memiliki teks, bukan dictionary gagal."""
+    if not extracted:
+        return False
+    if normalize_text(extracted.get("status")).lower() == "failed":
+        return False
+    text = normalize_text(extracted.get("combined_text") or "")
+    if not text:
+        text = normalize_text(" ".join(
+            str(page.get("text") or page.get("extracted_text") or "")
+            for page in (extracted.get("page_details") or [])
+            if isinstance(page, dict)
+        ))
+    if not text:
+        return False
+    minimum = int(os.getenv("OCR_REUSE_MIN_TEXT_LENGTH", "80"))
+    return len(text) >= minimum
+
+
 def _page_types(page: Dict[str, Any]) -> List[str]:
     text = page.get("text") or page.get("extracted_text") or ""
     types = classify_page_types(text)
@@ -317,8 +336,15 @@ def _parse_pdf_package(
 ) -> Dict[str, Any]:
     # Identity probe sudah melakukan OCR penuh pada PDF scan. Gunakan hasil yang
     # sama agar satu upload tidak memindai semua halaman dua kali.
-    extracted = extracted or extract_pdf_text(file_path, ocr=True)
+    extracted_reused = has_usable_extracted(extracted)
+    if not extracted_reused:
+        extracted = extract_pdf_text(file_path, ocr=True)
     page_details = extracted.get("page_details") or []
+    print(
+        f"[INTERMILAN DocumentGraph] extracted_reused={extracted_reused} "
+        f"status={extracted.get('status')} text_length={len(extracted.get('combined_text') or '')}",
+        flush=True,
+    )
     graph = build_document_graph(page_details)
     graph_types = {
         page_type

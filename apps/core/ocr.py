@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageOps, ImageFilter
 
-OCR_CACHE_VERSION = "detail-tsv-v4-paddle-v3"
+OCR_CACHE_VERSION = "detail-tsv-v5-document-graph-v2"
 
 
 # ─── Klasifikasi halaman dokumen ─────────────────────────────────────────────
@@ -873,7 +873,7 @@ def _parse_paddle_v2_result(result):
     return lines, confidences, words
 
 
-def extract_paddleocr(file_path, images=None):
+def extract_paddleocr(file_path, images=None, fallback_pages=None, page_indices_to_ocr=None):
     if not parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
         return EngineResult("paddleocr", [], ["PaddleOCR dilewati karena OCR_ENABLE_PADDLEOCR=false."])
     try:
@@ -909,10 +909,28 @@ def extract_paddleocr(file_path, images=None):
         if images is None:
             images = render_pdf_pages(file_path)
     except Exception as exc:
-        return EngineResult("paddleocr", [], [f"PaddleOCR gagal disiapkan: {exc}"])
+        warning = f"PaddleOCR gagal disiapkan: {exc}"
+        ocr_log(warning)
+        return EngineResult("paddleocr", [], [warning])
 
     pages = []
     for index, image in enumerate(images, start=1):
+        if page_indices_to_ocr is not None and (index - 1) not in page_indices_to_ocr:
+            if fallback_pages and (index - 1) < len(fallback_pages):
+                fallback_page = fallback_pages[index - 1]
+                pages.append(OCRPage(
+                    fallback_page.page_number,
+                    "paddleocr",
+                    fallback_page.extracted_text,
+                    fallback_page.status,
+                    fallback_page.confidence,
+                    fallback_page.warnings,
+                    fallback_page.page_classification,
+                    fallback_page.tsv_words
+                ))
+            else:
+                pages.append(OCRPage(index, "paddleocr", "", "empty", 0.0, [], ""))
+            continue
         try:
             processed = preprocess_image(image).convert("RGB")
             numpy = optional_import("numpy")
@@ -929,7 +947,9 @@ def extract_paddleocr(file_path, images=None):
             pages.append(OCRPage(index, "paddleocr", text, "parsed_ocr" if text.strip() else "empty",
                                  confidence, [], page_class, tsv_words))
         except Exception as exc:
-            pages.append(OCRPage(index, "paddleocr", "", "failed", 0.0, [f"PaddleOCR halaman {index} gagal: {exc}"], ""))
+            warning = f"PaddleOCR halaman {index} gagal: {exc}"
+            ocr_log(warning)
+            pages.append(OCRPage(index, "paddleocr", "", "failed", 0.0, [warning], ""))
     return EngineResult("paddleocr", pages, [])
 
 
@@ -952,6 +972,10 @@ def check_ocr_environment():
     tesseract_path = configure_tesseract(pytesseract)
     warnings = []
     tesseract_version = ""
+
+    virtualenv_active = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    if not virtualenv_active:
+        warnings.append("Server tidak berjalan dari virtual environment proyek. Jalankan runserver_venv.bat.")
 
     if not fitz:
         warnings.append("PyMuPDF belum terinstall, PDF scan tidak bisa dirender.")
@@ -976,6 +1000,7 @@ def check_ocr_environment():
 
     return {
         "python_executable": sys.executable,
+        "virtualenv_active": virtualenv_active,
         "pymupdf_available": bool(fitz),
         "pdfplumber_available": bool(pdfplumber),
         "pytesseract_package_available": bool(pytesseract),
@@ -1068,7 +1093,7 @@ def extract_document_text(file_path, document_type=None):
         if tesseract_result.combined_text.strip():
             candidates.append(tesseract_result)
 
-    # ── Step 4: PaddleOCR (Level 3) — jika Tesseract gagal atau confidence rendah ───
+    # ── Step 4: PaddleOCR (Level 3) — jika Tesseract gagal, confidence rendah, atau ada tabel DETAIL ───
     should_try_paddle = False
     if "paddleocr" in engine_order() and parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
         if tesseract_result is None:
@@ -1081,12 +1106,32 @@ def extract_document_text(file_path, document_type=None):
                 f"Tesseract confidence rendah ({tesseract_result.confidence:.1f}% < {tesseract_min_confidence}%); "
                 "PaddleOCR dijalankan sebagai fallback."
             )
+        elif any(classify_page_types(page.extracted_text)[0] == "DETAIL_SPP_SPM_SP2D" for page in tesseract_result.pages):
+            should_try_paddle = True
+            warnings.append("Halaman DETAIL ditemukan; PaddleOCR dijalankan untuk ekstraksi tabel yang lebih baik.")
 
     paddle_called = False
     paddle_text_len = 0
     if should_try_paddle and rendered_images is not None:
         tried.append("paddleocr")
-        paddleocr_result = extract_paddleocr(file_path, images=rendered_images)
+        paddle_fallback_pages = tesseract_result.pages if tesseract_result else None
+        paddle_indices = None
+        if tesseract_result is not None and tesseract_result.combined_text.strip():
+            # Optimize: Only run PaddleOCR on pages classified as DETAIL_SPP_SPM_SP2D or SPM
+            # to save massive amount of time on 10+ page PDFs.
+            paddle_indices = [
+                i for i, page in enumerate(tesseract_result.pages)
+                if classify_page_types(page.extracted_text)[0] in {"DETAIL_SPP_SPM_SP2D", "SPM"}
+            ]
+            if not paddle_indices:
+                paddle_indices = None  # fallback to all if none classified
+
+        paddleocr_result = extract_paddleocr(
+            file_path,
+            images=rendered_images,
+            fallback_pages=paddle_fallback_pages,
+            page_indices_to_ocr=paddle_indices
+        )
         warnings.extend(paddleocr_result.warnings)
         paddle_called = True
         paddle_text_len = len(paddleocr_result.combined_text)

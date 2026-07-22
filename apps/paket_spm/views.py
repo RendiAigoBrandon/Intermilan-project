@@ -19,7 +19,7 @@ from apps.dk.models import TransactionDetail
 from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, probe_package_identity
 from apps.sp2d.models import SP2DRaw
 
-from .models import PaketSPMPreviewItem, PaketSPMUpload
+from .models import PaketSPMUpload
 
 
 @login_required
@@ -52,14 +52,18 @@ def paket_spm_list(request):
             filename = save_many_files_as_zip(fs, upload_files)
             original_filename = filename
             kind = "zip"
-        else:
+        elif upload_file is not None:
             lower_name = upload_file.name.lower()
             filename = fs.save(upload_file.name, upload_file)
             original_filename = upload_file.name
             kind = "zip" if lower_name.endswith(".zip") else "pdf"
+        else:
+            messages.error(request, "Harap pilih PDF, folder PDF, atau ZIP paket SPM.")
+            return redirect("paket_spm:list")
 
         file_path = fs.path(filename)
         use_ocr = False
+        parsed: dict = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [], "temp_dir": ""}
 
         # 1. Identity probe dulu. Jika D_K existing aman ditemukan, jangan jalankan full parser/OCR.
         sp2d_context = get_sp2d_context(request.POST.get("sp2d_raw_id"), request.user)
@@ -117,7 +121,6 @@ def paket_spm_list(request):
                             "warnings": ["KW/Bukti wajib diunggah bersama DRPP."],
                             "temp_dir": "",
                         }
-                        raise StopIteration
                     elif doc_type in {"INVOICE", "FAKTUR", "BAST", "SSP", "SP2D", "LAMPIRAN_COA", "UNKNOWN"}:
                         spm = None
                         drpp = None
@@ -139,36 +142,55 @@ def paket_spm_list(request):
                             "warnings": ["Dokumen pendukung tidak boleh otomatis menjadi transaksi baru."],
                             "temp_dir": "",
                         }
-                        raise StopIteration
                     else:
                         doc_type = "SPM"
                         spm = parse_spm_pdf(file_path, ocr=use_ocr)
                         drpp = None
-                    parsed = {
-                        "ok": bool(
-                            (spm and spm["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (spm["metadata"].get("nomor_spm") or spm["akun_rows"]))
-                            or (drpp and drpp["status"] in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (drpp["metadata"].get("nomor_drpp") or drpp["items"]))
-                        ),
-                        "files": [{
-                            "file_name": original_filename,
-                            "type": doc_type,
-                            "status": "extracted",
-                            "parse_status": (spm or drpp)["status"],
-                            "method": (spm or drpp)["method"],
-                            "warnings": (spm or drpp)["warnings"],
-                        }],
-                        "spm": spm,
-                        "drpp": drpp,
-                        "drpps": [drpp] if drpp else [],
-                        "kw_by_drpp": {drpp["metadata"].get("nomor_drpp", "DRPP"): drpp.get("items", [])} if drpp else {},
-                        "kw_items": drpp.get("items", []) if drpp else [],
-                        "warnings": [],
-                        "temp_dir": "",
-                    }
+                        active_doc = spm or {}
+                        parsed = {
+                            "ok": bool(
+                                (spm and spm.get("status") in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (spm.get("metadata", {}).get("nomor_spm") or spm.get("akun_rows")))
+                            ),
+                            "files": [{
+                                "file_name": original_filename,
+                                "type": doc_type,
+                                "status": "extracted",
+                                "parse_status": active_doc.get("status", "needs_manual_review"),
+                                "method": active_doc.get("method", "parser"),
+                                "warnings": active_doc.get("warnings", []),
+                            }],
+                            "spm": spm,
+                            "drpp": drpp,
+                            "drpps": [],
+                            "kw_by_drpp": {},
+                            "kw_items": [],
+                            "warnings": [],
+                            "temp_dir": "",
+                        }
+                    if doc_type == "DRPP":
+                        active_doc = drpp or {}
+                        parsed = {
+                            "ok": bool(
+                                (drpp and drpp.get("status") in {"parsed_text", "parsed_ocr", "needs_manual_review"} and (drpp.get("metadata", {}).get("nomor_drpp") or drpp.get("items")))
+                            ),
+                            "files": [{
+                                "file_name": original_filename,
+                                "type": doc_type,
+                                "status": "extracted",
+                                "parse_status": active_doc.get("status", "needs_manual_review"),
+                                "method": active_doc.get("method", "parser"),
+                                "warnings": active_doc.get("warnings", []),
+                            }],
+                            "spm": None,
+                            "drpp": drpp,
+                            "drpps": [drpp] if drpp else [],
+                            "kw_by_drpp": {drpp.get("metadata", {}).get("nomor_drpp", "DRPP"): drpp.get("items", [])} if drpp else {},
+                            "kw_items": drpp.get("items", []) if drpp else [],
+                            "warnings": [],
+                            "temp_dir": "",
+                        }
                 else:
                     parsed = parse_paket_spm_zip(file_path, ocr=use_ocr)
-            except StopIteration:
-                pass
             except Exception as exc:
                 parsed = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [str(exc)], "temp_dir": ""}
 
@@ -386,8 +408,11 @@ def paket_spm_preview(request):
                 drpps = parsed.get("drpps") or ([parsed.get("drpp")] if parsed.get("drpp") else [])
                 updated_drpps = []
                 for index in range(drpp_count):
-                    current = drpps[index] if index < len(drpps) and drpps[index] else {"metadata": {}, "items": []}
-                    meta = current.setdefault("metadata", {})
+                    raw_item = drpps[index] if index < len(drpps) else None
+                    current = raw_item if isinstance(raw_item, dict) else {"metadata": {}, "items": []}
+                    if not isinstance(current.get("metadata"), dict):
+                        current["metadata"] = {}
+                    meta = current["metadata"]
                     meta["nomor_drpp"] = clean_text(request.POST.get(f"drpp-{index}-nomor_drpp", meta.get("nomor_drpp", "")))
                     meta["satker_code"] = clean_text(request.POST.get(f"drpp-{index}-satker", meta.get("satker_app_code") or meta.get("satker_code", "")))
                     meta["satker_app_code"] = meta["satker_code"]
@@ -642,7 +667,6 @@ def paket_spm_preview(request):
         "can_commit": can_commit,
         "lampiran_warnings": lampiran_warnings(parsed),
     })
-    return render(request, "paket_spm/preview.html", context)
     return render(request, "paket_spm/preview.html", context)
 
 
