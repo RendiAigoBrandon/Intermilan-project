@@ -9,14 +9,48 @@ from django.test import SimpleTestCase, override_settings
 
 from apps.core.drpp_batch_parser import (
     TOO_MANY_DRPP_MESSAGE,
+    _classification,
+    _extracted_from_pages,
+    _match_coa,
     build_transaction_items,
     classify_candidate_pages,
+    parse_drpp_coa,
     parse_drpp_summary,
     parse_drpp_upload_batch,
 )
 
 
 class DRPPBatchParserUnitTests(SimpleTestCase):
+    def test_flattened_coa_header_fills_missing_account_and_pembebanan(self):
+        rows = parse_drpp_coa(
+            [{
+                "document_type": "DRPP_COA",
+                "page_number": 14,
+                "text": (
+                    "019937.010.521211.05401GG.2910BMA.A000000001 "
+                    "007.051.08.000483-Perlengkapan Peserta Pelatihan 6.500.000,00"
+                ),
+            }],
+            activity="2910",
+        )
+        items = [{"akun": "", "jumlah": Decimal("6500000"), "keperluan": "Pelatihan"}]
+
+        _match_coa(items, rows, activity="2910")
+
+        self.assertEqual(items[0]["akun"], "521211")
+        self.assertEqual(items[0]["pembebanan"], "2910.BMA.007.051.521211")
+
+    def test_coa_classification_wins_over_generic_drpp_heading(self):
+        document_type, _, _ = _classification(
+            "LAMPIRAN DAFTAR RINCIAN PERMINTAAN PEMBAYARAN Detail COA"
+        )
+        self.assertEqual(document_type, "DRPP_COA")
+
+    def test_selected_page_payload_has_legacy_parser_status(self):
+        extracted = _extracted_from_pages([{"page_number": 1, "text": "DRPP", "engine": "tesseract"}])
+        self.assertEqual(extracted["status"], "parsed_ocr")
+        self.assertEqual(extracted["combined_text"], "DRPP")
+
     def test_three_drpp_is_rejected_before_page_index_or_ocr(self):
         with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
             path = os.path.join(media_root, "three.zip")

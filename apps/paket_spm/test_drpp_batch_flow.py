@@ -8,6 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from apps.core.drpp_batch_parser import PARSER_VERSION
 from apps.dk.models import TransactionDetail
 from apps.paket_spm.models import PaketSPMUpload
 from apps.paket_spm.services import build_drpp_batch_rows, upsert_drpp_group
@@ -54,7 +55,7 @@ class DRPPBatchUpsertIntegrationTests(TestCase):
             "items": [item],
         }
         return {
-            "parser_version": "drpp-batch-v1",
+            "parser_version": PARSER_VERSION,
             "spm": {
                 "metadata": {
                     "nomor_spm": "00166T",
@@ -156,7 +157,7 @@ class DRPPBatchUpsertIntegrationTests(TestCase):
         parser.assert_called_once()
         self.assertTrue(parser.call_args.kwargs["ocr"])
         paket = PaketSPMUpload.objects.latest("id")
-        self.assertEqual(paket.parsed_data["parser_version"], "drpp-batch-v1")
+        self.assertEqual(paket.parsed_data["parser_version"], PARSER_VERSION)
         self.assertEqual(paket.status, PaketSPMUpload.Status.PREVIEW)
 
         preview = self.client.get(reverse("paket_spm:preview"))

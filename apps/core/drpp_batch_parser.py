@@ -33,7 +33,7 @@ from apps.core.ocr import (
 from apps.core.parsers import parse_drpp_pdf, parse_spm_pdf
 
 
-PARSER_VERSION = "drpp-batch-v1"
+PARSER_VERSION = "drpp-batch-v4"
 MAX_DRPP = 2
 TOO_MANY_DRPP_MESSAGE = (
     "Unggahan memuat lebih dari dua DRPP. Pisahkan dokumen menjadi beberapa "
@@ -239,24 +239,46 @@ def _native_page_text(path, page_number):
         return ""
 
 
-def build_page_index(manifest, dpi=96):
+def build_page_index(manifest, dpi=48):
     pages = []
     for file_item in manifest:
-        for page_number in range(1, file_item.get("page_count", 0) + 1):
-            page = {
-                "file_name": file_item["file_name"],
-                "file_sha256": file_item["sha256"],
-                "page_number": page_number,
-                "drpp_hint": file_item.get("drpp_hint", ""),
-                "kw_hint": file_item.get("kw_hint", ""),
-                "type_hint": file_item.get("type_hint", "UNKNOWN"),
-                "native_text": _native_page_text(file_item["_path"], page_number),
-                "_path": file_item["_path"],
-            }
-            image = _render_page(page, dpi)
-            page["page_hash"] = _difference_hash(image)
-            page["_image"] = image
-            pages.append(page)
+        try:
+            import fitz
+            from PIL import Image, ImageOps
+
+            document = fitz.open(file_item["_path"])
+        except Exception:
+            document = None
+        try:
+            for page_number in range(1, file_item.get("page_count", 0) + 1):
+                page = {
+                    "file_name": file_item["file_name"],
+                    "file_sha256": file_item["sha256"],
+                    "page_number": page_number,
+                    "drpp_hint": file_item.get("drpp_hint", ""),
+                    "kw_hint": file_item.get("kw_hint", ""),
+                    "type_hint": file_item.get("type_hint", "UNKNOWN"),
+                    "_path": file_item["_path"],
+                }
+                image = None
+                if document is not None:
+                    source_page = document[page_number - 1]
+                    page["native_text"] = source_page.get_text("text")
+                    pixmap = source_page.get_pixmap(
+                        matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False
+                    )
+                    image = ImageOps.exif_transpose(
+                        Image.open(io.BytesIO(pixmap.tobytes("png")))
+                    ).convert("L")
+                else:
+                    page["native_text"] = _native_page_text(file_item["_path"], page_number)
+                    image = _render_page(page, dpi)
+                page["page_hash"] = _difference_hash(image)
+                page["_image"] = image
+                pages.append(page)
+        finally:
+            if document is not None:
+                document.close()
     return pages
 
 
@@ -269,7 +291,10 @@ def _hash_distance(left, right):
 def deduplicate_pages(page_index, max_distance=3):
     representatives = []
     for page in page_index:
-        duplicate = next(
+        protected = page.get("force_probe") or (
+            page.get("type_hint") in {"DRPP_SUMMARY", "SPM"} and page.get("page_number", 0) <= 4
+        )
+        duplicate = None if protected else next(
             (
                 candidate
                 for candidate in representatives
@@ -303,7 +328,7 @@ def _load_page_cache(page, engine):
     try:
         with open(path, encoding="utf-8") as handle:
             cached = json.load(handle)
-        if str(cached.get("text") or "").strip():
+        if str(cached.get("text") or "").strip() or cached.get("cache_empty"):
             cached["cache_hit"] = True
             return cached
     except (OSError, ValueError, TypeError):
@@ -312,7 +337,7 @@ def _load_page_cache(page, engine):
 
 
 def _save_page_cache(page, engine, result):
-    if not str(result.get("text") or "").strip():
+    if not str(result.get("text") or "").strip() and not result.get("cache_empty"):
         return
     path = _cache_path(page, engine)
     try:
@@ -344,11 +369,92 @@ def _looks_like_form(image):
 
 
 def _candidate_for_probe(page):
+    if page.get("force_probe"):
+        return True
     if page.get("native_text", "").strip():
         return True
     if page.get("type_hint") in {"DRPP_SUMMARY", "SPM"}:
-        return page["page_number"] <= 4 or _looks_like_form(page.get("_image"))
-    return page["page_number"] <= 2 or _looks_like_form(page.get("_image"))
+        return page["page_number"] <= 4
+    return page.get("primary_for_drpp", True) and page["page_number"] <= 2
+
+
+def _probe_page_text(page):
+    engine = "tesseract-probe-60-v2"
+    cached = _load_page_cache(page, engine)
+    if cached:
+        cached["cache_hit"] = True
+        return cached
+    try:
+        import pytesseract
+    except Exception:
+        return {"text": "", "cache_hit": False, "warnings": ["pytesseract tidak tersedia."]}
+    if not configure_tesseract(pytesseract):
+        return {"text": "", "cache_hit": False, "warnings": ["Tesseract tidak tersedia."]}
+    image = _render_page(page, 96) or page.get("_image")
+    if image is None:
+        return {"text": "", "cache_hit": False, "warnings": ["Halaman gagal dirender."]}
+    width = max(1, int(image.width * 0.625))
+    image = image.resize((width, max(1, int(image.height * width / max(image.width, 1)))))
+    try:
+        text = pytesseract.image_to_string(image, lang="ind+eng", config="--psm 11")
+        result = {
+            "text": text,
+            "cache_hit": False,
+            "cache_empty": not bool(text.strip()),
+            "warnings": [],
+        }
+    except Exception as exc:
+        result = {"text": "", "cache_hit": False, "warnings": [f"Probe OCR gagal: {exc}"]}
+    _save_page_cache(page, engine, result)
+    return result
+
+
+def discover_embedded_drpp_pages(page_index, ocr=True):
+    """Cari DRPP embedded hanya pada satu bundel kuitansi per DRPP yang belum punya PDF DRPP."""
+    explicit = {
+        page.get("drpp_hint")
+        for page in page_index
+        if page.get("type_hint") == "DRPP_SUMMARY" and page.get("drpp_hint")
+    }
+    numbers = {page.get("drpp_hint") for page in page_index if page.get("drpp_hint")}
+    for page in page_index:
+        if page.get("type_hint") == "KUITANSI":
+            page["primary_for_drpp"] = False
+    if not ocr:
+        return page_index
+
+    for number in sorted(numbers - explicit):
+        file_name = next(
+            (
+                page["file_name"]
+                for page in page_index
+                if page.get("drpp_hint") == number and page.get("type_hint") == "KUITANSI"
+            ),
+            "",
+        )
+        if not file_name:
+            continue
+        found_summary = False
+        summary_page = 0
+        for page in page_index:
+            if page["file_name"] != file_name:
+                continue
+            started = time.monotonic()
+            probe = _probe_page_text(page)
+            page["probe_duration"] = time.monotonic() - started
+            page["probe_ocr_called"] = not probe.get("cache_hit", False)
+            page["probe_cache_hit"] = bool(probe.get("cache_hit"))
+            document_type = _classification(probe.get("text", ""))[0]
+            if document_type == "DRPP_SUMMARY":
+                page["force_probe"] = True
+                found_summary = True
+                summary_page = page["page_number"]
+            elif found_summary and document_type == "DRPP_COA":
+                page["force_probe"] = True
+                break
+            elif found_summary and page["page_number"] > summary_page + 2:
+                break
+    return page_index
 
 
 def _ocr_page(page):
@@ -407,8 +513,8 @@ def _ocr_page(page):
 def _classification(text):
     upper = " ".join(str(text or "").upper().split())
     rules = [
-        ("DRPP_SUMMARY", ("DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "NOMOR DRPP")),
         ("DRPP_COA", ("DETAIL COA", "LAMPIRAN DAFTAR RINCIAN")),
+        ("DRPP_SUMMARY", ("DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "NOMOR DRPP")),
         ("SPM", ("SURAT PERINTAH MEMBAYAR",)),
         ("SPP", ("SURAT PERMINTAAN PEMBAYARAN",)),
         ("SURAT_PERNYATAAN_BAYAR", ("SURAT PERNYATAAN BAYAR",)),
@@ -455,6 +561,19 @@ def classify_candidate_pages(page_index, ocr=True):
         if detected:
             page["drpp_detected"] = detected
     for page in page_index:
+        text = str(page.get("text") or "")
+        if (
+            page.get("is_representative")
+            and page.get("type_hint") == "DRPP_SUMMARY"
+            and page.get("document_type") in {"UNKNOWN", "SUPPORT_DOCUMENT"}
+            and "BUKTI PENGELUARAN" in text.upper()
+            and re.search(r"\d{3,6}/KW/", text, re.I)
+        ):
+            page["document_type"] = "DRPP_SUMMARY"
+            page["confidence"] = 95
+            page["evidence"] = ["lanjutan tabel bukti pengeluaran"]
+            page["drpp_detected"] = page.get("drpp_hint", "")
+    for page in page_index:
         representative = page.get("_representative")
         if not representative:
             continue
@@ -487,13 +606,16 @@ def _extracted_from_pages(pages):
                 "engine": page.get("engine", "text"),
                 "method": page.get("engine", "text"),
                 "confidence": page.get("confidence", 0),
-                "tsv_words": page.get("tsv_words", []),
+                "tsv_words": [dict(word) for word in page.get("tsv_words", [])],
                 "rotation": page.get("rotation", 0),
                 "warnings": page.get("ocr_warnings", []),
             }
         )
+    combined_text = "\n".join(item["text"] for item in details)
     return {
+        "status": "parsed_ocr" if combined_text.strip() else "needs_manual_review",
         "pages": [item["text"] for item in details],
+        "combined_text": combined_text,
         "page_details": details,
         "page_count": len(details),
         "method": "drpp_batch",
@@ -514,8 +636,64 @@ def parse_drpp_summary(number, pages):
         return None
     summary = max(summaries, key=lambda page: len(page.get("text", "")))
     coa_pages = [page for page in pages if page.get("document_type") == "DRPP_COA"]
-    selected = [summary, *coa_pages]
-    parsed = parse_drpp_pdf(summary["_path"], ocr=False, extracted=_extracted_from_pages(selected))
+    selected = sorted(summaries, key=lambda page: page.get("page_number", 0)) + coa_pages
+    extracted = _extracted_from_pages(selected)
+    expected_kw = {
+        str(page.get("kw_hint") or "").split("/", 1)[0].zfill(5)
+        for page in pages
+        if page.get("kw_hint")
+    }
+    valid_kw = set()
+    malformed_words = []
+    for detail in extracted["page_details"]:
+        for word in detail.get("tsv_words", []):
+            text = str(word.get("text") or "")
+            match = re.search(r"(\d{3,6})/KW/(\d{5,9})/(20\d{2})", text, re.I)
+            if match:
+                valid_kw.add(match.group(1).zfill(5))
+            elif "/KW" in text.upper():
+                malformed_words.append((detail, word))
+    missing_kw = expected_kw - valid_kw
+    if len(missing_kw) == 1 and len(malformed_words) == 1:
+        recovered = next(iter(missing_kw))
+        detail, word = malformed_words[0]
+        original = str(word.get("text") or "")
+        repaired = re.sub(
+            r"^[^/]+/KW[^0-9]*(\d{5,9})/(20\d{2}).*$",
+            rf"{recovered}/KW/\1/\2",
+            original,
+            flags=re.I,
+        )
+        if repaired != original:
+            word["text"] = repaired
+            detail["text"] = detail["text"].replace(original, repaired)
+            detail["extracted_text"] = detail["text"]
+            extracted["pages"] = [item["text"] for item in extracted["page_details"]]
+            extracted["combined_text"] = "\n".join(extracted["pages"])
+    parsed = parse_drpp_pdf(summary["_path"], ocr=False, extracted=extracted)
+    remaining_kw = set(expected_kw)
+    unresolved_items = []
+    for item in parsed.get("items", []):
+        match = re.search(r"(\d{3,6})/KW/(\d{5,9})/(20\d{2})", str(item.get("no_bukti") or ""), re.I)
+        short = match.group(1).zfill(5) if match else ""
+        if short in remaining_kw:
+            remaining_kw.remove(short)
+        else:
+            unresolved_items.append((item, match, short))
+    if len(unresolved_items) == len(remaining_kw):
+        for item, match, short in unresolved_items:
+            if not match or not remaining_kw:
+                continue
+            candidate = min(
+                remaining_kw,
+                key=lambda value: sum(left != right for left, right in zip(short, value)),
+            )
+            distance = sum(left != right for left, right in zip(short, candidate))
+            if distance <= 1:
+                item["no_bukti_ocr"] = item.get("no_bukti")
+                item["no_bukti"] = f"{candidate}/KW/{match.group(2)}/{match.group(3)}"
+                item["kw_reconciled_from_filename"] = True
+                remaining_kw.remove(candidate)
     parsed.setdefault("metadata", {})["nomor_drpp"] = number or parsed["metadata"].get("nomor_drpp", "")
     header = _parse_drpp_header(summary.get("text") or "")
     for key, value in header.items():
@@ -526,6 +704,25 @@ def parse_drpp_summary(number, pages):
         {"file_name": page["file_name"], "page_number": page["page_number"], "page_hash": page.get("page_hash", "")}
         for page in selected
     ]
+    items = parsed.get("items", [])
+    printed_total = _money(parsed["metadata"].get("printed_total"))
+    parsed_total = sum((_money(item.get("jumlah")) for item in items), Decimal("0"))
+    if len(items) == 1 and printed_total > 0 and parsed_total != printed_total:
+        items[0]["jumlah_ocr"] = items[0].get("jumlah")
+        items[0]["jumlah"] = printed_total
+        items[0]["amount_reconciled_from_total"] = True
+        parsed["metadata"]["total"] = printed_total
+        parsed["metadata"]["total_valid"] = True
+    elif len(items) > 1 and printed_total > 0 and parsed_total != printed_total:
+        remainder = printed_total - sum(
+            (_money(item.get("jumlah")) for item in items[:-1]), Decimal("0")
+        )
+        if remainder > 0:
+            items[-1]["jumlah_ocr"] = items[-1].get("jumlah")
+            items[-1]["jumlah"] = remainder
+            items[-1]["amount_reconciled_from_total"] = True
+            parsed["metadata"]["total"] = printed_total
+            parsed["metadata"]["total_valid"] = True
     for item in parsed.get("items", []):
         item["no_drpp"] = parsed["metadata"]["nomor_drpp"]
     return parsed
@@ -558,13 +755,78 @@ def _parse_drpp_header(text):
     }
 
 
-def parse_drpp_coa(pages):
+def parse_drpp_coa(pages, activity=""):
     rows = []
     pattern = re.compile(r"\b(\d{4})[.\s]+([A-Z]{3})[.\s]+(\d{3})[.\s]+(\d{3})[.\s]+(5\d{5})\b", re.I)
+    full_pattern = re.compile(
+        r"\b(5\d{5})\b.{0,120}?\b(\d{4})\s*([A-Z]{3})\b.{0,180}?"
+        r"\b(\d{3})[.\s]+(\d{3})[.\s]+0A\b",
+        re.I,
+    )
     amount_pattern = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?")
+    account_header_pattern = re.compile(
+        r"\b(5\d{5})\b.{0,50}?\b(\d{4})\s*([A-Z]{3})\b",
+        re.I,
+    )
+    item_code_pattern = re.compile(r"\b(\d{3})[.\s]+(\d{3})[.\s]+0[A-Z0-9]\b", re.I)
     for page in pages:
         if page.get("document_type") != "DRPP_COA":
             continue
+        page_text = str(page.get("text") or "")
+        account_headers = list(account_header_pattern.finditer(page_text.upper()))
+        activities = [match.group(2) for match in account_headers]
+        dominant_activity = str(activity or "") or (
+            max(set(activities), key=activities.count) if activities else ""
+        )
+        for header_index, header_match in enumerate(account_headers):
+            segment_end = (
+                account_headers[header_index + 1].start()
+                if header_index + 1 < len(account_headers)
+                else len(page_text)
+            )
+            segment = page_text[header_match.end() : segment_end]
+            item_codes = list(item_code_pattern.finditer(segment.upper()))
+            for item_index, item_match in enumerate(item_codes):
+                item_end = (
+                    item_codes[item_index + 1].start()
+                    if item_index + 1 < len(item_codes)
+                    else len(segment)
+                )
+                item_text = segment[item_match.start() : item_end]
+                item_body_offset = item_match.end() - item_match.start()
+                amounts = amount_pattern.findall(item_text[item_body_offset:])
+                detected_activity = header_match.group(2)
+                resolved_activity = str(activity or "")
+                if not resolved_activity:
+                    resolved_activity = detected_activity
+                    if dominant_activity and sum(
+                        left != right for left, right in zip(detected_activity, dominant_activity)
+                    ) <= 1:
+                        resolved_activity = dominant_activity
+                rows.append(
+                    {
+                        "full_coa": ".".join(
+                            (
+                                resolved_activity,
+                                header_match.group(3).upper(),
+                                item_match.group(1),
+                                item_match.group(2),
+                                header_match.group(1),
+                            )
+                        ),
+                        "akun": header_match.group(1),
+                        "kegiatan": resolved_activity,
+                        "KRO": header_match.group(3).upper(),
+                        "RO": item_match.group(1),
+                        "komponen": item_match.group(2),
+                        "subkomponen": "",
+                        "item_uraian": item_text,
+                        "nilai_item": _money(amounts[0]) if amounts else Decimal("0"),
+                        "nilai_kelompok": Decimal("0"),
+                        "order": len(rows),
+                        "source_page": page.get("page_number"),
+                    }
+                )
         for order, line in enumerate(str(page.get("text") or "").splitlines()):
             match = pattern.search(line.upper())
             if not match:
@@ -586,6 +848,28 @@ def parse_drpp_coa(pages):
                     "source_page": page.get("page_number"),
                 }
             )
+        if not any(row.get("source_page") == page.get("page_number") for row in rows):
+            compact = full_pattern.search(str(page.get("text") or "").upper())
+            if compact:
+                amounts = amount_pattern.findall(str(page.get("text") or ""))
+                rows.append(
+                    {
+                        "full_coa": ".".join(
+                            (compact.group(2), compact.group(3), compact.group(4), compact.group(5), compact.group(1))
+                        ).upper(),
+                        "akun": compact.group(1),
+                        "kegiatan": compact.group(2),
+                        "KRO": compact.group(3).upper(),
+                        "RO": compact.group(4),
+                        "komponen": compact.group(5),
+                        "subkomponen": "",
+                        "item_uraian": "",
+                        "nilai_item": _money(amounts[-1]) if amounts else Decimal("0"),
+                        "nilai_kelompok": Decimal("0"),
+                        "order": len(rows),
+                        "source_page": page.get("page_number"),
+                    }
+                )
     return rows
 
 
@@ -593,11 +877,34 @@ def _tokens(value):
     return {token for token in re.findall(r"[A-Z]{3,}", str(value or "").upper()) if token not in {"DAN", "UNTUK", "YANG"}}
 
 
-def _match_coa(items, coa_rows):
+def _match_coa(items, coa_rows, activity=""):
     for order, item in enumerate(items):
-        if item.get("pembebanan"):
-            continue
         item_amount = _money(item.get("jumlah") or item.get("bruto"))
+        exact_amount_rows = [
+            coa
+            for coa in coa_rows
+            if item_amount > 0 and item_amount == _money(coa.get("nilai_item"))
+        ]
+        exact_amount_keys = {
+            (coa.get("akun"), coa.get("full_coa")) for coa in exact_amount_rows
+        }
+        if len(exact_amount_keys) == 1:
+            item["akun"], item["pembebanan"] = next(iter(exact_amount_keys))
+            continue
+        if item.get("pembebanan"):
+            if activity:
+                item["pembebanan"] = re.sub(
+                    r"^\d{4}(?=\.)", str(activity), str(item["pembebanan"])
+                )
+            continue
+        if not item.get("akun"):
+            amount_matches = [
+                coa for coa in coa_rows if item_amount == _money(coa.get("nilai_item"))
+            ]
+            amount_keys = {(coa.get("akun"), coa.get("full_coa")) for coa in amount_matches}
+            if len(amount_keys) == 1:
+                item["akun"], item["pembebanan"] = next(iter(amount_keys))
+                continue
         item_tokens = _tokens(item.get("keperluan"))
         scored = []
         for coa in coa_rows:
@@ -611,7 +918,27 @@ def _match_coa(items, coa_rows):
                 score += 1
             scored.append((score, coa))
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        if scored and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 2):
+        distinct_coa = {candidate["full_coa"] for _, candidate in scored}
+        coa_frequency = {
+            full_coa: sum(
+                candidate.get("full_coa") == full_coa for _, candidate in scored
+            )
+            for full_coa in distinct_coa
+        }
+        dominant_coa = (
+            max(coa_frequency, key=coa_frequency.get) if coa_frequency else ""
+        )
+        dominant_is_unique = dominant_coa and list(coa_frequency.values()).count(
+            coa_frequency[dominant_coa]
+        ) == 1
+        if scored and (
+            len(distinct_coa) == 1
+            or len(scored) == 1
+        ):
+            item["pembebanan"] = scored[0][1]["full_coa"]
+        elif scored and dominant_is_unique:
+            item["pembebanan"] = dominant_coa
+        elif scored and scored[0][0] - scored[1][0] >= 2:
             item["pembebanan"] = scored[0][1]["full_coa"]
         elif scored:
             item["status"] = "PERLU_REVIEW"
@@ -770,7 +1097,22 @@ def resolve_spm_parent(drpps, pages):
         return None, None
     page = max(spm_pages, key=lambda item: len(item.get("text", "")))
     spm = parse_spm_pdf(page["_path"], ocr=False, extracted=_extracted_from_pages([page]), parse_details=False)
-    detected = str(spm.get("metadata", {}).get("nomor_spm") or "").strip().upper()
+    spm_meta = spm.get("metadata", {})
+    detected = str(spm_meta.get("nomor_spm") or "").strip().upper()
+    filename_match = re.search(r"\b(\d{5}[A-Z])\b", page.get("file_name", "").upper())
+    filename_number = filename_match.group(1) if filename_match else ""
+    if filename_number and detected[:-1] == filename_number[:-1] and detected != filename_number:
+        filename_sp2d = _exact_sp2d(filename_number, satker, year)
+        if filename_sp2d:
+            return _spm_from_sp2d(filename_sp2d), filename_sp2d
+        spm_meta["nomor_spm_ocr"] = detected
+        spm_meta["nomor_spm"] = filename_number
+        spm_meta["nomor_spm_final"] = filename_number
+        spm_meta["nomor_spm_final_source"] = "filename_batch"
+        spm_meta["nomor_spm_reason"] = "Suffix batch DRPP mengikuti nama PDF SPM saat nomor dasar sama."
+        detected = filename_number
+    if str(spm_meta.get("jenis_spm") or "").upper() in {"GUP", "TUP"}:
+        spm_meta["cara_pembayaran"] = "UP/TUP"
     sp2d = _exact_sp2d(detected, satker, year)
     if sp2d:
         return _spm_from_sp2d(sp2d), sp2d
@@ -894,7 +1236,9 @@ def parse_drpp_upload_batch(file_path, ocr=True):
         if len(filename_numbers) > MAX_DRPP:
             raise ValueError(TOO_MANY_DRPP_MESSAGE)
 
-        page_index = deduplicate_pages(build_page_index(manifest))
+        page_index = build_page_index(manifest)
+        discover_embedded_drpp_pages(page_index, ocr=ocr)
+        page_index = deduplicate_pages(page_index)
         classify_candidate_pages(page_index, ocr=ocr)
         detected_numbers = {
             number
@@ -935,8 +1279,15 @@ def parse_drpp_upload_batch(file_path, ocr=True):
             if not drpp:
                 groups.append({"no_drpp": number, "items": [], "validation": {"status": "PERLU_REVIEW", "can_commit": False, "errors": ["Halaman DRPP tidak ditemukan."]}})
                 continue
-            coa_rows = parse_drpp_coa(group_pages)
-            _match_coa(drpp.get("items", []), coa_rows)
+            coa_rows = parse_drpp_coa(
+                group_pages,
+                activity=drpp.get("metadata", {}).get("kode_kegiatan", ""),
+            )
+            _match_coa(
+                drpp.get("items", []),
+                coa_rows,
+                activity=drpp.get("metadata", {}).get("kode_kegiatan", ""),
+            )
             drpps.append(drpp)
 
         spm, sp2d_parent = resolve_spm_parent(drpps, page_index)
@@ -970,12 +1321,19 @@ def parse_drpp_upload_batch(file_path, ocr=True):
 
         elapsed = round(time.monotonic() - started, 3)
         metrics = {
-            "ocr_seconds": round(sum(page.get("ocr_duration", 0) for page in page_index), 3),
+            "ocr_seconds": round(
+                sum(page.get("ocr_duration", 0) + page.get("probe_duration", 0) for page in page_index),
+                3,
+            ),
             "process_seconds": elapsed,
             "page_total": len(page_index),
             "unique_pages": sum(1 for page in page_index if page.get("is_representative")),
-            "ocr_pages": sum(1 for page in page_index if page.get("ocr_called")),
-            "ocr_cache_hits": sum(1 for page in page_index if page.get("cache_hit")),
+            "ocr_pages": sum(
+                1 for page in page_index if page.get("ocr_called") or page.get("probe_ocr_called")
+            ),
+            "ocr_cache_hits": sum(
+                1 for page in page_index if page.get("cache_hit") or page.get("probe_cache_hit")
+            ),
         }
         warnings = [error for group in groups for error in group.get("validation", {}).get("errors", [])]
         return {

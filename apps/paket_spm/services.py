@@ -1246,8 +1246,28 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
     items = parsed.get("kw_items") or []
 
     if not items and parsed.get("spm"):
-        detail_rows = parsed["spm"].get("detail_items") or []
+        detail_source = (spm_meta.get("detail_parse_summary") or {}).get("source")
+        detail_rows = (
+            parsed["spm"].get("detail_items") or []
+            if detail_source == "DETAIL_SPP_SPM_SP2D"
+            else []
+        )
         akun_rows = detail_rows or parsed["spm"].get("akun_rows", [])
+        if not detail_rows and parsed["spm"].get("detail_items") and akun_rows:
+            descriptions = {
+                str(item.get("akun") or ""): re.sub(
+                    r"\s*[.,]?\s*ALAMAT\s*:.*$",
+                    "",
+                    str(item.get("keperluan") or ""),
+                    flags=re.I,
+                ).strip()
+                for item in parsed["spm"]["detail_items"]
+                if item.get("akun") and item.get("keperluan")
+            }
+            akun_rows = [
+                {**row, "uraian": descriptions.get(str(row.get("akun") or ""), row.get("uraian", ""))}
+                for row in akun_rows
+            ]
         if not akun_rows:
             # Fallback jika tidak ada rincian akun di SPM
             akun_rows = [{"akun": akun, "jumlah": Decimal("0"), "uraian": spm_meta.get("uraian") or ""} for akun in spm_meta.get("akun_pengeluaran", [])]
@@ -1370,7 +1390,6 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
                 created_by=user,
             )
         )
-        existing_keys.add(identity_key)
 
     if save and rows:
         return TransactionDetail.objects.bulk_create(rows)

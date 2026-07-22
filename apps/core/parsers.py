@@ -1772,7 +1772,11 @@ def parse_drpp_items_from_tsv(raw_words, page_number=1, confidence_threshold=55)
                     cells[name].append(word)
                     break
         no_text = normalize_text(" ".join(word["text"] for word in cells["no"]))
-        starts_row = bool(re.match(r"^\d{1,3}\b", no_text))
+        bukti_text = normalize_text(" ".join(word["text"] for word in cells["bukti"]))
+        starts_row = bool(
+            re.fullmatch(r"\d{1,3}", no_text)
+            and re.search(r"[0-9OIL]{3,6}/KW/[0-9OIL]{5,9}/20[0-9OIL]{2}", bukti_text, re.I)
+        )
         has_table_content = any(cells[name] for name in ("bukti", "nama", "npwp", "akun", "jumlah"))
         if not has_table_content:
             continue
@@ -1891,17 +1895,17 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
     lines = _group_tsv_words_by_line(words)
     kw_re = re.compile(r"[0-9OIL]{3,6}/KW/[0-9OIL]{5,9}/20[0-9OIL]{2}", re.IGNORECASE)
     amount_re = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?")
+    small_amount_re = re.compile(r"\b\d{1,3}\b")
     row_starts = []
     for index, line in enumerate(lines):
         line_words = sorted(line["words"], key=lambda item: item["left"])
         text = normalize_text(" ".join(word["text"] for word in line_words))
         kw_match = kw_re.search(text)
-        amounts = list(amount_re.finditer(text))
-        if kw_match and amounts:
-            row_starts.append((index, line_words, text, kw_match, amounts[-1]))
+        if kw_match:
+            row_starts.append((index, line_words, text))
 
     items = []
-    for row_index, (line_index, line_words, text, kw_match, amount_match) in enumerate(row_starts):
+    for row_index, (line_index, line_words, text) in enumerate(row_starts):
         next_line_index = row_starts[row_index + 1][0] if row_index + 1 < len(row_starts) else len(lines)
         continuation_lines = lines[line_index + 1 : next_line_index]
         continuation_words = [
@@ -1911,14 +1915,47 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
         ]
         continuation_text = normalize_text(" ".join(word["text"] for word in continuation_words))
         date_match = re.search(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", continuation_text)
+        financial_lines = []
+        for line in continuation_lines:
+            line_text = normalize_text(
+                " ".join(word["text"] for word in sorted(line["words"], key=lambda item: item["left"]))
+            )
+            if re.search(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", line_text):
+                break
+            financial_lines.append(line_text)
+        financial_text = normalize_text(" ".join([text, *financial_lines]))
+        financial_kw = kw_re.search(financial_text)
+        amounts = list(amount_re.finditer(financial_text))
+        if not amounts and line_index > 0:
+            previous_text = normalize_text(
+                " ".join(
+                    word["text"]
+                    for word in sorted(lines[line_index - 1]["words"], key=lambda item: item["left"])
+                )
+            )
+            if re.search(r"\b5\d{5}\b", previous_text) and amount_re.search(previous_text):
+                financial_text = normalize_text(f"{text} {previous_text}")
+                financial_kw = kw_re.search(financial_text)
+                amounts = list(amount_re.finditer(financial_text))
+        if not amounts and financial_kw:
+            amounts = [
+                match
+                for match in small_amount_re.finditer(financial_text)
+                if match.start() > financial_kw.end()
+            ]
+        if not financial_kw:
+            continue
+        amount_match = amounts[-1] if amounts else None
         description = continuation_text
         if date_match:
             description = normalize_text(continuation_text[date_match.end() :])
         description = clean_description(description)
 
-        prefix = text[: kw_match.start()]
+        prefix = financial_text[: financial_kw.start()]
         no_match = re.search(r"(?:^|\s)(\d{1,3})(?:\s|$)", prefix)
-        suffix_before_amount = text[kw_match.end() : amount_match.start()]
+        suffix_before_amount = financial_text[
+            financial_kw.end() : amount_match.start() if amount_match else len(financial_text)
+        ]
         account_matches = list(re.finditer(r"\b(5\d{5})\b", suffix_before_amount))
         account = account_matches[-1].group(1) if account_matches else ""
         npwp_matches = list(re.finditer(r"\b\d{14,16}\b", suffix_before_amount))
@@ -1930,8 +1967,8 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
         all_words = line_words + continuation_words
         confidence_values = [word["confidence"] for word in all_words if word["confidence"] >= 0]
         confidence = round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
-        no_bukti = _normalize_ocr_kw_number(kw_match.group(0))
-        amount = parse_decimal(amount_match.group(0))
+        no_bukti = _normalize_ocr_kw_number(financial_kw.group(0))
+        amount = parse_decimal(amount_match.group(0)) if amount_match else Decimal("0")
         review_fields = []
         if not no_bukti:
             review_fields.append("no_bukti_invalid")
@@ -1963,7 +2000,7 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
             ],
             "method": "tsv_row_anchor",
             "confidence": confidence,
-            "raw_fields": {"row": text, "continuation": continuation_text},
+            "raw_fields": {"row": financial_text, "continuation": continuation_text},
             "needs_review": bool(review_fields),
             "review_fields": review_fields,
             "status": "Perlu Review" if review_fields else "Terbaca",
@@ -3203,6 +3240,35 @@ def parse_position_detail_items(file_path, page_details, default_description="",
                 "total": total,
                 "pages": best_by_page,
             }
+        if not detail_rows:
+            text_rows = []
+            for page in regular_pages:
+                if "DETAIL_SPP_SPM_SP2D" not in set(page.get("page_types") or []):
+                    continue
+                for item in parse_spm_detail_items(
+                    page.get("text") or page.get("extracted_text") or "",
+                    default_description,
+                ):
+                    text_rows.append(
+                        {
+                            **item,
+                            "source_page": page.get("page_number") or page.get("page"),
+                            "source_priority": "DETAIL_SPP_SPM_SP2D",
+                        }
+                    )
+            text_rows = dedupe_detail_items(text_rows)
+            text_total = sum(
+                (parse_decimal(item.get("jumlah")) for item in text_rows),
+                Decimal("0"),
+            )
+            if text_rows and text_total == parse_decimal(expected_total):
+                return text_rows, {
+                    "source": "DETAIL_SPP_SPM_SP2D",
+                    "rows_before_dedupe": len(text_rows),
+                    "rows_after_dedupe": len(text_rows),
+                    "total": text_total,
+                    "pages": best_by_page,
+                }
     if saw_detail_candidate:
         return [], {
             "source": "PERLU_REVIEW_PARSER_TABEL",
@@ -3331,12 +3397,23 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
     items = []
     for page in item_pages:
         page_words = page.get("tsv_words") or page.get("words") or page.get("ocr_words") or []
-        page_items = parse_drpp_items_from_tsv(page_words, page_number=page.get("page_number") or page.get("page") or 1)
-        if not page_items and page_words:
-            page_items = parse_drpp_items_from_tsv_rows(
+        page_number = page.get("page_number") or page.get("page") or 1
+        cell_items = parse_drpp_items_from_tsv(page_words, page_number=page_number)
+        anchor_items = (
+            parse_drpp_items_from_tsv_rows(
                 page_words,
-                page_number=page.get("page_number") or page.get("page") or 1,
+                page_number=page_number,
             )
+            if page_words
+            else []
+        )
+        page_items = max(
+            (cell_items, anchor_items),
+            key=lambda rows: (
+                sum(bool(item.get("no_bukti") and item.get("akun") and item.get("jumlah")) for item in rows),
+                len(rows),
+            ),
+        )
         items.extend(page_items)
         ocr_trace.append({
             "file": os.path.basename(file_path),
