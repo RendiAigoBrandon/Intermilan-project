@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 
+from apps.core.exceptions import UploadTechnicalError, UploadBusinessLimitError
 from apps.core.drpp_batch_parser import (
     TOO_MANY_DRPP_MESSAGE,
     _classification,
@@ -108,7 +109,7 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
                 for number in ("00042", "00043", "00044"):
                     archive.writestr(f"DRPP {number}.pdf", b"not-a-real-pdf")
             with patch("apps.core.drpp_batch_parser.build_page_index", side_effect=AssertionError("heavy page index must not run")):
-                with self.assertRaisesMessage(ValueError, TOO_MANY_DRPP_MESSAGE):
+                with self.assertRaisesMessage(UploadBusinessLimitError, TOO_MANY_DRPP_MESSAGE):
                     parse_drpp_upload_batch(path)
 
     def test_page_ocr_is_only_called_for_selected_representatives(self):

@@ -11,7 +11,9 @@ from django.core.files.storage import FileSystemStorage
 from django.db import transaction
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from django.utils import timezone
 
+from apps.core.exceptions import UploadTechnicalError, UploadBusinessLimitError
 from apps.accounts.access import filter_by_satker, permission_context
 from apps.core.drpp_batch_parser import PARSER_VERSION as DRPP_BATCH_VERSION, parse_drpp_upload_batch
 from apps.core.ocr import check_ocr_environment
@@ -77,7 +79,12 @@ def paket_spm_list(request):
         identity_probe = {}
         try:
             parsed = parse_drpp_upload_batch(file_path, ocr=use_ocr)
-        except ValueError as exc:
+        except UploadBusinessLimitError as exc:
+            # For business limits (like >2 DRPP), reject and clean up the uploaded file as well
+            cleanup_paket_files(file_path)
+            messages.error(request, str(exc))
+            return redirect("paket_spm:list")
+        except UploadTechnicalError as exc:
             cleanup_paket_files(file_path)
             messages.error(request, str(exc))
             return redirect("paket_spm:list")
@@ -508,6 +515,50 @@ def paket_spm_preview(request):
                 if not commit_drpp:
                     messages.error(request, "Pilih kelompok DRPP yang akan disimpan.")
                     return redirect("paket_spm:preview")
+                
+                # GUP Reguler Validation
+                spm_meta = parsed.get("spm", {}).get("metadata", {}) if parsed.get("spm") else {}
+                jenis_spm = str(spm_meta.get("jenis_spm") or spm_meta.get("jenis_tagihan") or "").upper()
+                is_gup_reguler = "GUP" in jenis_spm and "KKP" not in jenis_spm and "NIHIL" not in jenis_spm
+                
+                if is_gup_reguler:
+                    groups = parsed.get("drpp_groups") or []
+                    commit_group = next((g for g in groups if g.get("no_drpp") == commit_drpp), None)
+                    if commit_group:
+                        items = commit_group.get("items") or []
+                        validation = commit_group.get("validation") or {}
+                        errors = []
+                        
+                        if validation.get("status") != "BALANCE":
+                            errors.append(validation.get("status_message") or "DRPP tidak balance.")
+                        
+                        kw_numbers = [item.get("no_kuitansi") for item in items if item.get("no_kuitansi")]
+                        if len(kw_numbers) != len(set(kw_numbers)):
+                            errors.append("Terdapat nomor kuitansi duplikat.")
+                        
+                        for item in items:
+                            pembebanan = str(item.get("pembebanan") or "").strip()
+                            akun = str(item.get("akun") or "").strip()
+                            if not akun:
+                                errors.append("Terdapat kuitansi dengan Akun kosong.")
+                            if not pembebanan:
+                                errors.append("Terdapat kuitansi dengan Pembebanan kosong.")
+                            if pembebanan and "0000" in pembebanan:
+                                errors.append("Terdapat kuitansi dengan Pembebanan mengandung 0000.")
+                            if pembebanan and akun and not pembebanan.endswith(akun):
+                                errors.append("Akhiran Pembebanan tidak sama dengan Akun.")
+
+                        if not spm_meta.get("nomor_spm"):
+                            errors.append("Parent SPM belum ditentukan.")
+                        if not spm_meta.get("satker_code") and not spm_meta.get("satker_app_code") and not spm_meta.get("satker_djpb_code"):
+                            errors.append("Satker belum ditentukan.")
+                        
+                        if errors:
+                            unique_errors = list(dict.fromkeys(errors))
+                            for error in unique_errors:
+                                messages.error(request, error)
+                            return redirect("paket_spm:preview")
+
                 parser_sp2d = None
                 if parsed.get("sp2d_parent_id"):
                     parser_sp2d = filter_by_satker(SP2DRaw.objects.all(), request.user).filter(pk=parsed["sp2d_parent_id"]).first()

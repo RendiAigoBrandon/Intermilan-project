@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import zipfile
 from collections import defaultdict
@@ -22,6 +23,8 @@ from pathlib import Path
 
 from django.conf import settings
 from django.db.models import Q
+
+from apps.core.exceptions import UploadTechnicalError, UploadBusinessLimitError
 
 from apps.core.ocr import (
     configure_tesseract,
@@ -117,19 +120,19 @@ def _safe_extract(archive, target_dir):
     max_bytes = int(getattr(settings, "MAX_FOLDER_UPLOAD_SIZE_MB", 2048)) * 1024 * 1024
     pdf_members = [member for member in archive.infolist() if not member.is_dir() and member.filename.lower().endswith(".pdf")]
     if len(pdf_members) > max_files:
-        raise ValueError(f"Jumlah file melebihi batas {max_files} file.")
+        raise UploadTechnicalError(f"Jumlah file melebihi batas {max_files} file.")
     if sum(member.file_size for member in pdf_members) > max_bytes:
-        raise ValueError("Ukuran hasil ekstraksi ZIP melebihi batas upload.")
+        raise UploadTechnicalError("Ukuran hasil ekstraksi ZIP melebihi batas upload.")
     for member in archive.infolist():
         if member.is_dir():
             continue
         if member.filename.lower().endswith(".zip"):
-            raise ValueError("ZIP bertingkat tidak didukung.")
+            raise UploadTechnicalError("ZIP bertingkat tidak didukung.")
         if not member.filename.lower().endswith(".pdf"):
             continue
         destination = os.path.realpath(os.path.join(root, member.filename.replace("/", os.sep)))
         if os.path.commonpath([root, destination]) != root:
-            raise ValueError("ZIP memuat path file yang tidak aman.")
+            raise UploadTechnicalError("ZIP memuat path file yang tidak aman.")
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         with archive.open(member) as source, open(destination, "wb") as output:
             shutil.copyfileobj(source, output)
@@ -165,12 +168,12 @@ def build_manifest(file_path):
     elif source.lower().endswith(".pdf"):
         paths = [source]
     else:
-        raise ValueError("Format file tidak didukung. Gunakan ZIP, folder, atau PDF.")
+        raise UploadTechnicalError("Format file tidak didukung. Gunakan ZIP, folder, atau PDF.")
 
     if not paths:
         if temp_dir:
             shutil.rmtree(temp_dir, ignore_errors=True)
-        raise ValueError("Tidak ada PDF yang dapat diproses dalam unggahan.")
+        raise UploadTechnicalError("Tidak ada PDF yang dapat diproses dalam unggahan.")
 
     manifest = []
     for path in paths:
@@ -314,6 +317,8 @@ def deduplicate_pages(page_index, max_distance=3):
     return page_index
 
 
+_local = threading.local()
+
 def _cache_path(page, engine):
     raw = "|".join(
         (PARSER_VERSION, page.get("file_sha256", ""), page.get("page_hash", ""), engine)
@@ -325,10 +330,21 @@ def _cache_path(page, engine):
 
 def _load_page_cache(page, engine):
     path = _cache_path(page, engine)
+    mem_cache = getattr(_local, "ocr_cache", {})
+    if path in mem_cache:
+        cached = mem_cache[path]
+        if str(cached.get("text") or "").strip() or cached.get("cache_empty"):
+            cached = dict(cached)
+            cached["cache_hit"] = True
+            return cached
     try:
         with open(path, encoding="utf-8") as handle:
             cached = json.load(handle)
         if str(cached.get("text") or "").strip() or cached.get("cache_empty"):
+            mem_cache = getattr(_local, "ocr_cache", None)
+            if mem_cache is not None:
+                mem_cache[path] = cached
+            cached = dict(cached)
             cached["cache_hit"] = True
             return cached
     except (OSError, ValueError, TypeError):
@@ -340,6 +356,9 @@ def _save_page_cache(page, engine, result):
     if not str(result.get("text") or "").strip() and not result.get("cache_empty"):
         return
     path = _cache_path(page, engine)
+    mem_cache = getattr(_local, "ocr_cache", None)
+    if mem_cache is not None:
+        mem_cache[path] = result
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
@@ -513,6 +532,7 @@ def _ocr_page(page):
         "rotation": rotation,
         "tried_rotations": tried,
         "cache_hit": False,
+        "cache_empty": not bool(text.strip()),
     }
     _save_page_cache(page, "tesseract-ind+eng", result)
 
@@ -532,6 +552,7 @@ def _ocr_page(page):
                 "rotation": 0,
                 "tried_rotations": [],
                 "cache_hit": False,
+                "cache_empty": not bool(getattr(paddle_page, "extracted_text", "").strip()),
             }
             _save_page_cache(page, "paddleocr", paddle)
         if len(paddle.get("text", "")) > len(result.get("text", "")):
@@ -1257,13 +1278,14 @@ def _public_page(page):
 
 
 def parse_drpp_upload_batch(file_path, ocr=True):
+    _local.ocr_cache = {}
     started = time.monotonic()
     manifest = build_manifest(file_path)
     temp_dir = next((item.get("_temp_dir") for item in manifest if item.get("_temp_dir")), "")
     try:
         filename_numbers = {item["drpp_hint"] for item in manifest if item.get("drpp_hint")}
         if len(filename_numbers) > MAX_DRPP:
-            raise ValueError(TOO_MANY_DRPP_MESSAGE)
+            raise UploadBusinessLimitError(TOO_MANY_DRPP_MESSAGE)
 
         page_index = build_page_index(manifest)
         discover_embedded_drpp_pages(page_index, ocr=ocr)
@@ -1276,10 +1298,10 @@ def parse_drpp_upload_batch(file_path, ocr=True):
             if number
         }
         if len(detected_numbers) > MAX_DRPP:
-            raise ValueError(TOO_MANY_DRPP_MESSAGE)
+            raise UploadBusinessLimitError(TOO_MANY_DRPP_MESSAGE)
         numbers = sorted(detected_numbers or filename_numbers)
         if not numbers:
-            raise ValueError("Nomor DRPP tidak ditemukan pada nama file maupun isi halaman.")
+            numbers = ["TANPA_DRPP"]
 
         file_numbers = defaultdict(set)
         for page in page_index:
