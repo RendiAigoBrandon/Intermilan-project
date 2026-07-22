@@ -16,7 +16,7 @@ from apps.accounts.access import filter_by_satker, permission_context
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.dk.models import TransactionDetail
-from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, probe_package_identity
+from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, is_gup, is_tup, lampiran_warnings, link_existing_package_documents, link_paket_spm_source_document, merge_followup_into_existing_dk, money_value, parse_user_decimal, parsed_from_identity_probe, probe_package_identity
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMUpload
@@ -609,7 +609,6 @@ def paket_spm_preview(request):
     drpp_rows = build_drpp_rows(parsed)
     kw_rows = build_kw_rows(parsed)
     document_checklist = build_document_checklist(parsed, decision)
-    from apps.paket_spm.services import is_gup, is_tup, money_value
     spm_bruto = money_value(spm_meta.get("jumlah_pengeluaran"))
     spm_netto = money_value(spm_meta.get("total_pembayaran"))
     spm_potongan = money_value(spm_meta.get("jumlah_potongan"))
