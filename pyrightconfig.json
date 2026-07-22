@@ -1,0 +1,20 @@
+{
+  "include": [
+    "."
+  ],
+  "extraPaths": [
+    ".",
+    "apps"
+  ],
+  "pythonVersion": "3.13",
+  "reportAttributeAccessIssue": false,
+  "reportGeneralTypeIssues": false,
+  "reportOptionalMemberAccess": false,
+  "reportOptionalSubscript": false,
+  "reportPossiblyUnboundVariable": false,
+  "reportArgumentType": false,
+  "reportCallIssue": false,
+  "reportIndexIssue": false,
+  "reportOptionalContextManager": false,
+  "reportOperatorIssue": false
+}
