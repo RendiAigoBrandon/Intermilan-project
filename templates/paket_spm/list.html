@@ -4,8 +4,8 @@
 <section class="card">
   <div class="card-head">
     <div>
-      <h2>Upload Paket SPM</h2>
-      <p class="muted">Upload 1 PDF, banyak PDF, folder, atau ZIP Paket SPM.</p>
+      <h2>Upload DRPP dan Kuitansi</h2>
+      <p class="muted">Unggah maksimal dua DRPP beserta seluruh kuitansi yang terkait. Sistem akan mencocokkan data dengan SP2D dan menampilkan hasil sebelum disimpan ke D_K.</p>
     </div>
     <div class="page-actions"><a class="btn ghost" href="{% url 'dk:list' %}">Lihat D_K</a></div>
   </div>
@@ -30,14 +30,14 @@
     {% if sp2d_context %}<input type="hidden" name="sp2d_raw_id" value="{{ sp2d_context.sp2d_raw_id }}">{% endif %}
 
     <div class="form-field file-field full">
-      <label>Paket SPM</label>
+      <label>DRPP dan kuitansi</label>
       <div class="upload-dropzone js-upload-dropzone">
         <strong>Pilih File / Folder</strong>
-        <span>Upload 1 PDF, banyak PDF, folder, atau ZIP Paket SPM.</span>
+        <span>Pilih ZIP, beberapa PDF, atau folder berisi satu hingga dua DRPP beserta kuitansinya.</span>
         <input class="form-control js-upload-files" type="file" name="file_paket" multiple accept=".pdf,.zip,application/zip,application/pdf">
       </div>
       <input class="js-folder-files" type="file" name="document_files" multiple webkitdirectory directory hidden>
-      <p class="muted mt-small">Satker, tahun, dan bulan dideteksi otomatis lalu bisa dikoreksi pada halaman preview. Untuk folder, klik area upload sambil tahan tombol <b>Shift</b> atau drag folder langsung ke area ini jika browser mendukung.</p>
+      <p class="muted mt-small">Isi halaman menjadi sumber utama; nama file hanya petunjuk. Untuk memilih folder, klik area upload sambil menahan <b>Shift</b> atau jatuhkan folder jika browser mendukung.</p>
     </div>
 
     <div class="note-box full js-upload-progress" hidden>
@@ -49,7 +49,7 @@
 
     <div class="form-actions">
       {% if can_upload_document %}
-      <button class="primary-btn" type="submit">Baca Paket & Buat Preview D_K</button>
+      <button class="primary-btn" type="submit">Baca DRPP &amp; Buat Preview</button>
       {% else %}
       <button class="btn ghost" type="button" disabled>Read Only</button>
       {% endif %}
@@ -57,21 +57,21 @@
   </form>
 
   <div class="note-box">
-    Batas upload Paket SPM: {{ max_zip_size_mb|default:2048 }} MB. File besar diproses melalui temporary upload dan fast preview.
+    Maksimal dua nomor DRPP unik per unggahan. Batas ZIP {{ max_zip_size_mb|default:2048 }} MB.
   </div>
 </section>
 
 <section class="card mt">
   <div class="card-head">
     <div>
-      <h2>Preview D_K Paket SPM</h2>
+      <h2>Preview D_K per DRPP</h2>
       <p class="muted">Belum ada preview.</p>
     </div>
   </div>
   <div class="table-wrap">
     <table class="data-table">
       <thead><tr><th>Helper</th><th class="col-akun">Akun</th><th class="col-spm">Nomor SPM</th><th class="col-kuitansi">No. Kuitansi</th><th class="col-drpp">No. DRPP</th><th class="col-nominal">Nilai Bruto</th><th class="col-nominal">Nilai Netto</th><th class="col-status">Status</th></tr></thead>
-      <tbody><tr><td colspan="8" class="empty">Upload paket untuk melihat preview D_K.</td></tr></tbody>
+      <tbody><tr><td colspan="8" class="empty">Unggah DRPP untuk melihat preview yang dapat diedit.</td></tr></tbody>
     </table>
   </div>
 </section>
@@ -119,12 +119,13 @@
         selected += input.files ? input.files.length : 0;
       });
       var steps = [
-        ["File sedang diupload...", "Menyimpan file sementara", "12%"],
-        ["Sedang mengklasifikasi dokumen...", "File diterima", "30%"],
-        ["Dokumen sedang discan OCR...", "Sedang scan/OCR dokumen", "48%"],
-        ["SPM/DRPP/KW sedang dibaca...", "KW sedang dikelompokkan", "66%"],
-        ["Dokumen sedang disimpan ke arsip...", "Google Drive/local archive", "82%"],
-        ["Checklist sedang diperbarui...", "Selesai / Perlu Review OCR", "94%"]
+        ["Membaca file", "Membuat manifest PDF", "12%"],
+        ["Mengelompokkan DRPP", "Memastikan maksimal dua nomor DRPP", "26%"],
+        ["Mendeteksi halaman duplikat", "Membuat indeks halaman resolusi rendah", "40%"],
+        ["Membaca DRPP", "Membaca ringkasan dan Detail COA", "56%"],
+        ["Mencocokkan kuitansi", "Memverifikasi halaman kandidat", "70%"],
+        ["Mencari SPM", "Mencari parent di SP2D atau D_K", "84%"],
+        ["Menyusun preview", "Merekonsiliasi setiap DRPP", "96%"]
       ];
       box.hidden = false;
       var i = 0;

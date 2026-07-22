@@ -5,8 +5,8 @@
 <section class="card">
   <div class="card-head">
     <div>
-      <h2>Preview Paket SPM</h2>
-      <p class="muted">Tinjau hasil scan dokumen sebelum commit ke arsip dan D_K.</p>
+      <h2>Preview Upload DRPP</h2>
+      <p class="muted">Periksa setiap kelompok DRPP. Kelompok yang balance dapat disimpan tanpa menunggu kelompok lain.</p>
     </div>
   </div>
 
@@ -111,6 +111,74 @@
         <button type="submit" name="action" value="recalculate" class="btn btn-sm btn-info">SIMPAN PERUBAHAN &amp; VALIDASI ULANG</button>
     </div>
 
+    <input type="hidden" name="preview_row_count" value="{{ transaction_rows|length }}">
+    {% if transaction_groups %}
+      {% for group in transaction_groups %}
+      <section class="drpp-review-group" aria-labelledby="drpp-title-{{ forloop.counter }}">
+        <div class="drpp-review-head">
+          <div>
+            <h3 id="drpp-title-{{ forloop.counter }}">DRPP {{ group.no_drpp }}</h3>
+            <p class="muted">SPM {{ spm_meta.nomor_spm|default:"belum diisi" }} · {{ spm_meta.tanggal_spm|date:"d M Y"|default:"tanggal belum diisi" }} · {{ spm_meta.jenis_spm|default:"jenis belum diisi" }}</p>
+          </div>
+          <span class="status-pill {% if group.status == 'BALANCE' %}ok{% else %}warning{% endif %}">{{ group.status }}</span>
+        </div>
+
+        <dl class="drpp-metrics">
+          <div><dt>Kuitansi</dt><dd>{{ group.row_count }}</dd></div>
+          <div><dt>Total DRPP</dt><dd>Rp{{ group.total_drpp|id_number }}</dd></div>
+          <div><dt>Total baris</dt><dd>Rp{{ group.total_rows|id_number }}</dd></div>
+          <div><dt>Waktu OCR</dt><dd>{{ group.ocr_seconds }} dtk</dd></div>
+          <div><dt>Halaman</dt><dd>{{ group.page_total }}</dd></div>
+          <div><dt>Unik</dt><dd>{{ group.unique_pages }}</dd></div>
+          <div><dt>Di-OCR</dt><dd>{{ group.ocr_pages }}</dd></div>
+        </dl>
+
+        {% if group.errors %}
+        <div class="note-box danger">
+          <strong>Perlu diperbaiki:</strong>
+          <ul>{% for error in group.errors %}<li>{{ error }}</li>{% endfor %}</ul>
+        </div>
+        {% endif %}
+
+        <div class="table-wrap">
+          <table class="data-table data-table-wide">
+            <thead>
+              <tr>
+                <th>Helper</th><th>Akun</th><th>SP2D Bulan</th><th>Cara Pembayaran</th><th>Nomor SPM</th><th>Tanggal SPM</th><th>Jenis SPM</th><th>No. Kuitansi</th><th>No. DRPP</th><th>Deskripsi</th><th class="col-nominal">Nilai Bruto</th><th class="col-nominal">Nilai Netto</th><th>Pembebanan</th><th>FP</th><th class="col-nominal">PPh21</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in group.rows %}
+              <tr>
+                <td><input class="table-input js-helper" name="rows-{{ row.form_index }}-helper" value="{{ row.helper }}" aria-label="Helper"></td>
+                <td><input class="table-input js-helper-akun" name="rows-{{ row.form_index }}-akun" value="{{ row.akun }}"></td>
+                <td><input class="table-input" name="rows-{{ row.form_index }}-bulan_sp2d" value="{{ row.bulan_sp2d|month_id }}"></td>
+                <td><input class="table-input" name="rows-{{ row.form_index }}-cara_pembayaran" value="{{ row.cara_pembayaran }}"></td>
+                <td><input class="table-input" name="rows-{{ row.form_index }}-nomor_spm" value="{{ row.nomor_spm }}"></td>
+                <td><input class="table-input" type="date" name="rows-{{ row.form_index }}-tanggal_spm" value="{{ row.tanggal_spm|date:'Y-m-d' }}"></td>
+                <td><input class="table-input" name="rows-{{ row.form_index }}-jenis_spm" value="{{ row.jenis_spm }}"></td>
+                <td><input class="table-input js-helper-kw" name="rows-{{ row.form_index }}-no_kuitansi" value="{{ row.no_kuitansi }}"></td>
+                <td><input class="table-input" name="rows-{{ row.form_index }}-no_drpp" value="{{ row.no_drpp }}"></td>
+                <td><textarea class="table-input" name="rows-{{ row.form_index }}-deskripsi" rows="2">{{ row.deskripsi }}</textarea></td>
+                <td><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_bruto" value="{{ row.nilai_bruto|id_number }}"></td>
+                <td><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_netto" value="{{ row.nilai_netto|id_number }}"></td>
+                <td><input class="table-input" name="rows-{{ row.form_index }}-pembebanan" value="{{ row.pembebanan }}"></td>
+                <td><input class="table-input" name="rows-{{ row.form_index }}-fp" value="{{ row.fp }}"></td>
+                <td><input class="table-input col-nominal" name="rows-{{ row.form_index }}-pph21" value="{{ row.pph21|id_number }}"></td>
+                <td><span class="status-pill">{{ row.batch_status }}</span></td>
+              </tr>
+              {% empty %}<tr><td colspan="16" class="empty">Baris DRPP belum terbaca.</td></tr>{% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="drpp-group-actions">
+          <button class="btn primary" type="submit" name="action" value="commit" formaction="" {% if not group.can_commit %}disabled{% endif %} onclick="this.form.commit_drpp.value='{{ group.no_drpp }}'">{% if group.committed %}UPSERT ULANG DRPP {{ group.no_drpp }}{% else %}SIMPAN DRPP {{ group.no_drpp }} KE D_K{% endif %}</button>
+          <span class="muted">Exact key: Satker · Tahun · Nomor SPM · Kuitansi · Akun</span>
+        </div>
+      </section>
+      {% endfor %}
+      <input type="hidden" name="commit_drpp" value="">
+    {% else %}
     <div class="table-wrap">
       <input type="hidden" name="preview_row_count" value="{{ transaction_rows|length }}">
       <table class="data-table data-table-wide">
@@ -168,6 +236,8 @@
         </tfoot>
       </table>
     </div>
+    {% endif %}
+  {% if not transaction_groups %}
   {% if drpp_rows %}
   <h3 class="section-title mt">DRPP Terbaca</h3>
   <div class="table-wrap">
@@ -245,6 +315,7 @@
       </tbody>
     </table>
   </div>
+  {% endif %}
   {% endif %}
   </form>
 
@@ -399,6 +470,12 @@
     </div>
   </details>
 
+  {% if transaction_groups %}
+  <div class="drpp-footer-actions mt">
+    <button class="btn ghost" type="submit" form="preview-edit-form" name="action" value="cancel" formnovalidate>BATALKAN UPLOAD</button>
+    <span class="muted">Simpan perubahan untuk menghitung ulang status sebelum commit jika Anda mengedit nominal atau identitas.</span>
+  </div>
+  {% else %}
   <div class="mt" style="background: var(--bg-card); padding: 20px; border: 1px solid var(--border-color, #ddd); border-radius: 8px;">
 
     {% if decision.commit_action == 'link_existing' or decision.commit_action == 'link_sp2d' %}
@@ -437,5 +514,19 @@
       {% endif %}
     </div>
   </div>
+  {% endif %}
 </section>
+{% if transaction_groups %}
+<script>
+  document.querySelectorAll(".drpp-review-group tbody tr").forEach(function (row) {
+    var akun = row.querySelector(".js-helper-akun");
+    var kuitansi = row.querySelector(".js-helper-kw");
+    var helper = row.querySelector(".js-helper");
+    if (!akun || !kuitansi || !helper) return;
+    function updateHelper() { helper.value = akun.value.trim() + kuitansi.value.trim(); }
+    akun.addEventListener("input", updateHelper);
+    kuitansi.addEventListener("input", updateHelper);
+  });
+</script>
+{% endif %}
 {% endblock %}

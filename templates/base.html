@@ -1,4 +1,4 @@
-﻿{% load static %}
+{% load static %}
 <!doctype html>
 <html lang="id">
 <head>
@@ -50,7 +50,7 @@
       <a href="{% url 'core:audit_data' %}" class="navlink {% if request.resolver_match.url_name == 'audit_data' %}active{% endif %}">Review Data</a>
       {% endif %}
       <a href="{% url 'sp2d:list' %}" class="navlink {% if request.resolver_match.app_name == 'sp2d' %}active{% endif %}">Upload & Inbox SP2D</a>
-      <a href="{% url 'paket_spm:list' %}" class="navlink {% if request.resolver_match.app_name == 'paket_spm' %}active{% endif %}">Upload Paket SPM</a>
+      <a href="{% url 'paket_spm:list' %}" class="navlink {% if request.resolver_match.app_name == 'paket_spm' %}active{% endif %}">Upload DRPP</a>
       <a href="{% url 'core:monitoring' %}" class="navlink {% if request.resolver_match.url_name == 'monitoring' %}active{% endif %}">Monitoring</a>
       <a href="{% url 'dk:list' %}" class="navlink {% if request.resolver_match.app_name == 'dk' %}active{% endif %}">Detail Keuangan</a>
       <a href="{% url 'core:akun_index' %}" class="navlink {% if request.resolver_match.url_name == 'akun_index' %}active{% endif %}">Akun Keuangan</a>

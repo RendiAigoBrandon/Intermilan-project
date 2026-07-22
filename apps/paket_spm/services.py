@@ -1424,6 +1424,212 @@ def update_transaction_from_candidate(target, candidate):
     return target
 
 
+def _exact_sp2d_parent(candidate, preferred=None):
+    """Cari parent SP2D hanya dengan Satker + nomor SPM lengkap + tahun."""
+    year = getattr(candidate.tanggal_spm, "year", None)
+    if not candidate.satker_code or not candidate.nomor_spm or not year:
+        return None
+    if (
+        preferred
+        and normalize_key(preferred.satker_code) == normalize_key(candidate.satker_code)
+        and normalize_key(preferred.nomor_spm_extracted) == normalize_key(candidate.nomor_spm)
+        and (
+            not preferred.import_batch_id
+            or preferred.import_batch.tahun in (None, year)
+        )
+    ):
+        return preferred
+    return (
+        SP2DRaw.objects.filter(
+            satker_code=candidate.satker_code,
+            nomor_spm_extracted__iexact=candidate.nomor_spm,
+        )
+        .filter(
+            Q(import_batch__tahun=year)
+            | Q(tgl_sp2d__year=year)
+            | Q(tanggal_selesai_sp2d__year=year)
+        )
+        .select_related("import_batch")
+        .order_by("id")
+        .first()
+    )
+
+
+def _fill_empty_transaction_fields(target, candidate):
+    """Isi field kosong tanpa menimpa nilai existing yang mungkin diedit manual."""
+    text_fields = (
+        "akun", "cara_pembayaran", "nomor_spm", "jenis_spm", "no_kuitansi",
+        "no_drpp", "deskripsi", "pembebanan", "fp",
+    )
+    changed = []
+    for field in text_fields:
+        current = clean_optional(getattr(target, field))
+        value = clean_optional(getattr(candidate, field))
+        if not current and value:
+            setattr(target, field, value)
+            changed.append(field)
+    for field in ("tanggal_spm", "bulan_sp2d", "sp2d_raw"):
+        if getattr(target, field) is None and getattr(candidate, field) is not None:
+            setattr(target, field, getattr(candidate, field))
+            changed.append(field)
+    for field in ("nilai_bruto", "nilai_netto", "pph21"):
+        if not getattr(target, field) and getattr(candidate, field):
+            setattr(target, field, getattr(candidate, field))
+            changed.append(field)
+    status = (
+        TransactionDetail.StatusDetail.LENGKAP
+        if candidate.pembebanan
+        else TransactionDetail.StatusDetail.PERLU_REVIEW
+    )
+    if target.status_detail != status:
+        target.status_detail = status
+        changed.append("status_detail")
+    if target.drpp_status != TransactionDetail.DRPPStatus.COCOK:
+        target.drpp_status = TransactionDetail.DRPPStatus.COCOK
+        changed.append("drpp_status")
+    if changed:
+        target.save(update_fields=list(dict.fromkeys(changed)) + ["updated_at"])
+    return target
+
+
+def build_drpp_batch_rows(parsed, paket, user=None):
+    """Bentuk baris preview batch tanpa memendekkan nomor kuitansi penuh."""
+    spm_meta = (parsed.get("spm") or {}).get("metadata", {})
+    items = parsed.get("preview_rows") or parsed.get("kw_items") or []
+    rows = []
+    for item in items:
+        bruto = parse_user_decimal(item.get("nilai_bruto") or item.get("bruto") or item.get("jumlah"))
+        pph21 = parse_user_decimal(item.get("pph21"))
+        netto = parse_user_decimal(item.get("nilai_netto") or item.get("netto")) or (
+            bruto - pph21 if pph21 and bruto >= pph21 else bruto
+        )
+        tanggal_spm = date_value(item.get("tanggal_spm") or spm_meta.get("tanggal_spm") or paket.tanggal_spm)
+        jenis_spm = clean_optional(item.get("jenis_spm") or spm_meta.get("jenis_spm") or paket.jenis_spm_label)
+        cara_pembayaran = clean_optional(item.get("cara_pembayaran"))
+        if not cara_pembayaran:
+            cara_pembayaran = "UP/TUP" if is_gup(jenis_spm) or is_tup(jenis_spm) else ("LS" if is_ls(jenis_spm) else "")
+        pembebanan = clean_optional(item.get("pembebanan"))
+        row = TransactionDetail(
+            satker_code=clean_optional(
+                item.get("satker_code")
+                or spm_meta.get("satker_app_code")
+                or spm_meta.get("satker_code")
+                or paket.satker_code
+            )[:32],
+            akun=clean_optional(item.get("akun"))[:32],
+            kategori="",
+            bulan_sp2d=parse_month_number(item.get("bulan_sp2d") or spm_meta.get("bulan_sp2d")) or paket.bulan,
+            cara_pembayaran=cara_pembayaran[:100],
+            nomor_spm=clean_optional(item.get("nomor_spm") or spm_meta.get("nomor_spm") or paket.nomor_spm)[:100],
+            tanggal_spm=tanggal_spm,
+            jenis_spm=jenis_spm[:100],
+            no_kuitansi=clean_optional(item.get("no_kuitansi") or item.get("no_bukti"))[:100],
+            no_drpp=clean_optional(item.get("no_drpp"))[:100],
+            deskripsi=clean_optional(item.get("deskripsi") or item.get("keperluan"))[:1000],
+            nilai_bruto=bruto,
+            nilai_netto=netto,
+            pembebanan=pembebanan[:255],
+            fp=clean_optional(item.get("fp"))[:100],
+            pph21=pph21,
+            status_detail=(
+                TransactionDetail.StatusDetail.LENGKAP
+                if pembebanan
+                else TransactionDetail.StatusDetail.PERLU_REVIEW
+            ),
+            drpp_status=TransactionDetail.DRPPStatus.COCOK if item.get("no_drpp") else TransactionDetail.DRPPStatus.BELUM_ADA,
+            created_by=user,
+        )
+        row.helper = f"{row.akun}{row.no_kuitansi}"
+        row.batch_warnings = list(item.get("warnings") or [])
+        row.batch_status = clean_optional(item.get("status_detail") or item.get("status")) or (
+            "LENGKAP" if pembebanan else "PERLU_REVIEW"
+        )
+        rows.append(row)
+    return rows
+
+
+def upsert_drpp_group(parsed, paket, no_drpp, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP):
+    """Upsert satu kelompok DRPP memakai exact key yang diwajibkan fitur batch."""
+    no_drpp = normalize_key(no_drpp)
+    candidates = build_drpp_batch_rows(parsed, paket, user=user)
+    candidates = [row for row in candidates if normalize_key(row.no_drpp) == no_drpp]
+    group = next(
+        (item for item in parsed.get("drpp_groups") or [] if normalize_key(item.get("no_drpp")) == no_drpp),
+        None,
+    )
+    if not group:
+        raise ValueError("Kelompok DRPP tidak ditemukan pada preview.")
+    if not candidates:
+        raise ValueError("Kelompok DRPP tidak memiliki baris transaksi.")
+
+    expected_count = len((group.get("drpp") or {}).get("items") or [])
+    expected_total = money_value(
+        ((group.get("drpp") or {}).get("metadata") or {}).get("printed_total")
+        or ((group.get("drpp") or {}).get("metadata") or {}).get("total")
+    )
+    actual_total = sum((row.nilai_bruto for row in candidates), Decimal("0"))
+    if len(candidates) != expected_count:
+        raise ValueError(
+            f"Jumlah baris hasil ({len(candidates)}) tidak sama dengan jumlah baris DRPP ({expected_count})."
+        )
+    if expected_total and actual_total != expected_total:
+        raise ValueError(
+            f"Total baris Rp{actual_total:,.0f} tidak sama dengan total DRPP Rp{expected_total:,.0f}."
+        )
+
+    upload_keys = set()
+    for candidate in candidates:
+        if not candidate.no_drpp:
+            raise ValueError("Nomor DRPP kosong.")
+        if not candidate.no_kuitansi:
+            raise ValueError("Nomor kuitansi kosong.")
+        if not candidate.akun:
+            raise ValueError("Akun kosong.")
+        if candidate.nilai_bruto <= 0:
+            raise ValueError("Nilai bruto nol tanpa bukti.")
+        if not candidate.nomor_spm:
+            raise ValueError("Nomor SPM kosong.")
+        if not candidate.tanggal_spm:
+            raise ValueError("Tanggal SPM kosong.")
+        key = (
+            normalize_key(candidate.satker_code),
+            candidate.tanggal_spm.year,
+            normalize_key(candidate.nomor_spm),
+            normalize_key(candidate.no_kuitansi),
+            normalize_key(candidate.akun),
+        )
+        if key in upload_keys:
+            raise ValueError("Duplikat exact key ditemukan dalam upload yang sama.")
+        upload_keys.add(key)
+
+    saved = []
+    for candidate in candidates:
+        candidate.sp2d_raw = _exact_sp2d_parent(candidate, preferred=sp2d_raw)
+        matches = list(
+            TransactionDetail.objects.filter(
+                satker_code=candidate.satker_code,
+                nomor_spm__iexact=candidate.nomor_spm,
+                no_kuitansi__iexact=candidate.no_kuitansi,
+                akun__iexact=candidate.akun,
+                tanggal_spm__year=candidate.tanggal_spm.year,
+            ).order_by("id")[:2]
+        )
+        if len(matches) > 1:
+            raise ValueError("D_K memuat lebih dari satu baris untuk exact key yang sama.")
+        if matches:
+            saved.append(_fill_empty_transaction_fields(matches[0], candidate))
+            continue
+        candidate.status_detail = (
+            TransactionDetail.StatusDetail.LENGKAP
+            if candidate.pembebanan
+            else TransactionDetail.StatusDetail.PERLU_REVIEW
+        )
+        candidate.drpp_status = TransactionDetail.DRPPStatus.COCOK
+        candidate.save()
+        saved.append(candidate)
+    return saved
+
+
 def link_followup_document(paket, transactions, user=None, parsed=None, document_status=""):
     transaction_list = [item for item in transactions if item]
     if not transaction_list:

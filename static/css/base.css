@@ -1,4 +1,4 @@
-﻿:root {
+:root {
     --bps-blue: #0f4c81;
     --bps-blue-dark: #093761;
     --bps-blue-soft: #e9f2fb;
@@ -121,3 +121,43 @@ button, .btn, .primary-btn, .secondary-btn, .choose-btn {
 }
 button:hover:not(:disabled), .btn:hover { transform: translateY(-1px); }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.drpp-review-group {
+    margin-top: 20px;
+    padding: 18px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--card);
+}
+.drpp-review-head,
+.drpp-group-actions,
+.drpp-footer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.drpp-review-head h3 { margin-bottom: 4px; }
+.drpp-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 1px;
+    margin: 16px 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--border);
+}
+.drpp-metrics div { padding: 10px 12px; background: var(--card); }
+.drpp-metrics dt { color: var(--muted); font-size: 12px; font-weight: 700; }
+.drpp-metrics dd { margin: 3px 0 0; color: var(--text); font-weight: 800; }
+.drpp-group-actions { margin-top: 14px; }
+.drpp-footer-actions {
+    padding: 16px 0 0;
+    border-top: 1px solid var(--border);
+}
+@media (max-width: 720px) {
+    .drpp-review-group { padding: 12px; }
+    .drpp-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

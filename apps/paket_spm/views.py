@@ -13,10 +13,11 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 
 from apps.accounts.access import filter_by_satker, permission_context
+from apps.core.drpp_batch_parser import PARSER_VERSION as DRPP_BATCH_VERSION, parse_drpp_upload_batch
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.dk.models import TransactionDetail
-from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, is_gup, is_tup, lampiran_warnings, link_existing_package_documents, link_paket_spm_source_document, merge_followup_into_existing_dk, money_value, parse_user_decimal, parsed_from_identity_probe, probe_package_identity
+from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, is_gup, is_tup, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, money_value, parse_user_decimal, parsed_from_identity_probe, probe_package_identity, upsert_drpp_group
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMUpload
@@ -31,7 +32,7 @@ def paket_spm_list(request):
             upload_files = request.FILES.getlist("file_paket")
             upload_file = None
         if not upload_file and not upload_files:
-            messages.error(request, "Harap pilih PDF, folder PDF, atau ZIP paket SPM.")
+            messages.error(request, "Harap pilih PDF DRPP/kuitansi, folder PDF, atau ZIP.")
             return redirect("paket_spm:list")
         validation_error = validate_paket_upload(upload_file, upload_files)
         if validation_error:
@@ -58,12 +59,12 @@ def paket_spm_list(request):
             original_filename = upload_file.name
             kind = "zip" if lower_name.endswith(".zip") else "pdf"
         else:
-            messages.error(request, "Harap pilih PDF, folder PDF, atau ZIP paket SPM.")
+            messages.error(request, "Harap pilih PDF DRPP/kuitansi, folder PDF, atau ZIP.")
             return redirect("paket_spm:list")
 
         file_path = fs.path(filename)
-        use_ocr = False
-        parsed: dict = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [], "temp_dir": ""}
+        use_ocr = True
+        parsed = None
 
         # 1. Identity probe dulu. Jika D_K existing aman ditemukan, jangan jalankan full parser/OCR.
         sp2d_context = get_sp2d_context(request.POST.get("sp2d_raw_id"), request.user)
@@ -73,14 +74,23 @@ def paket_spm_list(request):
         access_context = permission_context(request.user)
         if not input_satker and not access_context.get("can_view_all_satker"):
             input_satker = access_context.get("user_satker_code") or ""
-        identity_probe = probe_package_identity(
-            file_path,
-            original_filename,
-            input_satker=input_satker,
-            input_tahun=input_tahun,
-            kind=kind,
-        )
-        if kind == "zip":
+        identity_probe = {}
+        try:
+            parsed = parse_drpp_upload_batch(file_path, ocr=use_ocr)
+        except ValueError as exc:
+            cleanup_paket_files(file_path)
+            messages.error(request, str(exc))
+            return redirect("paket_spm:list")
+        except Exception as exc:
+            cleanup_paket_files(file_path)
+            messages.error(request, f"Upload DRPP gagal diproses: {exc}")
+            return redirect("paket_spm:list")
+
+        # Jalur lama dipertahankan di source untuk fitur Paket SPM lain, tetapi
+        # fitur pengguna ini selalu selesai melalui parser batch DRPP di atas.
+        if parsed is not None:
+            pass
+        elif kind == "zip":
             try:
                 parsed = parse_paket_spm_zip(file_path, ocr=use_ocr)
                 parsed["identity_probe"] = identity_probe
@@ -196,6 +206,21 @@ def paket_spm_list(request):
 
         # 2. Simpan ke database sebagai DRAFT
         spm_meta = (parsed.get("spm") or {}).get("metadata", {})
+        if sp2d_row:
+            if not parsed.get("spm"):
+                parsed["spm"] = {"metadata": {}, "status": "parsed_text", "method": "selected_sp2d", "warnings": [], "detail_items": [], "akun_rows": []}
+                spm_meta = parsed["spm"]["metadata"]
+            selected_date = sp2d_row.tgl_sp2d or sp2d_row.tanggal_selesai_sp2d
+            spm_meta["nomor_spm"] = spm_meta.get("nomor_spm") or sp2d_row.nomor_spm_extracted
+            spm_meta["tanggal_spm"] = spm_meta.get("tanggal_spm") or selected_date
+            spm_meta["tanggal_sp2d"] = spm_meta.get("tanggal_sp2d") or selected_date
+            spm_meta["jenis_spm"] = spm_meta.get("jenis_spm") or sp2d_row.jenis_spm
+            spm_meta["satker_code"] = spm_meta.get("satker_code") or sp2d_row.satker_code
+            spm_meta["satker_app_code"] = spm_meta.get("satker_app_code") or sp2d_row.satker_code
+            spm_meta["jumlah_pengeluaran"] = spm_meta.get("jumlah_pengeluaran") or sp2d_row.nilai_spm
+            spm_meta["jumlah_potongan"] = spm_meta.get("jumlah_potongan") or sp2d_row.potongan
+            spm_meta["total_pembayaran"] = spm_meta.get("total_pembayaran") or sp2d_row.nilai_sp2d
+            spm_meta["bulan_sp2d"] = spm_meta.get("bulan_sp2d") or sp2d_row.bulan_sp2d
         drpp_list = parsed.get("drpps") or ([parsed.get("drpp")] if parsed.get("drpp") else [])
         drpp_meta = ((parsed.get("drpp") or (drpp_list[0] if drpp_list else {})) or {}).get("metadata", {})
         tanggal_spm = spm_meta.get("tanggal_spm")
@@ -270,8 +295,8 @@ def paket_spm_list(request):
     context = permission_context(request.user)
     context.update(
         {
-            "page_title": "Upload Paket SPM",
-            "page_subtitle": "Siapkan paket dokumen SPM, DRPP, dan kuitansi untuk preview D_K sebelum disimpan.",
+            "page_title": "Upload DRPP",
+            "page_subtitle": "Unggah maksimal dua DRPP beserta seluruh kuitansi yang terkait. Sistem akan mencocokkan data dengan SP2D dan menampilkan hasil sebelum disimpan ke D_K.",
             "rows": rows[:50],
             "max_zip_size_mb": settings.MAX_ZIP_SIZE_MB,
             "max_upload_size_mb": settings.MAX_UPLOAD_SIZE_MB,
@@ -290,12 +315,12 @@ def paket_spm_list(request):
 def paket_spm_preview(request):
     paket_id = request.session.get("paket_spm_preview_id")
     if not paket_id:
-        messages.error(request, "Sesi preview Paket SPM tidak ditemukan. Silakan upload ulang atau buka dari daftar draft.")
+        messages.error(request, "Sesi preview Upload DRPP tidak ditemukan. Silakan unggah ulang atau buka dari daftar draft.")
         return redirect("paket_spm:list")
     try:
         paket = PaketSPMUpload.objects.get(id=paket_id, status=PaketSPMUpload.Status.PREVIEW, uploaded_by=request.user)
     except PaketSPMUpload.DoesNotExist:
-        messages.error(request, "Draft Paket SPM tidak ditemukan.")
+        messages.error(request, "Draft Upload DRPP tidak ditemukan.")
         return redirect("paket_spm:list")
 
     sp2d_context = get_sp2d_context(request.session.get("sp2d_raw_id"), request.user)
@@ -311,7 +336,7 @@ def paket_spm_preview(request):
             paket.delete()
             cleanup_paket_files(zip_path, temp_dir)
             request.session.pop("paket_spm_preview_id", None)
-            messages.info(request, "Preview Paket SPM dibatalkan.")
+            messages.info(request, "Preview Upload DRPP dibatalkan.")
             return redirect("paket_spm:list")
 
         # Form preview juga dikirim saat commit supaya edit manual pada baris
@@ -397,9 +422,10 @@ def paket_spm_preview(request):
                     parsed["spm"]["metadata"]["cara_pembayaran"] = first.get("cara_pembayaran") or parsed["spm"]["metadata"].get("cara_pembayaran")
                     total_bruto = sum((parse_user_decimal(row.get("nilai_bruto")) for row in preview_rows), Decimal("0"))
                     total_netto = sum((parse_user_decimal(row.get("nilai_netto")) for row in preview_rows), Decimal("0"))
-                    parsed["spm"]["metadata"]["jumlah_pengeluaran"] = total_bruto
-                    parsed["spm"]["metadata"]["total_pembayaran"] = total_netto
-                    parsed["spm"]["metadata"]["jumlah_potongan"] = max(total_bruto - total_netto, Decimal("0"))
+                    if parsed.get("parser_version") != DRPP_BATCH_VERSION:
+                        parsed["spm"]["metadata"]["jumlah_pengeluaran"] = total_bruto
+                        parsed["spm"]["metadata"]["total_pembayaran"] = total_netto
+                        parsed["spm"]["metadata"]["jumlah_potongan"] = max(total_bruto - total_netto, Decimal("0"))
                     paket.nomor_spm = first.get("nomor_spm") or paket.nomor_spm
                     paket.nilai_spm = total_netto
 
@@ -477,12 +503,58 @@ def paket_spm_preview(request):
                 return redirect("paket_spm:preview")
 
         if action == "commit":
+            if parsed.get("parser_version") == DRPP_BATCH_VERSION:
+                commit_drpp = clean_optional(request.POST.get("commit_drpp"))
+                if not commit_drpp:
+                    messages.error(request, "Pilih kelompok DRPP yang akan disimpan.")
+                    return redirect("paket_spm:preview")
+                parser_sp2d = None
+                if parsed.get("sp2d_parent_id"):
+                    parser_sp2d = filter_by_satker(SP2DRaw.objects.all(), request.user).filter(pk=parsed["sp2d_parent_id"]).first()
+                try:
+                    with transaction.atomic():
+                        rows = upsert_drpp_group(
+                            parsed,
+                            paket,
+                            commit_drpp,
+                            user=request.user,
+                            sp2d_raw=forced_sp2d or parser_sp2d,
+                            document_status="Lengkap",
+                        )
+                        link_followup_document(
+                            paket,
+                            rows,
+                            user=request.user,
+                            parsed=parsed,
+                            document_status="Lengkap",
+                        )
+                        committed = parsed.setdefault("committed_drpps", [])
+                        if commit_drpp not in committed:
+                            committed.append(commit_drpp)
+                        all_numbers = [group.get("no_drpp") for group in parsed.get("drpp_groups") or []]
+                        paket.status = (
+                            PaketSPMUpload.Status.COMMITTED
+                            if all(number in committed for number in all_numbers)
+                            else PaketSPMUpload.Status.PREVIEW
+                        )
+                        paket.parsed_data = make_json_safe(parsed)
+                        paket.save(update_fields=["status", "parsed_data"])
+                except Exception as exc:
+                    messages.error(request, str(exc))
+                    return redirect("paket_spm:preview")
+
+                messages.success(request, f"DRPP {commit_drpp} berhasil di-upsert ke D_K tanpa duplikasi.")
+                if paket.status == PaketSPMUpload.Status.COMMITTED:
+                    request.session.pop("paket_spm_preview_id", None)
+                    return redirect("paket_spm:list")
+                return redirect("paket_spm:preview")
+
             commit_choice = request.POST.get("commit_choice") # 'link_existing', 'create_from_package', 'review_manual', 'save_draft'
             decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
 
             if commit_choice == "save_draft":
                 request.session.pop("paket_spm_preview_id", None)
-                messages.success(request, "Draft Paket SPM berhasil disimpan. Anda dapat membukanya kembali di menu Draft Paket SPM.")
+                messages.success(request, "Draft Upload DRPP berhasil disimpan dan dapat dibuka kembali dari daftar draft.")
                 # We do not change status, keep it PREVIEW so it shows in drafts
                 return redirect("paket_spm:drafts")
 
@@ -592,7 +664,9 @@ def paket_spm_preview(request):
 
     # Render preview rows dynamically (without saving)
     rekon_errors = []
-    if decision.get("matched_transaction") and decision.get("commit_action") in {"link_existing", "update_existing"}:
+    if parsed.get("parser_version") == DRPP_BATCH_VERSION:
+        transaction_rows = build_drpp_batch_rows(parsed, paket, request.user)
+    elif decision.get("matched_transaction") and decision.get("commit_action") in {"link_existing", "update_existing"}:
         transaction_rows = exact_transactions_for_package(parsed, paket)
     else:
         try:
@@ -613,44 +687,51 @@ def paket_spm_preview(request):
     spm_netto = money_value(spm_meta.get("total_pembayaran"))
     spm_potongan = money_value(spm_meta.get("jumlah_potongan"))
 
-    # 1. Total Bruto seluruh baris = Nilai Bruto SPM
-    diff_bruto = abs(sum_bruto - spm_bruto)
-    if diff_bruto > 1 and spm_bruto > 0:
-        rekon_errors.append(f"Total Bruto baris Rp{sum_bruto:,.0f}, sedangkan Bruto SPM Rp{spm_bruto:,.0f}. Selisih Rp{diff_bruto:,.0f}.")
+    if parsed.get("parser_version") != DRPP_BATCH_VERSION:
+        # Rekonsiliasi SPM penuh hanya untuk parser Paket SPM lama. Upload DRPP
+        # dapat merupakan sebagian dari satu SPM dan divalidasi per DRPP.
+        diff_bruto = abs(sum_bruto - spm_bruto)
+        if diff_bruto > 1 and spm_bruto > 0:
+            rekon_errors.append(f"Total Bruto baris Rp{sum_bruto:,.0f}, sedangkan Bruto SPM Rp{spm_bruto:,.0f}. Selisih Rp{diff_bruto:,.0f}.")
 
-    # 2. GU/GUP/TUP direkonsiliasi dengan bruto dan potongan; LS tetap pakai nilai pembayaran.
-    is_gu_package = is_gup(spm_meta.get("jenis_spm", "")) or is_tup(spm_meta.get("jenis_spm", ""))
-    if is_gu_package:
-        row_deduction = sum_bruto - sum_netto
-        header_deduction = spm_potongan if spm_potongan > 0 else row_deduction
-        diff_gu = abs((sum_netto + header_deduction) - sum_bruto)
-        if diff_gu > 1 and sum_bruto > 0:
-            rekon_errors.append(
-                f"Rekonsiliasi GUP belum balance: Netto baris + potongan = Rp{(sum_netto + header_deduction):,.0f}, "
-                f"sedangkan Bruto baris Rp{sum_bruto:,.0f}. Selisih Rp{diff_gu:,.0f}."
-            )
-    else:
-        diff_netto = abs(sum_netto - spm_netto)
-        if diff_netto > 1 and spm_netto > 0:
-            rekon_errors.append(f"Total Netto baris Rp{sum_netto:,.0f}, sedangkan Pembayaran SPM Rp{spm_netto:,.0f}. Selisih Rp{diff_netto:,.0f}.")
+        is_gu_package = is_gup(spm_meta.get("jenis_spm", "")) or is_tup(spm_meta.get("jenis_spm", ""))
+        if is_gu_package:
+            row_deduction = sum_bruto - sum_netto
+            header_deduction = spm_potongan if spm_potongan > 0 else row_deduction
+            diff_gu = abs((sum_netto + header_deduction) - sum_bruto)
+            if diff_gu > 1 and sum_bruto > 0:
+                rekon_errors.append(
+                    f"Rekonsiliasi GUP belum balance: Netto baris + potongan = Rp{(sum_netto + header_deduction):,.0f}, "
+                    f"sedangkan Bruto baris Rp{sum_bruto:,.0f}. Selisih Rp{diff_gu:,.0f}."
+                )
+        else:
+            diff_netto = abs(sum_netto - spm_netto)
+            if diff_netto > 1 and spm_netto > 0:
+                rekon_errors.append(f"Total Netto baris Rp{sum_netto:,.0f}, sedangkan Pembayaran SPM Rp{spm_netto:,.0f}. Selisih Rp{diff_netto:,.0f}.")
 
     # Jika ada error, blokir tombol SIMPAN KE D_K
-    can_commit = decision.get("can_commit", False)
+    transaction_groups = build_transaction_groups(parsed, transaction_rows)
+    can_commit = (
+        any(group["can_commit"] for group in transaction_groups)
+        if transaction_groups
+        else decision.get("can_commit", False)
+    )
     if getattr(paket, "alokasi_potongan_ambigu", False):
         rekon_errors.append("Alokasi potongan ambigu untuk beberapa baris pengeluaran. Potongan tidak dapat dialokasikan secara eksplisit. Harap perbaiki nilai potongan per baris secara manual.")
 
-    if rekon_errors:
+    if rekon_errors and not transaction_groups:
         can_commit = False
 
     context = permission_context(request.user)
     context.update({
-        "page_title": "Preview Paket SPM",
-        "page_subtitle": "Tinjau isi data sebelum disimpan ke D_K.",
+        "page_title": "Preview Upload DRPP",
+        "page_subtitle": "Tinjau dan perbaiki 15 kolom per kelompok DRPP sebelum upsert ke D_K.",
         "parsed": parsed,
         "decision": decision,
         "preview_summary": preview_summary,
         "summary_document_status": summary_document_status,
         "transaction_rows": transaction_rows,
+        "transaction_groups": transaction_groups,
         "scan_rows": scan_rows,
         "drpp_rows": drpp_rows,
         "kw_rows": kw_rows,
@@ -716,6 +797,20 @@ def validate_paket_upload(upload_file=None, upload_files=None):
 def build_preview_summary(parsed, decision, preview_state):
     meta = decision.get("meta", {})
     document_status = decision.get("document_status") or "-"
+    if parsed.get("parser_version") == DRPP_BATCH_VERSION:
+        groups = parsed.get("drpp_groups") or []
+        balanced = sum(1 for group in groups if (group.get("validation") or {}).get("status") == "BALANCE")
+        return {
+            "upload_name": preview_state.get("original_filename", "-"),
+            "file_count": len(parsed.get("files", [])),
+            "spm_count": 1 if parsed.get("spm") else 0,
+            "drpp_count": len(groups),
+            "kw_count": len(parsed.get("kw_items", [])),
+            "total": sum((parse_user_decimal(item.get("nilai_bruto") or item.get("jumlah")) for item in parsed.get("kw_items", [])), Decimal("0")),
+            "document_status": "Siap ditinjau" if parsed.get("ok") else "Perlu Review",
+            "reconciliation_status": f"{balanced}/{len(groups)} DRPP balance",
+            "commit_label": "Upsert per DRPP",
+        }
     if lampiran_warnings(parsed) and document_status in {"-", "Lengkap"}:
         if parsed.get("spm") and (parsed.get("drpps") or parsed.get("drpp")) and parsed.get("kw_items"):
             document_status = "Lengkap dengan Peringatan Lampiran"
@@ -737,6 +832,13 @@ def build_document_checklist(parsed, decision):
     spm_meta = spm.get("metadata", {}) or {}
     drpps = parsed.get("drpps") or ([parsed.get("drpp")] if parsed.get("drpp") else [])
     kw_items = parsed.get("kw_items") or []
+    if parsed.get("parser_version") == DRPP_BATCH_VERSION:
+        return [
+            {"label": "SPM parent", "status": "Terhubung" if spm else "Perlu diisi pada preview"},
+            {"label": "DRPP", "status": f"{len(drpps)} kelompok terbaca" if drpps else "Belum terbaca"},
+            {"label": "Kuitansi", "status": f"{len(kw_items)} baris terverifikasi" if kw_items else "Belum terbaca"},
+            {"label": "SP2D pembanding", "status": "Terhubung" if parsed.get("sp2d_parent_id") or decision.get("matched_sp2d") else "Belum terhubung"},
+        ]
     return [
         {"label": "SPM", "status": "Tersedia" if spm else "Belum tersedia"},
         {"label": "SPP", "status": "Tersedia" if spm_meta.get("nomor_spp") else "Belum terbaca"},
@@ -935,6 +1037,91 @@ def build_drpp_rows(parsed):
     return rows
 
 
+def build_transaction_groups(parsed, transaction_rows):
+    if parsed.get("parser_version") != DRPP_BATCH_VERSION:
+        return []
+    metrics = parsed.get("metrics") or {}
+    committed = set(parsed.get("committed_drpps") or [])
+    seen_keys = {}
+    duplicate_groups = set()
+    for row in transaction_rows:
+        key = (
+            clean_optional(row.satker_code).upper(),
+            getattr(row.tanggal_spm, "year", None),
+            clean_optional(row.nomor_spm).upper(),
+            clean_optional(row.no_kuitansi).upper(),
+            clean_optional(row.akun).upper(),
+        )
+        if key in seen_keys:
+            duplicate_groups.update((seen_keys[key], row.no_drpp))
+        else:
+            seen_keys[key] = row.no_drpp
+
+    output = []
+    for group in parsed.get("drpp_groups") or []:
+        number = clean_optional(group.get("no_drpp"))
+        rows = [row for row in transaction_rows if clean_optional(row.no_drpp) == number]
+        errors = []
+        drpp = group.get("drpp") or {}
+        if not drpp:
+            errors.append("Halaman DRPP tidak ditemukan.")
+        expected_count = len(drpp.get("items") or [])
+        expected_total = parse_user_decimal(
+            (drpp.get("metadata") or {}).get("printed_total")
+            or (drpp.get("metadata") or {}).get("total")
+        )
+        total = sum((row.nilai_bruto for row in rows), Decimal("0"))
+        if not number:
+            errors.append("Nomor DRPP kosong.")
+        if len(rows) != expected_count:
+            errors.append(f"Jumlah baris hasil ({len(rows)}) tidak sama dengan jumlah baris DRPP ({expected_count}).")
+        if expected_total and total != expected_total:
+            errors.append(f"Total baris Rp{total:,.0f} tidak sama dengan total DRPP Rp{expected_total:,.0f}.")
+        if number in duplicate_groups:
+            errors.append("Duplikat exact key ditemukan dalam upload yang sama.")
+        for index, row in enumerate(rows):
+            row.form_index = transaction_rows.index(row)
+            row.helper = f"{row.akun}{row.no_kuitansi}"
+            row_errors = []
+            if not row.no_kuitansi:
+                row_errors.append("nomor kuitansi kosong")
+            if not row.akun:
+                row_errors.append("akun kosong")
+            if row.nilai_bruto <= 0:
+                row_errors.append("nilai bruto nol")
+            if not row.nomor_spm:
+                row_errors.append("nomor SPM kosong")
+            if not row.tanggal_spm:
+                row_errors.append("tanggal SPM kosong")
+            errors.extend(error.capitalize() + "." for error in row_errors)
+            if row_errors:
+                row.batch_status = "GAGAL"
+            elif not row.pembebanan:
+                row.batch_status = "PERLU_REVIEW"
+            else:
+                row.batch_status = "LENGKAP"
+        errors = list(dict.fromkeys(errors))
+        output.append(
+            {
+                "no_drpp": number,
+                "rows": rows,
+                "row_count": len(rows),
+                "expected_row_count": expected_count,
+                "total_drpp": expected_total,
+                "total_rows": total,
+                "status": "BALANCE" if not errors else "PERLU_REVIEW",
+                "can_commit": not errors,
+                "errors": errors,
+                "committed": number in committed,
+                "ocr_seconds": metrics.get("ocr_seconds", 0),
+                "page_total": metrics.get("page_total", 0),
+                "unique_pages": metrics.get("unique_pages", 0),
+                "ocr_pages": metrics.get("ocr_pages", 0),
+            }
+        )
+    return output
+
+
 def build_kw_rows(parsed):
     return parsed.get("kw_items", []) or []
 
@@ -973,8 +1160,8 @@ def paket_spm_drafts(request):
     drafts = PaketSPMUpload.objects.filter(uploaded_by=request.user, status=PaketSPMUpload.Status.PREVIEW).order_by("-uploaded_at")
     context = permission_context(request.user)
     context.update({
-        "page_title": "Draft Review Paket SPM",
-        "page_subtitle": "Lanjutkan review dokumen yang belum disimpan ke D_K.",
+        "page_title": "Draft Review Upload DRPP",
+        "page_subtitle": "Lanjutkan review kelompok DRPP yang belum disimpan ke D_K.",
         "drafts": drafts,
     })
     return render(request, "paket_spm/drafts.html", context)
