@@ -1,0 +1,42 @@
+Creating test database for alias 'default'...
+Got an error creating the test database: database  « test_intermilan_rehearsal » sudah ada
+
+Found 103 test(s).
+Type 'yes' if you would like to try deleting the test database 'test_intermilan_rehearsal', or 'no' to cancel: Destroying old test database for alias 'default'...
+..System check identified no issues (0 silenced).
+[INTERMILAN OCR] page=1 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=3 cache_hit=False
+[INTERMILAN OCR] page=2 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=1 cache_hit=False
+[INTERMILAN OCR] page=3 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=4 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=5 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=2 cache_hit=False
+[INTERMILAN OCR] page=6 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=7 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=3 cache_hit=False
+[INTERMILAN OCR] page=8 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=1 cache_hit=False
+[INTERMILAN OCR] page=9 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=1 cache_hit=False
+[INTERMILAN OCR] page=10 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=11 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=12 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=13 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=14 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=15 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=16 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=17 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=18 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=19 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=1 cache_hit=False
+[INTERMILAN OCR] page=20 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=21 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+.........F....F....F........F.[INTERMILAN PaketSPM Upload] document_graph saved PREVIEW id=20 validation=-
+.....FE...................F.E.s.....FFFF[INTERMILAN OCR] start; python=C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\.venv\Scripts\python.exe; path=C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf; exists=False; size=0; page_count=None; extra=-
+[INTERMILAN OCR] native text engine=PyMuPDF file=C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf
+[INTERMILAN OCR] PyMuPDF text gagal: no such file: 'C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf'
+[INTERMILAN OCR] native text engine=pdfplumber file=C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf
+[INTERMILAN OCR] pdfplumber text gagal: [Errno 2] No such file or directory: 'C:\\Users\\muall\\Documents\\INTERMILAN PROJECT\\intermilan_project\\media\\tmp\\DRPP 00030 KW 00209.pdf'
+[INTERMILAN OCR] native text engine=pypdf file=C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf
+[INTERMILAN OCR] pypdf/PyPDF2 text gagal: [Errno 2] No such file or directory: 'C:\\Users\\muall\\Documents\\INTERMILAN PROJECT\\intermilan_project\\media\\tmp\\DRPP 00030 KW 00209.pdf'
+[INTERMILAN OCR] engine=text raw_text_length=0
+[INTERMILAN OCR] render PDF for OCR; dpi=150; file=C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf
+[INTERMILAN OCR] PDF render gagal: no such file: 'C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf'. OCR tidak bisa dijalankan.
+[INTERMILAN OCR] done; python=C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\.venv\Scripts\python.exe; path=C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf; exists=False; size=0; page_count=None; extra=best=failed raw_text_length=0 errors=PyMuPDF text gagal: no such file: 'C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf'; pdfplumber text gagal: [Errno 2] No such file or directory: 'C:\\Users\\muall\\Documents\\INTERMILAN PROJECT\\intermilan_project\\media\\tmp\\DRPP 00030 KW 00209.pdf'; pypdf/PyPDF2 text gagal: [Errno 2] No such file or directory: 'C:\\Users\\muall\\Documents\\INTERMILAN PROJECT\\intermilan_project\\media\\tmp\\DRPP 00030 KW 00209.pdf'; PDF render gagal: no such file: 'C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project\media\tmp\DRPP 00030 KW 00209.pdf'. OCR tidak bisa dijalankan.; OCR kosong: tidak ada teks yang berhasil diekstrak.
+Es.....E.F.........[INTERMILAN OCR] page=1 first_rotation=0 tried_rotations=[0] selected_rotation=0 classification=SPM classification_score=36.17 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+[INTERMILAN OCR] page=2 first_rotation=0 tried_rotations=[0, 90, 180, 270] selected_rotation=270 classification=DETAIL_SPP_SPM_SP2D classification_score=22.75 high_res_ocr_called=False tsv_word_count=1 parser_method=tesseract duration_ms=0 cache_hit=False
+...

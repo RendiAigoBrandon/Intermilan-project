@@ -12,15 +12,65 @@ from apps.core.drpp_batch_parser import (
     _classification,
     _extracted_from_pages,
     _match_coa,
+    _type_hint,
     build_transaction_items,
     classify_candidate_pages,
+    discover_embedded_drpp_pages,
     parse_drpp_coa,
     parse_drpp_summary,
     parse_drpp_upload_batch,
 )
+from apps.core.parsers import clean_description
 
 
 class DRPPBatchParserUnitTests(SimpleTestCase):
+    def test_spm_kw_bundle_probes_embedded_drpp_prefix(self):
+        file_name = "SPM NOMOR 00186A KW 00289.pdf"
+        pages = [
+            {
+                "file_name": file_name,
+                "page_number": number,
+                "type_hint": "SPM",
+                "drpp_hint": "",
+            }
+            for number in range(1, 14)
+        ]
+
+        with patch(
+            "apps.core.drpp_batch_parser._probe_page_text",
+            side_effect=lambda page: {
+                "text": (
+                    "DAFTAR RINCIAN PERINTAAN PEMBAYARAN"
+                    if page["page_number"] == 8
+                    else "dokumen pendukung"
+                ),
+                "cache_hit": False,
+            },
+        ) as probe:
+            discover_embedded_drpp_pages(pages)
+
+        self.assertEqual(_type_hint(file_name), "SPM")
+        self.assertEqual(probe.call_count, 8)
+        self.assertTrue(all(pages[index].get("force_probe") for index in (7, 8, 9)))
+        self.assertFalse(pages[10].get("force_probe", False))
+
+    def test_clean_description_removes_drpp_footer_and_trailing_ocr_noise(self):
+        value = (
+            "Honor Pengelola Sistem Akuntansi Instansi (SAI) di _/ BPS Provinsi "
+            "Sumatera Barat bulan Mei 2026 n ЧЧЧ III PO a a n Jumlah Lampiran 2 "
+            "Jumlah SPP ini : 2,800,000 Lembar"
+        )
+
+        self.assertEqual(
+            clean_description(value),
+            "Honor Pengelola Sistem Akuntansi Instansi (SAI) di BPS Provinsi "
+            "Sumatera Barat bulan Mei 2026",
+        )
+        self.assertEqual(
+            clean_description("Honor Narasumber Rapat Pembinaan PPID 7 Mei 2026 NC"),
+            "Honor Narasumber Rapat Pembinaan PPID 7 Mei 2026",
+        )
+
     def test_flattened_coa_header_fills_missing_account_and_pembebanan(self):
         rows = parse_drpp_coa(
             [{

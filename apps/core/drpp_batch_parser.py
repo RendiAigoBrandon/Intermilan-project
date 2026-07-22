@@ -104,10 +104,10 @@ def _type_hint(name):
         return "KUITANSI"
     if "DRPP" in upper:
         return "DRPP_SUMMARY"
-    if re.search(r"\b(?:KW|KUITANSI)\b", upper):
-        return "KUITANSI"
     if re.search(r"\bSPM\b", upper):
         return "SPM"
+    if re.search(r"\b(?:KW|KUITANSI)\b", upper):
+        return "KUITANSI"
     return "UNKNOWN"
 
 
@@ -454,6 +454,35 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
                 break
             elif found_summary and page["page_number"] > summary_page + 2:
                 break
+
+    if not numbers:
+        # Bundel bernama SPM ... KW ... menaruh SPM/DRPP di blok awal.
+        # Batasi probe agar kuitansi puluhan halaman tidak dibaca seluruhnya.
+        bundle_file = next(
+            (
+                page["file_name"]
+                for page in page_index
+                if re.search(r"\bSPM\b", Path(page["file_name"]).stem.upper())
+            ),
+            "",
+        )
+        for page in page_index:
+            if page["file_name"] != bundle_file or page["page_number"] > 12:
+                continue
+            started = time.monotonic()
+            probe = _probe_page_text(page)
+            page["probe_duration"] = time.monotonic() - started
+            page["probe_ocr_called"] = not probe.get("cache_hit", False)
+            page["probe_cache_hit"] = bool(probe.get("cache_hit"))
+            if _classification(probe.get("text", ""))[0] != "DRPP_SUMMARY":
+                continue
+            for candidate in page_index:
+                if (
+                    candidate["file_name"] == bundle_file
+                    and page["page_number"] <= candidate["page_number"] <= page["page_number"] + 2
+                ):
+                    candidate["force_probe"] = True
+            break
     return page_index
 
 
@@ -514,7 +543,7 @@ def _classification(text):
     upper = " ".join(str(text or "").upper().split())
     rules = [
         ("DRPP_COA", ("DETAIL COA", "LAMPIRAN DAFTAR RINCIAN")),
-        ("DRPP_SUMMARY", ("DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "NOMOR DRPP")),
+        ("DRPP_SUMMARY", ("DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "DAFTAR RINCIAN PERINTAAN PEMBAYARAN", "NOMOR DRPP")),
         ("SPM", ("SURAT PERINTAH MEMBAYAR",)),
         ("SPP", ("SURAT PERMINTAAN PEMBAYARAN",)),
         ("SURAT_PERNYATAAN_BAYAR", ("SURAT PERNYATAAN BAYAR",)),
@@ -577,7 +606,7 @@ def classify_candidate_pages(page_index, ocr=True):
         representative = page.get("_representative")
         if not representative:
             continue
-        for field in ("text", "document_type", "confidence", "evidence", "engine", "tsv_words", "rotation"):
+        for field in ("text", "document_type", "confidence", "evidence", "engine", "tsv_words", "rotation", "drpp_detected"):
             if field in representative:
                 page[field] = representative[field]
     return page_index

@@ -650,6 +650,22 @@ def clean_description(value):
         text,
         flags=re.IGNORECASE,
     )
+    # Baris terakhir tabel DRPP kadang menyerap footer halaman ke kolom uraian.
+    footer = re.search(
+        r"\b(?:Jumlah\s+Lampiran|Jumlah\s+SPP\s+ini|Jumlah\s+s\.?\s*d\.?\s*(?:SPP)?\s*ini|"
+        r"Kuasa\s+Pengguna\s+Anggaran|Pejabat\s+Pembuat\s+Komitmen)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if footer:
+        text = text[: footer.start()]
+        text = re.sub(
+            r"(\b20\d{2})(?:\s+(?:[A-Za-z]{1,3}|[^A-Za-z0-9\s]+))+\s*$",
+            r"\1",
+            text,
+        )
+    text = re.sub(r"(\b20\d{2})\s+NC\s*$", r"\1", text)
+    text = re.sub(r"\s+[_/|]{1,3}\s+", " ", text)
     text = re.sub(r"(\bsebanyak\s+\d+\s+pegawai\b).*$", r"\1", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip(" .")
     return text

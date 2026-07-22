@@ -1,0 +1,130 @@
+PERBAIKAN OCR PAKET SPM V3
+============================
+
+Target repository:
+RendiAigoBrandon/Intermilan-project
+
+Target branch:
+agent/paket-spm-ocr-combined
+
+Tujuan utama:
+1. PDF hasil pindai tidak boleh berhenti pada native text raw_text_length=0.
+2. OCR penuh harus benar-benar dijalankan sebelum document graph membentuk transaksi.
+3. Tesseract dijalankan sebagai engine utama.
+4. PaddleOCR hanya dijalankan ketika Tesseract belum menghasilkan transaksi terstruktur.
+5. OCR tidak boleh dijalankan dua kali oleh identity probe dan document graph.
+6. Hasil OCR kosong tidak boleh diperlakukan sebagai hasil sukses bernilai nol.
+7. Dokumen pendukung seperti SSP, faktur, invoice, BAST, dan lampiran tetap tidak boleh menjadi transaksi baru.
+8. Tidak ada aturan khusus berdasarkan nomor SPM, nama file sampel, atau nominal tertentu.
+
+AKAR MASALAH YANG DIPERBAIKI
+----------------------------
+1. package_graph.py sebelumnya memakai:
+
+   extracted = extracted or extract_pdf_text(file_path, ocr=True)
+
+   Dictionary hasil native extraction tetap truthy meskipun status=failed dan teks kosong.
+   Akibatnya full OCR dilewati dan preview disimpan dengan 0 transaksi.
+
+2. identity probe dapat menjalankan OCR penuh sebelum document graph, sehingga satu upload
+   berpotensi memindai PDF dua kali.
+
+3. engine terpusat dapat menjalankan PaddleOCR pada seluruh halaman hanya karena confidence
+   rata-rata Tesseract rendah, meskipun Tesseract sudah menghasilkan teks yang cukup.
+
+4. server pernah berjalan melalui Python Windows Store, bukan .venv proyek.
+
+PERUBAHAN FILE
+--------------
+1. apps/core/__init__.py
+   Menetapkan flag oneDNN/MKLDNN sebelum import PaddlePaddle pertama.
+
+2. apps/core/package_graph.py
+   Menolak reuse extracted yang statusnya failed atau teksnya kosong.
+
+3. apps/core/package_graph_v2.py
+   Orkestrasi baru:
+   native/digital reuse jika benar-benar usable
+   -> Tesseract sebagai primary OCR
+   -> document graph dan parser tabel
+   -> PaddleOCR hanya jika transaksi masih kosong
+   -> pilih hasil berdasarkan jumlah transaksi, kecocokan total, validitas field, dan metadata
+   -> tandai GAGAL_OCR jika semua OCR tetap kosong
+
+4. apps/paket_spm/services.py
+   Menambahkan allow_ocr pada identity probe agar upload view dapat menjalankan probe native
+   tanpa mengulang full OCR.
+
+5. apps/paket_spm/package_views.py
+   Menggunakan package_graph_v2 dan memanggil identity probe dengan allow_ocr=False.
+
+6. apps/core/ocr.py
+   Mengganti versi cache, menampilkan exception PaddleOCR ke terminal, dan menampilkan peringatan
+   jika server tidak berjalan dari virtual environment.
+
+7. runserver_venv.bat
+   Menjalankan Django melalui .venv secara eksplisit dengan konfigurasi OCR Windows yang benar.
+
+CARA MENERAPKAN
+---------------
+1. Buka terminal di root repository.
+2. Pastikan branch benar.
+3. Tarik remote terbaru.
+4. Periksa patch sebelum menerapkan.
+5. Terapkan patch.
+6. Commit dan push hanya ke branch agent/paket-spm-ocr-combined.
+
+Perintah:
+
+cd "C:\Users\muall\Documents\INTERMILAN PROJECT\intermilan_project"
+git switch agent/paket-spm-ocr-combined
+git pull origin agent/paket-spm-ocr-combined
+git status --short
+
+git apply --check "C:\LOKASI-ZIP\PERBAIKAN-OCR-SPM-V3.patch"
+git apply "C:\LOKASI-ZIP\PERBAIKAN-OCR-SPM-V3.patch"
+
+git diff --check
+git status --short
+git add apps/core/__init__.py apps/core/ocr.py apps/core/package_graph.py apps/core/package_graph_v2.py apps/paket_spm/services.py apps/paket_spm/package_views.py runserver_venv.bat
+git commit -m "fix: force full OCR and add staged document graph fallback"
+git push origin agent/paket-spm-ocr-combined
+
+Catatan:
+- Sesuai permintaan pengguna, paket ini tidak menyertakan kewajiban menjalankan test otomatis.
+- Jangan menyentuh main.
+- Jangan force-push.
+- Jangan mengubah patch menjadi aturan khusus PDF 00166T atau nomor SPM lain.
+- Jika git apply --check gagal, jangan memaksakan. Terapkan perubahan secara semantik dengan
+  membandingkan file yang disertakan di ZIP, lalu laporkan konflik secara lengkap.
+
+SETELAH PATCH SUDAH DIPUSH DAN DITARIK KE LAPTOP
+-------------------------------------------------
+1. Pastikan .env memuat nilai pada ENV-OCR.txt.
+2. Hapus cache OCR lama:
+
+Get-ChildItem ".\media" -Directory -Recurse -Force |
+Where-Object { $_.Name -eq ".ocr_cache" -or $_.Name -eq "ocr_cache" } |
+ForEach-Object { Remove-Item $_.FullName -Recurse -Force }
+
+3. Jalankan server dengan:
+
+.\runserver_venv.bat
+
+Jangan lagi menjalankan:
+python manage.py runserver
+
+karena perintah tersebut dapat memakai Python Windows Store.
+
+LOG YANG DIHARAPKAN
+-------------------
+Untuk PDF scan baru, terminal harus memperlihatkan pola berikut:
+
+[INTERMILAN OCR] render PDF for OCR ...
+[INTERMILAN OCR] engine=tesseract raw_text_length=...
+[INTERMILAN DocumentGraph] extracted_reused=False status=parsed_ocr text_length=...
+[INTERMILAN PaketSPM Upload] ... full_ocr_called=True method=tesseract text_length=... rows=...
+
+Jika Tesseract belum membentuk transaksi, baru muncul percobaan PaddleOCR.
+Jika seluruh engine benar-benar gagal, status harus menjadi GAGAL_OCR dan tidak boleh dianggap
+sebagai hasil OCR sukses bernilai nol.

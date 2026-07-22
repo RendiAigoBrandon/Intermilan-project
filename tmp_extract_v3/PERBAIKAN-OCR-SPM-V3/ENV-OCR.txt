@@ -1,0 +1,17 @@
+Tambahkan atau pastikan nilai berikut tersedia di .env lokal:
+
+FLAGS_use_mkldnn=0
+PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT=0
+OCR_ENABLE_PADDLEOCR=true
+OCR_FORCE_IMAGE_FOR_SCANNED_DOCS=true
+OCR_PRIMARY_ENGINE_ORDER=text,tesseract
+OCR_PADDLE_FALLBACK_ENGINE_ORDER=text,paddleocr
+OCR_PADDLEOCR_DOC_ORIENTATION=false
+OCR_PADDLEOCR_TEXTLINE_ORIENTATION=false
+OCR_PADDLEOCR_DOC_UNWARPING=false
+OCR_CACHE_ENABLED=true
+
+Catatan:
+1. Jangan menaruh rahasia atau kredensial ke repository.
+2. Jalankan server melalui runserver_venv.bat agar Python Windows Store tidak dipakai.
+3. PaddleOCR hanya dipanggil ketika hasil Tesseract belum membentuk transaksi.

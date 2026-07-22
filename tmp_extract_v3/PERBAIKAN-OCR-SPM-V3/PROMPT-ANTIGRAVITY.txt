@@ -1,0 +1,39 @@
+Saya lampirkan PERBAIKAN-OCR-SPM-V3.zip.
+
+Terapkan perbaikan ke repository:
+RendiAigoBrandon/Intermilan-project
+
+Branch tujuan:
+agent/paket-spm-ocr-combined
+
+Instruksi wajib:
+1. Pastikan bekerja pada branch agent/paket-spm-ocr-combined.
+2. Tarik perubahan terbaru dari remote.
+3. Baca INSTRUKSI.txt dan ENV-OCR.txt sampai selesai.
+4. Jalankan git apply --check terhadap PERBAIKAN-OCR-SPM-V3.patch sebelum menerapkannya.
+5. Terapkan patch tanpa menambahkan hardcode nomor SPM, nama file sampel, nominal transaksi, jumlah halaman, atau posisi halaman khusus sampel.
+6. Jangan menyentuh branch main.
+7. Jangan melakukan force-push.
+8. Jangan menghapus atau memasukkan file untracked lama milik pengguna.
+9. Sesuai permintaan pengguna, tidak perlu menjalankan test otomatis. Tetap jalankan git diff --check untuk memastikan patch tidak mengandung whitespace error.
+10. Jika patch berbenturan karena file lokal sudah berubah, jangan membuang perubahan lokal. Terapkan perubahan secara semantik dengan tujuan berikut:
+    a. hasil native extraction kosong atau status failed tidak boleh direuse;
+    b. identity probe pada upload view tidak boleh menjalankan full OCR;
+    c. Tesseract menjadi primary OCR;
+    d. PaddleOCR hanya dijalankan jika transaksi hasil Tesseract masih kosong;
+    e. hasil dipilih berdasarkan transaksi terstruktur dan validasi total;
+    f. hasil OCR kosong harus berstatus GAGAL_OCR, bukan sukses dengan nilai 0;
+    g. support document tidak boleh menjadi transaksi baru;
+    h. server lokal harus dijalankan melalui .venv.
+11. Pastikan apps/paket_spm/package_views.py mengimpor parse_uploaded_package dari apps.core.package_graph_v2.
+12. Pastikan probe_package_identity menerima allow_ocr dan package_views mengirim allow_ocr=False.
+13. Pastikan flag FLAGS_use_mkldnn dan PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT ditetapkan sebelum import PaddlePaddle.
+14. Commit dan push hanya ke agent/paket-spm-ocr-combined.
+
+Setelah selesai, laporkan:
+1. Commit hash terbaru.
+2. Hasil push.
+3. Daftar file yang berubah.
+4. Konfirmasi git diff --check bersih.
+5. Konfirmasi main tidak disentuh dan tidak ada force-push.
+6. Konfirmasi tidak ada hardcode berdasarkan PDF 00166T atau PDF sampel lain.

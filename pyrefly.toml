@@ -1,3 +1,0 @@
-search-paths = ["apps", "."]
-ignore-missing-imports = true
-suppress-rules = ["missing-import", "unresolved-import"]

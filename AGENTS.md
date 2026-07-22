@@ -26,6 +26,7 @@ Dokumen tersebut adalah sumber aturan utama. Jangan mengubah spesifikasi tanpa p
 - Seluruh 15 kolom D_K wajib dipertahankan.
 - Jangan menyatakan selesai hanya karena satu fixture atau satu PDF lulus.
 - Jalankan integration test production path dan blind test sesuai spesifikasi.
+- Setelah menguji OCR/parser dengan file nyata, langsung hapus seluruh cache yang dibuat oleh file uji tersebut berdasarkan hash sumber/halaman. Jangan menghapus cache dokumen lain.
 
 ## Sebelum Implementasi
 
