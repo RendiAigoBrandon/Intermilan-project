@@ -1,36 +1,36 @@
-{% extends "base.html" %}
+ï»¿{% extends "base.html" %}
 
 {% block content %}
 <section class="card">
-  <div class="card-head"><div><h2>DRPP</h2><p class="muted">Daftar upload DRPP dan status matching ke Detail Keuangan.</p></div><a class="btn ghost" href="{% url 'dk:transaction_list' %}">Buka D_K</a></div>
-  {% if transaction_id %}<div class="note-box">Mode review DRPP untuk transaksi ID {{ transaction_id }}. Upload/parser DRPP penuh belum diaktifkan pada tahap ini.</div>{% endif %}
+  <div class="card-head">
+    <div><h2>DRPP dan Kuitansi</h2><p class="muted">Daftar batch upload DRPP dan Kuitansi.</p></div>
+    <a class="btn ghost" href="{% url 'dk:transaction_list' %}">Buka D_K</a>
+  </div>
   <form method="post" enctype="multipart/form-data" class="toolbar-panel">
     {% csrf_token %}
     <div class="toolbar-row">
       <div class="filter-grid">
-        <div class="filter-field filter-search"><label>Upload DRPP PDF/ZIP</label><input class="form-control" type="file" name="document_files" multiple accept=".pdf,.zip,application/pdf,application/zip"></div>
-        <div class="filter-field filter-search"><label>Upload Folder DRPP</label><input class="form-control" type="file" name="document_files" multiple webkitdirectory directory></div>
-        <div class="filter-field filter-search"><label>Upload 1 File</label><input class="form-control" type="file" name="file_drpp" accept=".pdf,.zip,application/pdf,application/zip"></div>
-        <label class="checkline"><input type="checkbox" name="use_ocr"> Mode OCR scan</label>
+        <div class="filter-field"><label>Upload DRPP PDF/ZIP</label><input class="form-control" type="file" name="document_files" multiple accept=".pdf,.zip"></div>
+        <div class="filter-field"><label>Tahun</label><input class="form-control" type="number" name="tahun" placeholder="e.g. 2025"></div>
+        <label class="checkline"><input type="checkbox" name="use_ocr"> OCR scan</label>
       </div>
       <div class="page-actions"><button class="btn primary" type="submit">Preview DRPP</button></div>
     </div>
   </form>
-  <div class="filter-panel">
-    <div class="filter-grid">
-      <div class="filter-field filter-search"><label>Cari</label><input placeholder="Cari No. DRPP, SPM, satker..."></div>
-      <div class="filter-field"><label>Status</label><select><option>Semua status</option></select></div>
-      <div class="filter-actions"><button class="btn primary">Filter</button></div>
-    </div>
-  </div>
-  <div class="table-wrap"><table><thead><tr><th>No. DRPP</th><th>Satker</th><th>Nomor SPM</th><th>Bulan</th><th>Tahun</th><th>Total Jumlah</th><th>Status</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row.nomor_drpp }}</td><td>{{ row.satker_code }}</td><td>{{ row.nomor_spm }}</td><td>{{ row.bulan }}</td><td>{{ row.tahun }}</td><td>{{ row.total_jumlah }}</td><td><span class="badge blue">{{ row.get_match_status_display }}</span></td></tr>{% empty %}<tr><td colspan="7" class="empty">Belum ada DRPP.</td></tr>{% endfor %}</tbody></table></div>
-  <div class="pagination-wrap">
-    <div class="pagination-info">Menampilkan {{ page_start }}-{{ page_end }} dari {{ paginator.count }} data • {{ page_size }} data/halaman</div>
-    <div class="pagination-controls">
-      {% if page_obj.has_previous %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>{% else %}<span class="page-btn disabled">Previous</span>{% endif %}
-      {% for page_number in pagination_window %}{% if page_number == page_obj.number %}<span class="page-btn active">{{ page_number }}</span>{% else %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_number }}">{{ page_number }}</a>{% endif %}{% endfor %}
-      {% if page_obj.has_next %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.next_page_number }}">Next</a>{% else %}<span class="page-btn disabled">Next</span>{% endif %}
-    </div>
-  </div>
+  <div class="table-wrap"><table class="data-table">
+    <thead><tr><th>Batch</th><th>File</th><th>Oleh</th><th>Waktu</th><th>Baru</th><th>Update</th><th>Skip</th><th>Konflik</th><th>Review</th><th>Gagal</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for row in rows %}
+    <tr>
+      <td>#{{ row.pk }}</td><td>{{ row.original_filename|default:row.filename }}</td>
+      <td>{{ row.uploaded_by.username|default:"-" }}</td><td>{{ row.created_at|date:"d/m/Y H:i" }}</td>
+      <td>{{ row.created_rows }}</td><td>{{ row.updated_rows }}</td><td>{{ row.skipped_rows }}</td>
+      <td>{{ row.conflict_rows }}</td><td>{{ row.review_rows }}</td><td>{{ row.failed_rows }}</td>
+      <td><span class="badge">{{ row.status }}</span></td>
+    </tr>
+    {% empty %}<tr><td colspan="11" class="empty">Belum ada batch DRPP/Kuitansi.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
 </section>
 {% endblock %}

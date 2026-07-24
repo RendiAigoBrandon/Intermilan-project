@@ -2,12 +2,45 @@ from django.conf import settings
 from django.db import models
 
 
+class DRPPImportBatch(models.Model):
+    class Status(models.TextChoices):
+        PROCESSED = "PROCESSED", "Processed"
+        FAILED = "FAILED", "Failed"
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="drpp_batches"
+    )
+    filename = models.CharField(max_length=255)
+    original_filename = models.CharField(max_length=255)
+    
+    created_rows = models.PositiveIntegerField(default=0)
+    updated_rows = models.PositiveIntegerField(default=0)
+    skipped_rows = models.PositiveIntegerField(default=0)
+    conflict_rows = models.PositiveIntegerField(default=0)
+    review_rows = models.PositiveIntegerField(default=0)
+    failed_rows = models.PositiveIntegerField(default=0)
+    
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PROCESSED)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        
+    def __str__(self):
+        return f"Batch DRPP #{self.pk} - {self.filename}"
+
+
 class DRPPUpload(models.Model):
     class MatchStatus(models.TextChoices):
         BELUM_DIPROSES = "BELUM_DIPROSES", "Belum Diproses"
         COCOK = "COCOK", "Cocok"
         PERLU_DICEK = "PERLU_DICEK", "Perlu Dicek"
         KONFLIK = "KONFLIK", "Konflik"
+
+    import_batch = models.ForeignKey(
+        DRPPImportBatch, null=True, blank=True, on_delete=models.SET_NULL, related_name="drpp_uploads"
+    )
+    identity_key = models.CharField(max_length=64, unique=True, blank=True, null=True)
 
     transaction_detail = models.ForeignKey(
         "dk.TransactionDetail",
@@ -58,13 +91,26 @@ class DRPPUpload(models.Model):
 
 
 class DRPPItem(models.Model):
+    class SourceType(models.TextChoices):
+        DRPP_ITEM = "DRPP_ITEM", "Item DRPP"
+        KUITANSI_MANDIRI = "KUITANSI_MANDIRI", "Kuitansi Mandiri"
+        
     class StatusVerifikasi(models.TextChoices):
         BELUM_DICEK = "BELUM_DICEK", "Belum Dicek"
         SESUAI = "SESUAI", "Sesuai"
         TIDAK_SESUAI = "TIDAK_SESUAI", "Tidak Sesuai"
         PERLU_REVIEW = "PERLU_REVIEW", "Perlu Review"
 
-    drpp_upload = models.ForeignKey(DRPPUpload, on_delete=models.CASCADE, related_name="items")
+    drpp_upload = models.ForeignKey(DRPPUpload, on_delete=models.CASCADE, related_name="items", null=True, blank=True)
+    import_batch = models.ForeignKey(DRPPImportBatch, on_delete=models.CASCADE, related_name="items", null=True, blank=True)
+    
+    source_type = models.CharField(max_length=30, choices=SourceType.choices, default=SourceType.DRPP_ITEM)
+    identity_key = models.CharField(max_length=64, unique=True, blank=True, null=True)
+    source_row_key = models.CharField(max_length=255, blank=True)
+    
+    satker_code = models.CharField(max_length=32, blank=True)
+    tahun = models.PositiveSmallIntegerField(null=True, blank=True)
+    
     no_urut = models.PositiveIntegerField(null=True, blank=True)
     no_bukti = models.CharField(max_length=100, blank=True)
     no_bukti_norm = models.CharField(max_length=100, blank=True)
@@ -74,6 +120,12 @@ class DRPPItem(models.Model):
     npwp = models.CharField(max_length=50, blank=True)
     akun = models.CharField(max_length=32, blank=True)
     jumlah = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    
+    # Expose netto and bruto logic optionally (can be added if parser gives it explicitly)
+    nilai_bruto = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    nilai_netto = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    potongan = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+
     status_verifikasi = models.CharField(
         max_length=20,
         choices=StatusVerifikasi.choices,
@@ -88,6 +140,15 @@ class DRPPItem(models.Model):
             models.Index(fields=["no_bukti_norm"]),
             models.Index(fields=["akun"]),
             models.Index(fields=["status_verifikasi"]),
+            models.Index(fields=["satker_code", "tahun"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(source_type="DRPP_ITEM", drpp_upload__isnull=False) |
+                          models.Q(source_type="KUITANSI_MANDIRI", drpp_upload__isnull=True),
+                name="drpp_item_source_type_constraint",
+                violation_error_message="DRPP_ITEM must have drpp_upload, KUITANSI_MANDIRI must have drpp_upload as NULL"
+            )
         ]
 
     def __str__(self):
@@ -102,8 +163,11 @@ class DRPPMatch(models.Model):
         KONFLIK = "KONFLIK", "Konflik"
         TIDAK_ADA_DI_DK = "TIDAK_ADA_DI_DK", "Tidak Ada di D_K"
 
-    drpp_upload = models.ForeignKey(DRPPUpload, on_delete=models.CASCADE, related_name="matches")
-    drpp_item = models.ForeignKey(DRPPItem, null=True, blank=True, on_delete=models.SET_NULL, related_name="matches")
+    # Dipertahankan untuk legacy, tapi source of truth per item adalah drpp_item
+    drpp_upload = models.ForeignKey(DRPPUpload, on_delete=models.CASCADE, related_name="matches", null=True, blank=True)
+    
+    drpp_item = models.OneToOneField(DRPPItem, null=True, blank=True, on_delete=models.CASCADE, related_name="match")
+    
     transaction_detail = models.ForeignKey(
         "dk.TransactionDetail",
         null=True,
@@ -126,4 +190,4 @@ class DRPPMatch(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.drpp_upload} - {self.get_status_match_display()}"
+        return f"{self.drpp_item} - {self.get_status_match_display()}"

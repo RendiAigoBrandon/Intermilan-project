@@ -3613,7 +3613,7 @@ def parse_kw_pdf_fast(file_path, ocr=False, max_pages=13):
 
     memo = re.search(r"PEMBAYARAN\s+SEJUMLAH\s+RP\.?\s*[:\-]?\s*[\-—–]?\s*([0-9.,]+)", upper)
     if memo:
-        item["netto"] = parse_decimal(memo.group(1))
+        item["jumlah"] = parse_decimal(memo.group(1))
 
     fp_match = re.search(r"(?:NOMOR\s+SERI\s+FAKTUR\s+PAJAK|FAKTUR\s+PAJAK)\s*[:\-]?\s*([0-9]{10,25})", upper)
     if not fp_match:
@@ -3835,9 +3835,19 @@ def parse_kw_filename_stub(file_path, warning=""):
 
 
 def normalized_bukti_key(value):
-    text = normalize_text(value).upper()
-    match = re.search(r"\b(\d{3,6})\b", text)
-    return match.group(1) if match else text
+    """
+    Normalize a kuitansi/bukti number for deduplication comparison.
+    Strips leading zeros from the numeric part but preserves any trailing
+    letter suffix so that e.g. '00166T' and '00166A' compare differently.
+    """
+    text = normalize_text(value).upper().strip()
+    # Match digits + optional trailing letter(s), e.g. "00166T", "166A", "289"
+    match = re.search(r"\b(\d+)([A-Z]*)\b", text)
+    if match:
+        digits = match.group(1).lstrip("0") or "0"
+        suffix = match.group(2)
+        return digits + suffix
+    return text
 
 
 def safe_extract_zip(zip_path):
@@ -3915,7 +3925,7 @@ def classify_pdf_by_content_or_name(file_path, file_name):
     return classify_document(file_name, ""), text_probe
 
 
-def parse_paket_spm_zip(zip_path, ocr=False):
+def parse_paket_spm_zip(zip_path, ocr=False, drpp_kuitansi_mode=False):
     temp_dir, files = safe_extract_zip(zip_path)
     parsed_files = []
     spm_data = None
@@ -3953,7 +3963,7 @@ def parse_paket_spm_zip(zip_path, ocr=False):
             kw_by_drpp.setdefault(drpp_number or f"DRPP-{len(drpp_list)}", []).extend(drpp_items)
             kw_items.extend(drpp_items)
         elif doc_type == "KW":
-            if not has_drpp_file:
+            if not has_drpp_file and not drpp_kuitansi_mode:
                 warning = "KW/Bukti wajib diunggah bersama DRPP; file tidak dijadikan transaksi."
                 parsed_files.append({**item, "type": doc_type, "parse_status": "needs_manual_review", "method": "classifier", "warnings": [warning]})
                 fatal_errors.append(warning)
@@ -3988,7 +3998,10 @@ def parse_paket_spm_zip(zip_path, ocr=False):
             "warnings": parsed.get("warnings", []),
             "ocr_trace": parsed.get("ocr_trace", []),
         })
-    can_commit = bool(spm_data or drpp_data) and not fatal_errors
+    if drpp_kuitansi_mode:
+        can_commit = bool(drpp_list or kw_items) and not fatal_errors
+    else:
+        can_commit = bool(spm_data or drpp_data) and not fatal_errors
     return {
         "ok": can_commit,
         "temp_dir": temp_dir,
