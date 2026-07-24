@@ -166,4 +166,119 @@ class SP2DHardeningTests(TestCase):
         self.assertEqual(result["status"], "OK")
         self.assertEqual(result["identity_key"], expected_key)
 
+    def test_legacy_null_identik(self):
+        """Legacy NULL + identik -> skipped=1, identity_key is not NULL, last_import_batch is latest"""
+        from apps.sp2d.services import commit_sp2d_rows
+        # Create a legacy record
+        sp2d = SP2DRaw.objects.create(
+            satker_code="111111", satker_name="Satker Legacy", 
+            no_sp2d="SP2D-LEGACY-01", tahun=2026,
+            nilai_spm=Decimal("1000"), potongan=Decimal("0"), nilai_sp2d=Decimal("1000"), 
+            jenis_spm="LS", deskripsi="Legacy",
+            nomor_invoice="", nomor_spm_extracted="", 
+            mata_uang="", jenis_sp2d="", cek_akun="", original_file="",
+            identity_key=None
+        )
+        
+        rows = [{"satker_code": "111111", "satker_name": "Satker Legacy",
+                 "no_sp2d": "SP2D-LEGACY-01", "tgl_sp2d": None,
+                 "nilai_spm": Decimal("1000"), "potongan": Decimal("0"), "nilai_sp2d": Decimal("1000"),
+                 "nomor_invoice": "", "jenis_spm": "LS", "deskripsi": "Legacy", "nomor_spm_extracted": "",
+                 "mata_uang": "", "jenis_sp2d": "", "cek_akun": ""}]
+                 
+        batch = SP2DImportBatch.objects.create(
+            filename="legacy.xlsx", original_filename="legacy.xlsx", tahun=2026, bulan=1,
+            total_rows=1, status=SP2DImportBatch.Status.PROCESSING, uploaded_by=self.user)
+            
+        commit_sp2d_rows(batch, rows, self.user, filename="legacy.xlsx")
+        
+        self.assertEqual(batch.created_rows, 0)
+        self.assertEqual(batch.skipped_rows, 1)
+        
+        sp2d.refresh_from_db()
+        self.assertIsNotNone(sp2d.identity_key)
+        self.assertEqual(sp2d.last_import_batch, batch)
+        
+    def test_fallback_legacy_match(self):
+        """Fallback legacy match works when no_sp2d is missing."""
+        from apps.sp2d.services import find_legacy_candidates
+        SP2DRaw.objects.create(
+            satker_code="222222", no_sp2d="", nomor_invoice="INV-FB", 
+            tanggal_invoice="2026-05-05", nilai_sp2d=500, tahun=2026,
+            mata_uang="", jenis_sp2d="", cek_akun="", original_file="",
+            identity_key=None
+        )
+        
+        prepared_row = {
+            "satker_code": "222222", "batch_tahun": 2026, "no_sp2d": "",
+            "nomor_invoice": "INV-FB", "tanggal_invoice": "2026-05-05",
+            "tgl_sp2d": None, "nilai_sp2d": 500
+        }
+        
+        matches = find_legacy_candidates(prepared_row)
+        self.assertEqual(len(matches), 1)
 
+    def test_cross_satker_linkage_fails(self):
+        """Cross-satker linkage fails (fail-closed)"""
+        sp2d = SP2DRaw.objects.create(
+            satker_code="999999", no_sp2d="SP2D-OTHER", tahun=2026,
+            mata_uang="", jenis_sp2d="", cek_akun="", original_file=""
+        )
+        
+        # We need a user who doesn't have permission for 999999 but has for 888888
+        user2 = User.objects.create_user(username="user_satker_8", password="password")
+        from apps.accounts.models import Profile
+        profile = user2.profile
+        profile.role = Profile.Role.SATKER
+        profile.satker_code = "888888"
+        profile.save()
+        self.client.login(username="user_satker_8", password="password")
+        
+        from apps.dk.models import MasterAkun
+        MasterAkun.objects.create(kode="511111", nama_akun="Test Akun", is_active=True)
+        
+        response = self.client.post(reverse("dk:transaction_create"), {
+            "sp2d_raw_id": sp2d.id,
+            "satker_code": "888888",
+            "nomor_spm": "SPM-8",
+            "tanggal_spm": "2026-01-01",
+            "bulan_sp2d": 1,
+            "cara_pembayaran": "LS",
+            "jenis_spm": "LS",
+            "deskripsi": "Test",
+            "akun": "511111",
+            "nilai_bruto": 1000,
+            "nilai_netto": 1000,
+            "pph21": 0
+        })
+        # Should render form with error, not redirect
+        self.assertEqual(response.status_code, 200)
+        self.assertFormError(response.context["form"], None, "SP2D tidak ditemukan atau beda satker.")
+
+    def test_http_flow_e2e_invalid_parser(self):
+        """HTTP flow with invalid parser data -> failed_rows counted correctly"""
+        self.client.login(username="test_upload", password="password")
+        excel_data = self._create_mock_excel([
+            ["123456", "Satker A", "SP2D-E2E-01", "2026-01-15", 1000, 0, 1000, "INV/001", "LS", "Test"],
+            # Invalid row (missing satker)
+            ["", "", "SP2D-E2E-02", "2026-01-15", 2000, 0, 2000, "INV/002", "LS", "Test"],
+        ])
+        uploaded = SimpleUploadedFile("test_e2e.xlsx", excel_data, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        
+        # Upload
+        response = self.client.post(reverse("sp2d:list"), {"tahun": "2026", "bulan": "1", "file_sp2d": uploaded})
+        self.assertRedirects(response, reverse("sp2d:preview"))
+        
+        # Commit
+        response_commit = self.client.post(reverse("sp2d:preview"), {"action": "commit"})
+        self.assertRedirects(response_commit, reverse("sp2d:list"))
+        
+        batch = SP2DImportBatch.objects.first()
+        self.assertEqual(batch.total_rows, 2)
+        # 1 valid row -> created, 1 invalid row -> failed at parser stage or classifier stage
+        # Since classify_sp2d_rows handles empty satker -> GAGAL, it fails there if parser passes it
+        # The prompt says: "parser_failed_rows = max(parse_result['raw_rows'] - len(mapped_rows), 0)"
+        # And also "failed_rows = parser_failed_rows". But in commit_sp2d_rows it might add more failed rows.
+        self.assertEqual(batch.created_rows, 1)
+        self.assertEqual(batch.failed_rows, 1)
+        self.assertEqual(batch.created_rows + batch.updated_rows + batch.skipped_rows + batch.conflict_rows + batch.failed_rows, batch.total_rows)

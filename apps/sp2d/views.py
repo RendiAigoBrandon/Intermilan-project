@@ -7,11 +7,14 @@ from django.contrib.auth.decorators import login_required
 from django.core.files.storage import FileSystemStorage
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.dateparse import parse_date
 
-from apps.accounts.access import can_upload_document, filter_by_satker, permission_context, can_import_data
+from apps.accounts.access import (
+    can_upload_document, filter_by_satker, permission_context, can_import_data,
+    can_view_all_satker, get_user_satker_code, can_edit_satker
+)
 from apps.core.parsers import parse_month, parse_sp2d_excel_file
 from apps.core.satker import infer_satker_from_name
 from apps.core.views import CHECKLIST_ROWS, MONTH_OPTIONS, build_pagination_window, normalize_page_size
@@ -65,10 +68,24 @@ def sp2d_list(request):
         return redirect("sp2d:preview")
 
     # Header Rows (SP2DRaw)
-    rows = filter_by_satker(SP2DRaw.objects.select_related("import_batch", "created_by"), request.user)
+    rows = filter_by_satker(
+        SP2DRaw.objects.select_related("import_batch", "created_by")
+        .annotate(
+            dk_count=Count(
+                "transaction_details", 
+                filter=~Q(transaction_details__status_detail=TransactionDetail.StatusDetail.DIARSIPKAN), 
+                distinct=True
+            )
+        ), 
+        request.user
+    )
     
     # Batch Rows (SP2DImportBatch)
-    batch_qs = SP2DImportBatch.objects.all()
+    if can_view_all_satker(request.user):
+        batch_qs = SP2DImportBatch.objects.all()
+    else:
+        user_satker = get_user_satker_code(request.user)
+        batch_qs = SP2DImportBatch.objects.filter(raw_rows__satker_code=user_satker).distinct()
 
     search = request.GET.get("q", "").strip()
     status = request.GET.get("status", "").strip()
@@ -101,9 +118,15 @@ def sp2d_list(request):
     batch_page_obj = batch_paginator.get_page(request.GET.get("batch_page"))
     batch_rows = list(batch_page_obj.object_list)
     
+    month_dict = dict(MONTH_OPTIONS)
+    for batch in batch_rows:
+        batch.bulan_name = month_dict.get(batch.bulan, str(batch.bulan)) if batch.bulan else "-"
+    
     header_rows = list(page_obj.object_list)
     for row in header_rows:
         row.status_detail_label = "Sudah Ada D_K" if row.status == SP2DRaw.Status.COCOK else "Belum Lengkap"
+        row.can_edit_sp2d = can_edit_satker(request.user, row.satker_code)
+        row.bulan_name = month_dict.get(row.bulan_sp2d, str(row.bulan_sp2d)) if row.bulan_sp2d else "-"
         
     base_query = request.GET.copy()
     base_query.pop("page", None)
@@ -247,12 +270,14 @@ def sp2d_preview(request):
                 bulan = parse_month(import_data["bulan"])
 
                 with transaction.atomic():
+                    parser_failed_rows = max(parse_result["raw_rows"] - len(mapped_rows), 0)
                     batch = SP2DImportBatch.objects.create(
                         filename=os.path.basename(file_path),
                         original_filename=import_data['original_filename'],
                         tahun=tahun,
                         bulan=bulan,
                         total_rows=parse_result["raw_rows"],
+                        failed_rows=parser_failed_rows,
                         status=SP2DImportBatch.Status.PROCESSING,
                         uploaded_by=request.user,
                         notes=f"Sheet {parse_result['sheet']}, header row {parse_result['header_row']}",

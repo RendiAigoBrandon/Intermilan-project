@@ -277,11 +277,16 @@ def transaction_create(request):
             linked_sp2d = None
             if sp2d_raw_id:
                 sp2d = filter_by_satker(SP2DRaw.objects, request.user).filter(id=sp2d_raw_id).first()
-                if sp2d and can_edit_satker(request.user, sp2d.satker_code):
+                if sp2d and sp2d.satker_code == instance.satker_code and can_edit_satker(request.user, sp2d.satker_code):
                     instance.sp2d_raw = sp2d
                     instance.status_detail = TransactionDetail.StatusDetail.DRAFT
                     linked_sp2d = sp2d
-            
+                else:
+                    form.add_error(None, "SP2D tidak ditemukan atau beda satker.")
+                    context = permission_context(request.user)
+                    context.update({'form': form, 'page_title': 'Tambah Baris D_K'})
+                    return render(request, 'dk/form.html', context)
+
             instance.save()
             
             # Log fields that were filled

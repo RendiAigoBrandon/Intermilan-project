@@ -9,7 +9,7 @@
     {% csrf_token %}
     <div class="form-field"><label>Tahun</label><input class="form-control" name="tahun" value="2026" required></div>
     <div class="form-field"><label>Bulan</label><input class="form-control" name="bulan" placeholder="Contoh: 6 atau Juni" required></div>
-    <div class="form-field file-field"><label>File Daftar SP2D (.xlsx)</label><input class="form-control" type="file" name="file_sp2d" accept=".xlsx,.xls" required></div>
+    <div class="form-field file-field"><label>File Daftar SP2D (.xlsx)</label><input class="form-control" type="file" name="file_sp2d" accept=".xlsx" required></div>
     <div class="form-actions">
       <button class="primary-btn upload-main-btn" type="submit">Upload & Preview</button>
     </div>
@@ -25,22 +25,32 @@
       <thead>
         <tr>
           <th>Tanggal Import</th>
+          <th>Uploader</th>
           <th>Bulan/Tahun</th>
           <th>File Asli</th>
-          <th>Total Baris</th>
+          <th>Total</th>
+          <th>Baru</th>
+          <th>Diperbarui</th>
+          <th>Dilewati</th>
+          <th>Konflik</th>
+          <th>Gagal</th>
           <th>Status</th>
-          <th>Aksi</th>
         </tr>
       </thead>
       <tbody>
         {% for batch in batch_rows %}
         <tr>
-          <td>{{ batch.created_at|date:"Y-m-d H:i" }}</td>
-          <td>{{ batch.get_bulan_display }} {{ batch.tahun }}</td>
+          <td>{{ batch.uploaded_at|date:"Y-m-d H:i" }}</td>
+          <td>{{ batch.uploaded_by.username|default:"-" }}</td>
+          <td>{{ batch.bulan_name }} {{ batch.tahun }}</td>
           <td>{{ batch.original_filename }}</td>
           <td>{{ batch.total_rows }}</td>
+          <td>{{ batch.created_rows }}</td>
+          <td>{{ batch.updated_rows }}</td>
+          <td>{{ batch.skipped_rows }}</td>
+          <td>{{ batch.conflict_rows }}</td>
+          <td>{{ batch.failed_rows }}</td>
           <td><span class="badge {{ batch.status|lower }}">{{ batch.get_status_display }}</span></td>
-          <td>-</td>
         </tr>
         {% empty %}
         <tr><td colspan="6" class="empty">Belum ada riwayat import.</td></tr>
@@ -83,8 +93,9 @@
           <th class="col-satker">Satker</th>
           <th class="col-nama-satker">Nama Satker</th>
           <th class="col-sp2d">No. SP2D</th>
-          <th class="col-tanggal">Tanggal Selesai SP2D</th>
+          <th class="col-compact">Bulan SP2D</th>
           <th class="col-tanggal">Tgl SP2D</th>
+          <th class="col-tanggal">Tanggal Selesai SP2D</th>
           <th class="col-compact">Mata Uang</th>
           <th class="col-nominal">Nilai SPM</th>
           <th class="col-nominal">Potongan</th>
@@ -94,6 +105,7 @@
           <th class="col-jenis">Jenis SPM</th>
           <th class="col-jenis">Jenis SP2D</th>
           <th class="col-deskripsi">Deskripsi</th>
+          <th class="col-compact">Rincian D_K</th>
           <th class="col-status">Status Detail</th>
           <th class="col-aksi">Aksi</th>
         </tr>
@@ -105,8 +117,9 @@
           <td class="col-satker">{% if row.satker_code and row.satker_name %}{{ row.satker_code }} - {{ row.satker_name }}{% elif row.satker_code %}{{ row.satker_code }}{% elif row.satker_name %}{{ row.satker_name }}{% else %}-{% endif %}</td>
           <td class="col-nama-satker">{{ row.satker_name|dash }}</td>
           <td class="col-sp2d">{{ row.no_sp2d|dash }}</td>
-          <td class="col-tanggal">{{ row.tanggal_selesai_sp2d|date:"Y-m-d"|default:"-" }}</td>
+          <td class="col-compact">{{ row.bulan_name }}</td>
           <td class="col-tanggal">{{ row.tgl_sp2d|date:"Y-m-d"|default:"-" }}</td>
+          <td class="col-tanggal">{{ row.tanggal_selesai_sp2d|date:"Y-m-d"|default:"-" }}</td>
           <td class="col-compact">{{ row.mata_uang|dash }}</td>
           <td class="col-nominal">{{ row.nilai_spm|id_number }}</td>
           <td class="col-nominal">{{ row.potongan|id_number }}</td>
@@ -116,8 +129,9 @@
           <td class="col-jenis">{{ row.jenis_spm|dash }}</td>
           <td class="col-jenis">{{ row.jenis_sp2d|dash }}</td>
           <td class="col-deskripsi">{{ row.deskripsi|dash }}</td>
+          <td class="col-compact">{{ row.dk_count }}</td>
           <td class="col-status"><span class="badge {% if row.status == 'COCOK' %}green{% else %}orange{% endif %}">{{ row.status_detail_label }}</span></td>
-          <td class="col-aksi">{% if row.status == 'COCOK' %}<a class="btn tiny ghost" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %}<a class="btn tiny primary" href="{% url 'sp2d:inbox_detail' row.id %}">Inbox</a>{% endif %}</td>
+          <td class="col-aksi">{% if row.can_edit_sp2d %}{% if row.status == 'COCOK' %}<a class="btn tiny ghost" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %}<a class="btn tiny primary" href="{% url 'sp2d:inbox_detail' row.id %}">Tambah Rincian</a>{% endif %}{% else %}<a class="btn tiny ghost" href="{% url 'sp2d:inbox_detail' row.id %}">Lihat Detail SP2D</a>{% endif %}</td>
         </tr>
         {% empty %}
         <tr><td colspan="17" class="empty">Belum ada data mentah SP2D.</td></tr>

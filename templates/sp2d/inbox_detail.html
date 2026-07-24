@@ -4,7 +4,6 @@
 {% block content %}
 <div class="page-actions mt-small">
   <a class="btn ghost" href="{% url 'sp2d:list' %}">Kembali ke Inbox</a>
-  <a class="btn ghost" href="{% url 'paket_spm:list' %}?sp2d_raw_id={{ row.id }}">Upload Dokumen / Paket SPM PDF/ZIP</a>
   {% if has_dk_detail %}
     <a class="btn primary" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|default:row.nomor_invoice|urlencode }}">Lihat D_K</a>
   {% endif %}
@@ -29,9 +28,6 @@
       <dt class="wide">Deskripsi</dt><dd>{{ row.deskripsi|dash }}</dd>
     </dl>
 
-    <div class="note-box mt-small">
-      Upload dokumen dari halaman ini akan membawa konteks SP2D mentah #{{ row.id }} agar hasil OCR/commit bisa dikaitkan tanpa membuat duplikat.
-    </div>
   </div>
 
   <div class="card">
@@ -67,27 +63,10 @@
       <h2>Status Pencocokan</h2>
       <p class="muted">SP2D mentah ini belum memiliki detail transaksi D_K yang cocok.</p>
       <div class="note-box mt-small">
-        <p>Gunakan tombol <b>Tambah Rincian Manual</b> di halaman D_K, atau klik tombol di bawah ini untuk mengisi rincian yang merujuk pada SP2D ini secara otomatis.</p>
-      </div>
-      <div class="form-actions full mt-small">
-        {% if can_upload_document %}
-          <a class="btn primary" href="{% url 'dk:transaction_create' %}?sp2d_raw_id={{ row.id }}">Buat Rincian D_K</a>
-        {% endif %}
+        <p>Silakan buat rincian D_K secara manual melalui halaman D_K untuk memproses SP2D ini.</p>
       </div>
     {% endif %}
   </div>
 </section>
 
-<section class="card mt">
-  <div class="card-head">
-    <div>
-      <h2>Upload Dokumen Pendukung</h2>
-      <p class="muted">SPM saja, DRPP saja, KW saja, PDF, atau ZIP lengkap tetap diterima dan akan diberi status dokumen sesuai hasil OCR.</p>
-    </div>
-    <a class="btn primary" href="{% url 'paket_spm:list' %}?sp2d_raw_id={{ row.id }}">Upload Paket SPM PDF/ZIP</a>
-  </div>
-  <div class="note-box">
-    Untuk SPM GUP, minimal dokumen lengkap adalah SPM, DRPP, dan KW/Bukti pengeluaran. Jika salah satu belum ada, file tetap disimpan dan status dokumen menjadi Belum Lengkap.
-  </div>
-</section>
 {% endblock %}

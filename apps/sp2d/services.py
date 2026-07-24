@@ -141,6 +141,62 @@ def _is_identical(existing_obj, row_data, tahun):
             
     return True
 
+def find_legacy_candidates(prepared_row):
+    """
+    Find legacy candidates (identity_key IS NULL).
+    Primary match: normalized satker + tahun + normalized no_sp2d
+    Fallback match: normalized satker + tahun + (invoice or spm) + date + normalized nilai
+    """
+    satker = normalize_sp2d_number(prepared_row.get("satker_code"))
+    tahun = prepared_row.get("batch_tahun")
+    
+    if not satker or not tahun:
+        return []
+        
+    candidates = list(SP2DRaw.objects.filter(
+        identity_key__isnull=True,
+        satker_code__iexact=satker,
+        tahun=tahun
+    ))
+    
+    # Primary match
+    no_sp2d = normalize_sp2d_number(prepared_row.get("no_sp2d"))
+    if no_sp2d:
+        matches = []
+        for c in candidates:
+            if normalize_sp2d_number(c.no_sp2d) == no_sp2d:
+                matches.append(c)
+                if len(matches) >= 2:
+                    break
+        return matches
+        
+    # Fallback match
+    invoice = normalize_sp2d_number(prepared_row.get("nomor_invoice"))
+    spm = normalize_sp2d_number(prepared_row.get("nomor_spm_extracted"))
+    doc_no = invoice or spm
+    tgl = normalize_date_for_identity(prepared_row.get("tgl_sp2d")) or normalize_date_for_identity(prepared_row.get("tanggal_invoice"))
+    nilai = normalize_money_for_identity(prepared_row.get("nilai_sp2d"))
+    
+    if not doc_no or not tgl or not nilai:
+        return []
+        
+    # Fallback match filtering is done on the same candidates
+
+    matches = []
+    for c in candidates:
+        c_invoice = normalize_sp2d_number(c.nomor_invoice)
+        c_spm = normalize_sp2d_number(c.nomor_spm_extracted)
+        c_doc = c_invoice or c_spm
+        c_tgl = normalize_date_for_identity(c.tgl_sp2d) or normalize_date_for_identity(c.tanggal_invoice)
+        c_nilai = normalize_money_for_identity(c.nilai_sp2d)
+        
+        if c_doc == doc_no and c_tgl == tgl and c_nilai == nilai:
+            matches.append(c)
+            if len(matches) >= 2:
+                break
+                
+    return matches
+
 
 def classify_sp2d_rows(batch_tahun, mapped_rows):
     """
@@ -169,12 +225,7 @@ def classify_sp2d_rows(batch_tahun, mapped_rows):
             
             # Legacy fallback check
             if not existing:
-                legacy = list(SP2DRaw.objects.filter(
-                    identity_key__isnull=True,
-                    satker_code=row.get("satker_code"),
-                    no_sp2d=row.get("no_sp2d"),
-                    tahun=row["batch_tahun"]
-                )[:2])
+                legacy = find_legacy_candidates(row)
                 if len(legacy) == 1:
                     existing = legacy
                 elif len(legacy) > 1:
@@ -245,15 +296,9 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
 
         # Legacy matching: identity_key was NULL before backfill migration
         if not record:
-            legacy = list(SP2DRaw.objects.filter(
-                identity_key__isnull=True,
-                satker_code=row.get("satker_code"),
-                no_sp2d=row.get("no_sp2d"),
-                tahun=row["batch_tahun"]
-            )[:2])
+            legacy = find_legacy_candidates(row)
             if len(legacy) == 1:
                 record = legacy[0]
-                record.identity_key = key
             elif len(legacy) > 1:
                 conflict_count += 1
                 continue
@@ -262,6 +307,26 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
             if _is_identical(record, row, row["batch_tahun"]):
                 skipped_count += 1
                 success_count += 1
+                
+                # Persist identity_key + batch history on IDENTIK skip
+                fields_to_update = []
+                if record.identity_key != key:
+                    record.identity_key = key
+                    fields_to_update.append("identity_key")
+                if record.tahun != row["batch_tahun"]:
+                    record.tahun = row["batch_tahun"]
+                    fields_to_update.append("tahun")
+                if record.last_import_batch_id != batch.id:
+                    record.last_import_batch = batch
+                    fields_to_update.append("last_import_batch")
+                if filename and record.original_file != filename:
+                    record.original_file = filename
+                    fields_to_update.append("original_file")
+                    
+                if fields_to_update:
+                    fields_to_update.append("updated_at")
+                    record.save(update_fields=fields_to_update)
+                    
                 reconcile_sp2d_with_dk(record, user)
                 continue
 
