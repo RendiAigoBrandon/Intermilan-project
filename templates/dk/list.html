@@ -20,7 +20,9 @@
     </div>
     <div class="toolbar-row">
       <div class="action-bar">
+        {% if not is_role_viewer %}
         <a class="btn primary" href="{% url 'dk:transaction_create' %}">Tambah Baris Manual</a>
+        {% endif %}
         {% if can_export_data %}
         <button class="btn ghost" type="button">Export Excel</button>
         <a class="btn ghost" href="{% url 'core:akun_index' %}">Lihat Per Akun</a>
@@ -32,10 +34,14 @@
     </div>
   </div>
   <div class="note-box">Gunakan tombol Checklist untuk memeriksa dokumen pendukung transaksi yang membutuhkan verifikasi.</div>
+  {% if not is_role_viewer %}
   <form method="get" action="{% url 'dk:transaction_bulk_edit' %}">
   <div class="toolbar-row mt-small mb-small">
     <button type="submit" class="btn warning">Bulk Edit Terpilih</button>
   </div>
+  {% else %}
+  <form>
+  {% endif %}
   <div class="table-wrap wide-table-wrap large mt-small">
     <table class="data-table compact table-dk dk-full-table">
       <thead>
@@ -46,6 +52,7 @@
           <th class="col-satker">Satker</th>
           <th class="col-nama-satker">Nama Satker</th>
           <th class="col-sp2d">No SP2D</th>
+          <th class="col-status">Helper</th>
           <th class="col-akun">Akun</th>
           <th class="col-bulan">SP2D Bulan</th>
           <th class="col-cara-bayar">Cara Pembayaran</th>
@@ -60,7 +67,6 @@
           <th class="col-pembebanan">Pembebanan</th>
           <th class="col-compact">FP</th>
           <th class="col-nominal">PPh21</th>
-          <th class="col-status">Helper</th>
           <th class="col-status">Status Dokumen</th>
           <th class="col-status">Status Rekonsiliasi</th>
           <th class="col-status">Aksi</th>
@@ -69,12 +75,17 @@
       <tbody>
         {% for row in rows %}
         <tr>
-          <td class="col-no"><input type="checkbox" name="ids" value="{{ row.id }}" class="row-checkbox"></td>
+          <td class="col-no">
+            {% if row.can_edit and row.status_detail != "DIARSIPKAN" %}
+            <input type="checkbox" name="ids" value="{{ row.id }}" class="row-checkbox">
+            {% endif %}
+          </td>
           <td class="col-no">{{ page_start|add:forloop.counter0 }}</td>
           <td class="col-status"><span class="badge">{{ row.source_data_label }}</span></td>
           <td class="col-satker">{{ row.satker_code|dash }}</td>
           <td class="col-nama-satker">{{ row.display_satker_name|dash }}</td>
           <td class="col-sp2d">{{ row.display_no_sp2d|dash }}</td>
+          <td class="col-status">{{ row.helper|dash }}</td>
           <td class="col-akun"><b>{{ row.akun|dash }}</b></td>
           <td class="col-bulan">{{ row.bulan_sp2d|month_id }}</td>
           <td class="col-cara-bayar">{{ row.cara_pembayaran|dash }}</td>
@@ -89,10 +100,10 @@
           <td class="col-pembebanan">{{ row.pembebanan|dash }}</td>
           <td class="col-compact">{{ row.fp|dash }}</td>
           <td class="col-nominal">{{ row.pph21|id_number }}</td>
-          <td class="col-status">{{ row.helper|dash }}</td>
           <td class="col-status">{{ row.document_status_label|dash }}</td>
           <td class="col-status">{{ row.reconciliation_status_label|dash }}</td>
           <td class="col-status action-cell">
+            {% if row.can_edit %}
             <a class="btn tiny primary" href="{% url 'dk:transaction_edit' row.id %}">Edit</a>
             <form method="post" action="{% url 'dk:transaction_duplicate' row.id %}" style="display:inline;">
                 {% csrf_token %}
@@ -108,6 +119,7 @@
                 {% csrf_token %}
                 <button type="submit" class="btn tiny warning">Pulihkan</button>
             </form>
+            {% endif %}
             {% endif %}
             <a class="btn tiny ghost" href="{% url 'documents:checklist_detail' row.id %}">
               {% if row.can_edit %}Checklist{% else %}Lihat Checklist{% endif %}

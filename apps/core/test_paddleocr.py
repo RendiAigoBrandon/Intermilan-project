@@ -14,6 +14,9 @@ from apps.core.ocr import (
 
 
 class PaddleOCRAdapterTests(SimpleTestCase):
+    def setUp(self):
+        import apps.core.ocr
+        apps.core.ocr._PADDLE_OCR_INSTANCE = None
     def test_empty_or_failed_ocr_result_is_never_reused_from_cache(self):
         import json
         import tempfile

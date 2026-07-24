@@ -4,7 +4,7 @@ from django.db import connection
 from django.db.models import Count, F, Q
 from django.shortcuts import render
 
-from apps.accounts.access import can_edit_satker, filter_by_satker, get_profile, permission_context
+from apps.accounts.access import can_edit_satker, filter_by_satker, get_profile, permission_context, is_viewer
 from apps.core.views import D_K_COLUMNS, MONTH_OPTIONS, build_satker_options, get_satker_name_map
 from apps.documents.models import ChecklistStatus
 from apps.paket_spm.models import PaketSPMPreviewItem
@@ -217,6 +217,8 @@ from .models import TransactionChangeLog
 @login_required
 @transaction.atomic
 def transaction_create(request):
+    if is_viewer(request.user):
+        raise PermissionDenied("Anda tidak memiliki izin (Read-Only).")
     if request.method == "POST":
         form = TransactionDetailForm(request.POST, user=request.user)
         if form.is_valid():
@@ -322,6 +324,9 @@ def transaction_archive(request, pk):
     instance = get_object_or_404(TransactionDetail, pk=pk)
     if not can_edit_satker(request.user, instance.satker_code):
         raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
+    if instance.status_detail == TransactionDetail.StatusDetail.DIARSIPKAN:
+        messages.error(request, "Baris D_K sudah dalam status DIARSIPKAN.")
+        return redirect('dk:transaction_list')
     if request.method == "POST":
         old_status = instance.status_detail
         instance.status_detail = TransactionDetail.StatusDetail.DIARSIPKAN
@@ -343,6 +348,9 @@ def transaction_restore(request, pk):
     instance = get_object_or_404(TransactionDetail, pk=pk)
     if not can_edit_satker(request.user, instance.satker_code):
         raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
+    if instance.status_detail != TransactionDetail.StatusDetail.DIARSIPKAN:
+        messages.error(request, "Baris D_K tidak dalam status DIARSIPKAN.")
+        return redirect('dk:transaction_list')
     if request.method == "POST":
         # Find the last archive log to get original status
         last_log = instance.change_logs.filter(
@@ -352,6 +360,10 @@ def transaction_restore(request, pk):
         
         original_status = last_log.old_value if last_log and last_log.old_value else TransactionDetail.StatusDetail.DRAFT
         
+        valid_statuses = [c.value for c in TransactionDetail.StatusDetail]
+        if original_status not in valid_statuses or original_status == TransactionDetail.StatusDetail.DIARSIPKAN:
+            original_status = TransactionDetail.StatusDetail.DRAFT
+            
         instance.status_detail = original_status
         instance.save(update_fields=['status_detail'])
         TransactionChangeLog.objects.create(
@@ -368,48 +380,85 @@ def transaction_restore(request, pk):
 @login_required
 @transaction.atomic
 def transaction_bulk_edit(request):
+    if is_viewer(request.user):
+        raise PermissionDenied("Anda tidak memiliki izin (Read-Only).")
+        
     if request.method == "POST":
         selected_ids = request.POST.getlist('selected_ids')
-        if not selected_ids:
-            messages.warning(request, "Tidak ada data yang dipilih.")
+    else:
+        selected_ids = request.GET.getlist('ids')
+        
+    try:
+        selected_ids = [int(i) for i in selected_ids if str(i).strip()]
+    except ValueError:
+        messages.error(request, "ID tidak valid.")
+        return redirect('dk:transaction_list')
+
+    if not selected_ids:
+        messages.warning(request, "Pilih baris terlebih dahulu.")
+        return redirect('dk:transaction_list')
+        
+    transactions = TransactionDetail.objects.filter(id__in=selected_ids)
+    if transactions.count() != len(set(selected_ids)):
+        messages.error(request, "Satu atau lebih baris data tidak ditemukan.")
+        return redirect('dk:transaction_list')
+        
+    for t in transactions:
+        if not can_edit_satker(request.user, t.satker_code):
+            messages.error(request, f"Anda tidak memiliki izin untuk mengedit baris dengan satker {t.satker_code}.")
+            return redirect('dk:transaction_list')
+        if t.status_detail == TransactionDetail.StatusDetail.DIARSIPKAN:
+            messages.error(request, "Tidak dapat melakukan bulk edit pada baris yang diarsipkan.")
             return redirect('dk:transaction_list')
             
-        transactions = TransactionDetail.objects.filter(id__in=selected_ids)
-        for t in transactions:
-            if not can_edit_satker(request.user, t.satker_code):
-                raise PermissionDenied(f"Anda tidak memiliki izin untuk mengedit satker {t.satker_code}.")
-                
+    if request.method == "POST":
+        action = request.POST.get('action')
         form = TransactionBulkEditForm(request.POST)
         if form.is_valid():
-            updated_count = 0
-            for t in transactions:
-                changed = False
+            if action == 'preview':
+                preview_data = {
+                    'count': transactions.count(),
+                    'changes': []
+                }
                 for field in ['bulan_sp2d', 'cara_pembayaran', 'jenis_spm', 'status_detail']:
                     new_val = form.cleaned_data.get(field)
                     if new_val:
-                        old_val = getattr(t, field)
-                        if str(old_val) != str(new_val):
-                            setattr(t, field, new_val)
-                            changed = True
-                            TransactionChangeLog.objects.create(
-                                transaction=t,
-                                field_name=field,
-                                old_value=str(old_val) if old_val is not None else "",
-                                new_value=str(new_val),
-                                change_source=TransactionChangeLog.ChangeSource.MANUAL,
-                                changed_by=request.user
-                            )
-                if changed:
-                    t.save()
-                    updated_count += 1
-                    
-            messages.success(request, f"{updated_count} baris D_K berhasil diubah secara bulk.")
-            return redirect('dk:transaction_list')
+                        preview_data['changes'].append({'field': field, 'new_value': new_val})
+                
+                context = permission_context(request.user)
+                context.update({
+                    'form': form, 
+                    'page_title': 'Preview Bulk Edit D_K', 
+                    'selected_ids': selected_ids,
+                    'preview_data': preview_data
+                })
+                return render(request, 'dk/bulk_edit.html', context)
+            elif action == 'commit':
+                updated_count = 0
+                for t in transactions:
+                    changed = False
+                    for field in ['bulan_sp2d', 'cara_pembayaran', 'jenis_spm', 'status_detail']:
+                        new_val = form.cleaned_data.get(field)
+                        if new_val:
+                            old_val = getattr(t, field)
+                            if str(old_val) != str(new_val):
+                                setattr(t, field, new_val)
+                                changed = True
+                                TransactionChangeLog.objects.create(
+                                    transaction=t,
+                                    field_name=field,
+                                    old_value=str(old_val) if old_val is not None else "",
+                                    new_value=str(new_val),
+                                    change_source=TransactionChangeLog.ChangeSource.MANUAL,
+                                    changed_by=request.user
+                                )
+                    if changed:
+                        t.save()
+                        updated_count += 1
+                        
+                messages.success(request, f"{updated_count} baris D_K berhasil diubah secara bulk.")
+                return redirect('dk:transaction_list')
     else:
-        selected_ids = request.GET.get('ids', '').split(',')
-        if not any(selected_ids):
-            messages.warning(request, "Pilih baris terlebih dahulu.")
-            return redirect('dk:transaction_list')
         form = TransactionBulkEditForm()
         
     context = permission_context(request.user)

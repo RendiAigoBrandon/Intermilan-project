@@ -3,7 +3,7 @@
 {% block content %}
 <section class="card form-card">
   <div class="card-header">
-    <h3>Bulk Edit Baris D_K</h3>
+    <h3>{% if preview_data %}Preview Bulk Edit D_K{% else %}Bulk Edit Baris D_K{% endif %}</h3>
   </div>
   
   <form method="post">
@@ -17,30 +17,70 @@
       <input type="hidden" name="selected_ids" value="{{ selected_id }}">
     {% endfor %}
 
-    <div class="note-box info mb-small">
-      Anda akan mengubah <strong>{{ selected_ids|length }}</strong> baris transaksi. 
-      Hanya kolom yang diisi yang akan diubah. Kosongkan jika tidak ingin mengubah nilai tersebut.
-    </div>
-
-    <div class="form-grid">
-      {% for field in form.visible_fields %}
-      <div class="form-field {% if field.errors %}has-error{% endif %}">
-        <label for="{{ field.id_for_label }}">{{ field.label }}</label>
-        {{ field }}
-        {% if field.help_text %}
-        <span class="help-text">{{ field.help_text }}</span>
-        {% endif %}
-        {% for error in field.errors %}
-        <span class="error-msg">{{ error }}</span>
+    {% if preview_data %}
+      <div class="note-box warning mb-small">
+        Anda akan mengubah <strong>{{ preview_data.count }}</strong> baris transaksi dengan nilai baru berikut:
+      </div>
+      
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Nilai Baru</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for change in preview_data.changes %}
+          <tr>
+            <td>{{ change.field }}</td>
+            <td><b>{{ change.new_value }}</b></td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="2">Tidak ada perubahan yang dipilih.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      
+      <!-- hidden form fields so we can submit again -->
+      <div style="display:none;">
+        {% for field in form.visible_fields %}
+          {{ field }}
         {% endfor %}
       </div>
-      {% endfor %}
-    </div>
+      
+      <div class="form-actions mt-medium">
+        <button type="submit" name="action" value="commit" class="btn primary">Konfirmasi & Simpan</button>
+        <button type="button" class="btn ghost" onclick="history.back()">Kembali</button>
+      </div>
 
-    <div class="form-actions mt-medium">
-      <button type="submit" class="btn warning">Simpan Perubahan Bulk</button>
-      <a href="{% url 'dk:transaction_list' %}" class="btn ghost">Batal</a>
-    </div>
+    {% else %}
+      <div class="note-box info mb-small">
+        Anda akan mengubah <strong>{{ selected_ids|length }}</strong> baris transaksi. 
+        Hanya kolom yang diisi yang akan diubah. Kosongkan jika tidak ingin mengubah nilai tersebut.
+      </div>
+
+      <div class="form-grid">
+        {% for field in form.visible_fields %}
+        <div class="form-field {% if field.errors %}has-error{% endif %}">
+          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}
+          <span class="help-text">{{ field.help_text }}</span>
+          {% endif %}
+          {% for error in field.errors %}
+          <span class="error-msg">{{ error }}</span>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="form-actions mt-medium">
+        <button type="submit" name="action" value="preview" class="btn warning">Preview Perubahan</button>
+        <a href="{% url 'dk:transaction_list' %}" class="btn ghost">Batal</a>
+      </div>
+    {% endif %}
   </form>
 </section>
 {% endblock %}
