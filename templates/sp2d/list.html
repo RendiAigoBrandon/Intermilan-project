@@ -131,7 +131,7 @@
           <td class="col-deskripsi">{{ row.deskripsi|dash }}</td>
           <td class="col-compact">{{ row.dk_count }}</td>
           <td class="col-status"><span class="badge {% if row.status == 'COCOK' %}green{% else %}orange{% endif %}">{{ row.status_detail_label }}</span></td>
-          <td class="col-aksi">{% if row.can_edit_sp2d %}{% if row.status == 'COCOK' %}<a class="btn tiny ghost" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %}<a class="btn tiny primary" href="{% url 'sp2d:inbox_detail' row.id %}">Tambah Rincian</a>{% endif %}{% else %}<a class="btn tiny ghost" href="{% url 'sp2d:inbox_detail' row.id %}">Lihat Detail SP2D</a>{% endif %}</td>
+          <td class="col-aksi"><a class="btn tiny ghost" href="{% url 'sp2d:inbox_detail' row.id %}">Lihat Detail SP2D</a>{% if row.can_edit_sp2d %}{% if row.status == 'COCOK' %} <a class="btn tiny ghost" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %} <a class="btn tiny primary" href="{% url 'dk:transaction_create' %}?sp2d_raw_id={{ row.id }}">Tambah Rincian</a>{% endif %}{% endif %}</td>
         </tr>
         {% empty %}
         <tr><td colspan="17" class="empty">Belum ada data mentah SP2D.</td></tr>

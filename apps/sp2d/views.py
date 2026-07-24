@@ -172,8 +172,6 @@ def sp2d_inbox_detail(request, pk):
         return redirect("sp2d:inbox_detail", pk=row.pk)
 
     has_dk_detail = detail_query.exists()
-    default_date = row.tanggal_invoice or row.tgl_sp2d or row.tanggal_selesai_sp2d
-    default_month = row.bulan_sp2d or parse_month(default_date.strftime("%B")) if default_date else row.bulan_sp2d
     context = permission_context(request.user)
     context.update(
         {
@@ -184,18 +182,6 @@ def sp2d_inbox_detail(request, pk):
             "has_dk_detail": has_dk_detail,
             "status_detail_label": "Sudah Ada D_K" if has_dk_detail else "Belum Ada Detail D_K",
             "can_upload_document": context_can_upload,
-            "akun_options": MasterAkun.objects.filter(is_active=True).order_by("kode")[:300],
-            "months": MONTH_OPTIONS,
-            "manual_defaults": {
-                "nomor_spm": row.nomor_spm_extracted or (row.nomor_invoice.split("/")[0] if row.nomor_invoice else ""),
-                "tanggal_spm": default_date,
-                "bulan_sp2d": default_month,
-                "cara_pembayaran": row.jenis_spm,
-                "jenis_spm": row.jenis_spm,
-                "deskripsi": row.deskripsi,
-                "nilai_bruto": row.nilai_spm,
-                "nilai_netto": row.nilai_sp2d,
-            },
         }
     )
     return render(request, "sp2d/inbox_detail.html", context)

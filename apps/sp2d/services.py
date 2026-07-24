@@ -244,6 +244,7 @@ def classify_sp2d_rows(batch_tahun, mapped_rows):
         
     return results
 
+@transaction.atomic
 def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
     """
     Commit rows idempotently.
@@ -299,6 +300,7 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
             legacy = find_legacy_candidates(row)
             if len(legacy) == 1:
                 record = legacy[0]
+                record.legacy_claimed = True
             elif len(legacy) > 1:
                 conflict_count += 1
                 continue
@@ -354,6 +356,7 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
                     changed = True
 
             if changed:
+                record.identity_key = key
                 record.tahun = row["batch_tahun"]
                 record.last_import_batch = batch
                 if filename:
@@ -405,6 +408,11 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
                     if _is_identical(record, row, row["batch_tahun"]):
                         skipped_count += 1
                         success_count += 1
+                        record.last_import_batch = batch
+                        if filename:
+                            record.original_file = filename
+                        record.save(update_fields=['last_import_batch', 'original_file'])
+                        reconcile_sp2d_with_dk(record, user)
                     else:
                         conflict_count += 1
                 except SP2DRaw.DoesNotExist:
