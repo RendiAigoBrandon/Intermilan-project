@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 
 {% load intermilan_format %}
 
@@ -76,7 +76,7 @@
 <section class="grid two-col mt">
   <div class="card">
     <div class="card-head"><h2>Shortcut Kerja</h2><span class="muted">Akses cepat menu utama</span></div>
-    <div class="shortcut-grid"><a href="{% url 'sp2d:list' %}">Upload<small>Satker upload ke database satker masing-masing</small></a><a href="{% url 'dk:list' %}">Detail Keuangan<small>Cek transaksi dan filter data</small></a><a href="{% url 'core:monitoring' %}">Monitoring<small>Pantau lintas satker</small></a><a href="{% url 'core:akun_index' %}">Akun Keuangan<small>Kelompok 521xxx, 522xxx, dst.</small></a><a href="{% url 'reports:index' %}">Export Excel<small>Download hasil per akun</small></a></div>
+    <div class="shortcut-grid"><a href="{% url 'sp2d:list' %}">Upload<small>Satker upload ke database satker masing-masing</small></a><a href="{% url 'dk:transaction_list' %}">Detail Keuangan<small>Cek transaksi dan filter data</small></a><a href="{% url 'core:monitoring' %}">Monitoring<small>Pantau lintas satker</small></a><a href="{% url 'core:akun_index' %}">Akun Keuangan<small>Kelompok 521xxx, 522xxx, dst.</small></a><a href="{% url 'reports:index' %}">Export Excel<small>Download hasil per akun</small></a></div>
   </div>
   <div class="card">
     <div class="card-head"><h2>Cari Akun</h2><a href="{% url 'core:akun_index' %}">Lihat semua akun</a></div>

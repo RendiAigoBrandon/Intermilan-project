@@ -6,7 +6,7 @@
   <a class="btn ghost" href="{% url 'sp2d:list' %}">Kembali ke Inbox</a>
   <a class="btn ghost" href="{% url 'paket_spm:list' %}?sp2d_raw_id={{ row.id }}">Upload Dokumen / Paket SPM PDF/ZIP</a>
   {% if has_dk_detail %}
-    <a class="btn primary" href="{% url 'dk:list' %}?q={{ row.nomor_spm_extracted|default:row.nomor_invoice|urlencode }}">Lihat D_K</a>
+    <a class="btn primary" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|default:row.nomor_invoice|urlencode }}">Lihat D_K</a>
   {% endif %}
 </div>
 

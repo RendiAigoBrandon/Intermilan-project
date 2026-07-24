@@ -27,6 +27,12 @@ class TransactionDetail(models.Model):
         DRAFT = "DRAFT", "Draft"
         LENGKAP = "LENGKAP", "Lengkap"
         PERLU_REVIEW = "PERLU_REVIEW", "Perlu Review"
+        MENUNGGU_SPM = "MENUNGGU_SPM", "Menunggu SPM"
+        MENUNGGU_SP2D = "MENUNGGU_SP2D", "Menunggu SP2D"
+        BELUM_SEIMBANG = "BELUM_SEIMBANG", "Belum Seimbang"
+        SIAP_FINAL = "SIAP_FINAL", "Siap Final"
+        FINAL = "FINAL", "Final"
+        DIARSIPKAN = "DIARSIPKAN", "Diarsipkan"
 
     class DRPPStatus(models.TextChoices):
         BELUM_ADA = "BELUM_ADA", "Belum Ada"
@@ -79,6 +85,23 @@ class TransactionDetail(models.Model):
             models.Index(fields=["bulan_sp2d"]),
         ]
 
+    @property
+    def helper(self):
+        return f"{self.akun or ''}{self.no_kuitansi or ''}"
+
     def __str__(self):
         label = self.no_kuitansi or self.no_drpp or self.nomor_spm or self.akun
         return f"{label} - {self.nilai_netto}"
+
+
+class TransactionChangeLog(models.Model):
+    transaction = models.ForeignKey(TransactionDetail, on_delete=models.CASCADE, related_name="change_logs")
+    field_name = models.CharField(max_length=100)
+    old_value = models.TextField(blank=True, null=True)
+    new_value = models.TextField(blank=True, null=True)
+    change_source = models.CharField(max_length=50) # MANUAL, PARSER, IMPORT, SYSTEM
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at"]

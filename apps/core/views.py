@@ -1,4 +1,4 @@
-﻿from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required
 import csv
 from decimal import Decimal
 
@@ -395,7 +395,7 @@ def akun_detail(request, kode):
     normalized_code = (kode or "").strip()
     query = request.GET.copy()
     query["akun"] = normalized_code
-    return redirect(f"{reverse('dk:list')}?{query.urlencode()}")
+    return redirect(f"{reverse('dk:transaction_list')}?{query.urlencode()}")
 
 
 @login_required

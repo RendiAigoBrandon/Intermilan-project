@@ -729,7 +729,7 @@ def paket_spm_preview(request):
                 messages.success(request, "DRPP/KW berhasil memperbarui D_K existing.")
                 satker = clean_optional(rows[0].satker_code if rows else paket.satker_code)
                 nomor_spm = clean_optional(rows[0].nomor_spm if rows else paket.nomor_spm)
-                return redirect(f"{reverse('dk:list')}?satker={satker}&q={nomor_spm}")
+                return redirect(f"{reverse('dk:transaction_list')}?satker={satker}&q={nomor_spm}")
 
             request.session.pop("paket_spm_preview_id", None)
             return redirect("paket_spm:list")

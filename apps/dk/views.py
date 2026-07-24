@@ -197,3 +197,93 @@ def extract_note_value(text, key):
 def get_satker_options(user):
     queryset = filter_by_satker(TransactionDetail.objects.exclude(satker_code=""), user)
     return build_satker_options(queryset)
+
+from django.shortcuts import get_object_or_404, redirect
+from django.contrib import messages
+from django.core.exceptions import PermissionDenied
+from .forms import TransactionDetailForm
+from .models import TransactionChangeLog
+
+@login_required
+def transaction_create(request):
+    if request.method == "POST":
+        form = TransactionDetailForm(request.POST)
+        if form.is_valid():
+            satker_code = form.cleaned_data.get('satker_code')
+            if not can_edit_satker(request.user, satker_code):
+                raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
+            instance = form.save(commit=False)
+            instance.created_by = request.user
+            instance.save()
+            messages.success(request, "Baris D_K berhasil ditambahkan.")
+            return redirect('dk:transaction_list')
+    else:
+        form = TransactionDetailForm()
+    
+    context = permission_context(request.user)
+    context.update({'form': form, 'page_title': 'Tambah Baris D_K'})
+    return render(request, 'dk/form.html', context)
+
+def log_transaction_changes(instance, form, user, source="MANUAL"):
+    if not form.has_changed():
+        return
+    for field in form.changed_data:
+        old_val = form.initial.get(field)
+        new_val = form.cleaned_data.get(field)
+        TransactionChangeLog.objects.create(
+            transaction=instance,
+            field_name=field,
+            old_value=str(old_val) if old_val is not None else "",
+            new_value=str(new_val) if new_val is not None else "",
+            change_source=source,
+            changed_by=user
+        )
+
+@login_required
+def transaction_edit(request, pk):
+    instance = get_object_or_404(TransactionDetail, pk=pk)
+    if not can_edit_satker(request.user, instance.satker_code):
+        raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
+    if request.method == "POST":
+        form = TransactionDetailForm(request.POST, instance=instance)
+        if form.is_valid():
+            satker_code = form.cleaned_data.get('satker_code')
+            if not can_edit_satker(request.user, satker_code):
+                raise PermissionDenied("Anda tidak memiliki izin memindahkan ke satker ini.")
+            instance = form.save()
+            log_transaction_changes(instance, form, request.user, source="MANUAL")
+            messages.success(request, "Baris D_K berhasil diubah.")
+            return redirect('dk:transaction_list')
+    else:
+        form = TransactionDetailForm(instance=instance)
+    
+    context = permission_context(request.user)
+    context.update({'form': form, 'page_title': 'Edit Baris D_K', 'instance': instance})
+    return render(request, 'dk/form.html', context)
+
+@login_required
+def transaction_duplicate(request, pk):
+    instance = get_object_or_404(TransactionDetail, pk=pk)
+    if not can_edit_satker(request.user, instance.satker_code):
+        raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
+    if request.method == "POST":
+        instance.pk = None
+        instance.status_detail = TransactionDetail.StatusDetail.DRAFT
+        instance.created_by = request.user
+        instance.save()
+        messages.success(request, "Baris D_K berhasil diduplikat.")
+        return redirect('dk:transaction_edit', pk=instance.pk)
+    return redirect('dk:transaction_list')
+
+@login_required
+def transaction_archive(request, pk):
+    instance = get_object_or_404(TransactionDetail, pk=pk)
+    if not can_edit_satker(request.user, instance.satker_code):
+        raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
+    if request.method == "POST":
+        instance.status_detail = TransactionDetail.StatusDetail.DIARSIPKAN
+        instance.save()
+        TransactionChangeLog.objects.create(transaction=instance, field_name="status_detail", old_value="", new_value="DIARSIPKAN", change_source="MANUAL", changed_by=request.user)
+        messages.success(request, "Baris D_K berhasil diarsipkan.")
+    return redirect('dk:transaction_list')
+

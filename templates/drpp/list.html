@@ -1,8 +1,8 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 
 {% block content %}
 <section class="card">
-  <div class="card-head"><div><h2>DRPP</h2><p class="muted">Daftar upload DRPP dan status matching ke Detail Keuangan.</p></div><a class="btn ghost" href="{% url 'dk:list' %}">Buka D_K</a></div>
+  <div class="card-head"><div><h2>DRPP</h2><p class="muted">Daftar upload DRPP dan status matching ke Detail Keuangan.</p></div><a class="btn ghost" href="{% url 'dk:transaction_list' %}">Buka D_K</a></div>
   {% if transaction_id %}<div class="note-box">Mode review DRPP untuk transaksi ID {{ transaction_id }}. Upload/parser DRPP penuh belum diaktifkan pada tahap ini.</div>{% endif %}
   <form method="post" enctype="multipart/form-data" class="toolbar-panel">
     {% csrf_token %}
@@ -25,7 +25,7 @@
   </div>
   <div class="table-wrap"><table><thead><tr><th>No. DRPP</th><th>Satker</th><th>Nomor SPM</th><th>Bulan</th><th>Tahun</th><th>Total Jumlah</th><th>Status</th></tr></thead><tbody>{% for row in rows %}<tr><td>{{ row.nomor_drpp }}</td><td>{{ row.satker_code }}</td><td>{{ row.nomor_spm }}</td><td>{{ row.bulan }}</td><td>{{ row.tahun }}</td><td>{{ row.total_jumlah }}</td><td><span class="badge blue">{{ row.get_match_status_display }}</span></td></tr>{% empty %}<tr><td colspan="7" class="empty">Belum ada DRPP.</td></tr>{% endfor %}</tbody></table></div>
   <div class="pagination-wrap">
-    <div class="pagination-info">Menampilkan {{ page_start }}-{{ page_end }} dari {{ paginator.count }} data • {{ page_size }} data/halaman</div>
+    <div class="pagination-info">Menampilkan {{ page_start }}-{{ page_end }} dari {{ paginator.count }} data � {{ page_size }} data/halaman</div>
     <div class="pagination-controls">
       {% if page_obj.has_previous %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>{% else %}<span class="page-btn disabled">Previous</span>{% endif %}
       {% for page_number in pagination_window %}{% if page_number == page_obj.number %}<span class="page-btn active">{{ page_number }}</span>{% else %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_number }}">{{ page_number }}</a>{% endif %}{% endfor %}

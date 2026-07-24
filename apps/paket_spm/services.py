@@ -1694,7 +1694,6 @@ def build_drpp_batch_rows(parsed, paket, user=None):
             drpp_status=TransactionDetail.DRPPStatus.COCOK if item.get("no_drpp") else TransactionDetail.DRPPStatus.BELUM_ADA,
             created_by=user,
         )
-        row.helper = f"{row.akun}{row.no_kuitansi}"
         row.batch_warnings = list(item.get("warnings") or [])
         row.batch_status = clean_optional(item.get("status_detail") or item.get("status")) or (
             "LENGKAP" if pembebanan else "PERLU_REVIEW"

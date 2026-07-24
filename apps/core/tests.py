@@ -287,7 +287,7 @@ class CoreAccessTests(TestCase):
         TransactionDetail.objects.create(satker_code="1300", akun="522111", nomor_spm="OTHER456", deskripsi="other row")
         self.client.force_login(admin)
 
-        response = self.client.get(reverse("dk:list"), {"q": "FIND123"})
+        response = self.client.get(reverse("dk:transaction_list"), {"q": "FIND123"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "FIND123")
         self.assertNotContains(response, "OTHER456")
@@ -295,7 +295,7 @@ class CoreAccessTests(TestCase):
         pembebanan_row = TransactionDetail.objects.create(
             satker_code="1300", akun="522111", nomor_spm="PEMB001", pembebanan="2886.TEST.SEARCH"
         )
-        pembebanan_response = self.client.get(reverse("dk:list"), {"q": "2886.TEST.SEARCH"})
+        pembebanan_response = self.client.get(reverse("dk:transaction_list"), {"q": "2886.TEST.SEARCH"})
         self.assertContains(pembebanan_response, pembebanan_row.nomor_spm)
         self.assertNotContains(pembebanan_response, "OTHER456")
 
@@ -305,11 +305,11 @@ class CoreAccessTests(TestCase):
         TransactionDetail.objects.create(satker_code="1301", akun="522111", nomor_spm="FEB1301", bulan_sp2d=2)
         self.client.force_login(admin)
 
-        month_response = self.client.get(reverse("dk:list"), {"bulan": "2"})
+        month_response = self.client.get(reverse("dk:transaction_list"), {"bulan": "2"})
         self.assertContains(month_response, "FEB1301")
         self.assertNotContains(month_response, "JAN1300")
 
-        satker_response = self.client.get(reverse("dk:list"), {"satker": "1301"})
+        satker_response = self.client.get(reverse("dk:transaction_list"), {"satker": "1301"})
         self.assertContains(satker_response, "FEB1301")
         self.assertNotContains(satker_response, "JAN1300")
 
@@ -324,7 +324,7 @@ class CoreAccessTests(TestCase):
             )
         self.client.force_login(admin)
 
-        response = self.client.get(reverse("dk:list"), {"page_size": "20"})
+        response = self.client.get(reverse("dk:transaction_list"), {"page_size": "20"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["paginator"].count, 55)
@@ -345,8 +345,8 @@ class CoreAccessTests(TestCase):
             )
         self.client.force_login(admin)
 
-        page_one = self.client.get(reverse("dk:list"), {"q": "KEEP", "page_size": "20"})
-        page_two = self.client.get(reverse("dk:list"), {"q": "KEEP", "page_size": "20", "page": "2"})
+        page_one = self.client.get(reverse("dk:transaction_list"), {"q": "KEEP", "page_size": "20"})
+        page_two = self.client.get(reverse("dk:transaction_list"), {"q": "KEEP", "page_size": "20", "page": "2"})
 
         page_one_spms = [row.nomor_spm for row in page_one.context["rows"]]
         page_two_spms = [row.nomor_spm for row in page_two.context["rows"]]

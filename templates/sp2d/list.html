@@ -82,7 +82,7 @@
           <td class="col-jenis">{{ row.jenis_sp2d|dash }}</td>
           <td class="col-deskripsi">{{ row.deskripsi|dash }}</td>
           <td class="col-status"><span class="badge {% if row.has_dk_detail %}green{% else %}orange{% endif %}">{{ row.status_detail_label }}</span></td>
-          <td class="col-aksi">{% if row.has_dk_detail %}<a class="btn tiny ghost" href="{% url 'dk:list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %}<a class="btn tiny primary" href="{% url 'sp2d:inbox_detail' row.id %}">Inbox</a>{% endif %}</td>
+          <td class="col-aksi">{% if row.has_dk_detail %}<a class="btn tiny ghost" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %}<a class="btn tiny primary" href="{% url 'sp2d:inbox_detail' row.id %}">Inbox</a>{% endif %}</td>
         </tr>
         {% empty %}
         <tr><td colspan="17" class="empty">Belum ada data mentah SP2D.</td></tr>

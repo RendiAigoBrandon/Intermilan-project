@@ -13,7 +13,7 @@
           <div class="filter-field"><label>Akun</label><select name="akun"><option value="">Semua akun</option>{% for akun in akun_options %}<option value="{{ akun.kode }}" {% if filters.akun == akun.kode %}selected{% endif %}>{{ akun.kode }} - {{ akun.nama_akun }}</option>{% endfor %}</select></div>
           <div class="filter-field"><label>Status Kelengkapan</label><select name="kelengkapan"><option value="">Semua status</option><option value="lengkap" {% if filters.kelengkapan == "lengkap" %}selected{% endif %}>Lengkap</option><option value="belum" {% if filters.kelengkapan == "belum" %}selected{% endif %}>Belum Lengkap</option></select></div>
           <div class="filter-field"><label>Data/halaman</label><select name="page_size">{% for option in page_size_options %}<option value="{{ option }}" {% if page_size == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></div>
-          <div class="filter-actions"><button class="btn primary" type="submit">Terapkan Filter</button><a class="btn ghost" href="{% url 'dk:list' %}">Reset</a></div>
+          <div class="filter-actions"><button class="btn primary" type="submit">Terapkan Filter</button><a class="btn ghost" href="{% url 'dk:transaction_list' %}">Reset</a></div>
         </div>
       </form>
     </div>

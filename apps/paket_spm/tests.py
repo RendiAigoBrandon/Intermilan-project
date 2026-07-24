@@ -1000,7 +1000,7 @@ class PaketSPMRegressionTests(TestCase):
     def test_missing_sp2d_only_affects_reconciliation_status(self):
         _, rows = self.commit_package_with_document()
         self.client.login(username="operator", password="password")
-        response = self.client.get(reverse("dk:list"))
+        response = self.client.get(reverse("dk:transaction_list"))
         self.assertContains(response, "Lengkap")
         self.assertContains(response, "Belum ada SP2D pembanding")
 
@@ -1051,7 +1051,7 @@ class PaketSPMRegressionTests(TestCase):
         _, rows = self.commit_package_with_document()
         rows[0].refresh_from_db()
         self.client.login(username="operator", password="password")
-        response = self.client.get(reverse("dk:list"), {"q": "00074A"})
+        response = self.client.get(reverse("dk:transaction_list"), {"q": "00074A"})
         self.assertContains(response, "Lengkap")
         self.assertNotContains(response, "Perlu Review")
 

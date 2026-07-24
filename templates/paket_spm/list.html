@@ -7,7 +7,7 @@
       <h2>Upload DRPP dan Kuitansi</h2>
       <p class="muted">Unggah maksimal dua DRPP beserta seluruh kuitansi yang terkait. Sistem akan mencocokkan data dengan SP2D dan menampilkan hasil sebelum disimpan ke D_K.</p>
     </div>
-    <div class="page-actions"><a class="btn ghost" href="{% url 'dk:list' %}">Lihat D_K</a></div>
+    <div class="page-actions"><a class="btn ghost" href="{% url 'dk:transaction_list' %}">Lihat D_K</a></div>
   </div>
 
   {% if sp2d_context %}
