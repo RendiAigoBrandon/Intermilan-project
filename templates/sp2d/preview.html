@@ -11,10 +11,10 @@
   </div>
   
   <div class="grid cards-4">
-    <div class="card soft metric"><span>File</span><b>{{ import_data.original_filename }}</b><small>Excel SP2D</small></div>
-    <div class="card soft metric"><span>Periode</span><b>{{ import_data.bulan }} {{ import_data.tahun }}</b><small>Bulan / Tahun import</small></div>
-    <div class="card soft metric"><span>Jumlah Data</span><b>{{ total_rows }}</b><small>baris valid</small></div>
-    <div class="card soft metric {% if can_commit %}ok{% endif %}"><span>Status</span><b>{% if can_commit %}Siap diimport{% else %}Belum valid{% endif %}</b><small>{% if can_commit %}File berhasil dibaca{% else %}Perlu perbaikan{% endif %}</small></div>
+    <div class="card soft metric"><span>Baru</span><b>{{ preview_stats.BARU }}</b><small>baris</small></div>
+    <div class="card soft metric"><span>Akan Diperbarui</span><b>{{ preview_stats.AKAN_DIPERBARUI }}</b><small>baris</small></div>
+    <div class="card soft metric"><span>Identik (Dilewati)</span><b>{{ preview_stats.IDENTIK_DILEWATI }}</b><small>baris</small></div>
+    <div class="card soft metric {% if preview_stats.KONFLIK > 0 %}danger{% endif %}"><span>Konflik</span><b>{{ preview_stats.KONFLIK }}</b><small>baris duplikat</small></div>
   </div>
 
   {% if can_commit %}
@@ -57,8 +57,7 @@
           <th>Nilai SP2D</th>
           <th>No Invoice</th>
           <th>Jenis SPM</th>
-          <th>Jenis SP2D</th>
-          <th>Deskripsi</th>
+          <th>Klasifikasi</th>
         </tr>
       </thead>
       <tbody>
@@ -73,8 +72,7 @@
           <td>{{ row.nilai_sp2d|id_number }}</td>
           <td>{{ row.nomor_invoice }}</td>
           <td>{{ row.jenis_spm }}</td>
-          <td>{{ row.jenis_sp2d }}</td>
-          <td title="{{ row.deskripsi }}">{{ row.deskripsi|truncatechars:80 }}</td>
+          <td><span class="badge {% if row.status == 'BARU' %}blue{% elif row.status == 'AKAN_DIPERBARUI' %}orange{% elif row.status == 'KONFLIK' %}red{% else %}gray{% endif %}">{{ row|get_item:"_status" }}</span></td>
         </tr>
         {% empty %}
         <tr><td colspan="11" class="empty">File berhasil dibaca, tetapi tidak ada data SP2D valid yang ditemukan.</td></tr>

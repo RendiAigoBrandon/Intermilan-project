@@ -2,26 +2,24 @@
 {% load intermilan_format %}
 
 {% block content %}
+{% if can_import_data %}
 <section class="card upload-card-top">
-  <div class="card-head"><div><h2>Upload Excel SP2D</h2><p class="muted">Unggah daftar SP2D untuk pencocokan awal transaksi.</p></div></div>
+  <div class="card-head"><div><h2>Upload Excel SP2D</h2><p class="muted">Unggah daftar SP2D untuk rekonsiliasi awal transaksi.</p></div></div>
   <form class="form-grid compact" method="post" enctype="multipart/form-data">
     {% csrf_token %}
     <div class="form-field"><label>Tahun</label><input class="form-control" name="tahun" value="2026" required></div>
     <div class="form-field"><label>Bulan</label><input class="form-control" name="bulan" placeholder="Contoh: 6 atau Juni" required></div>
     <div class="form-field file-field"><label>File Daftar SP2D (.xlsx)</label><input class="form-control" type="file" name="file_sp2d" accept=".xlsx,.xls" required></div>
     <div class="form-actions">
-      {% if can_upload_document %}
       <button class="primary-btn upload-main-btn" type="submit">Upload & Preview</button>
-      {% else %}
-      <button class="btn ghost" type="button" disabled>Read Only</button>
-      {% endif %}
     </div>
   </form>
-  <div class="note-box">Inbox SP2D berisi data mentah SP2D dan status pencocokan ke D_K, bukan detail transaksi D_K.</div>
+  <div class="note-box">Inbox SP2D berisi riwayat data mentah SP2D dan status pencocokan ke D_K.</div>
 </section>
+{% endif %}
 
 <section class="card mt">
-  <div class="card-head"><div><h2>Data Mentah SP2D</h2><p class="muted">Pantau hasil import dan status apakah SP2D sudah memiliki detail D_K.</p></div></div>
+  <div class="card-head"><div><h2>Riwayat Import SP2D</h2><p class="muted">Pantau hasil import dan rekonsiliasi SP2D dengan D_K.</p></div></div>
   <div class="toolbar-panel">
     <div class="toolbar-row">
       <form class="filter-panel" method="get">

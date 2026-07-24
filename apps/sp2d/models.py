@@ -7,6 +7,7 @@ class SP2DImportBatch(models.Model):
         DRAFT = "DRAFT", "Draft"
         PROCESSING = "PROCESSING", "Processing"
         COMPLETED = "COMPLETED", "Completed"
+        COMPLETED_WITH_REVIEW = "COMPLETED_WITH_REVIEW", "Completed with Review"
         FAILED = "FAILED", "Failed"
 
     filename = models.CharField(max_length=255)
@@ -16,7 +17,11 @@ class SP2DImportBatch(models.Model):
     total_rows = models.PositiveIntegerField(default=0)
     success_rows = models.PositiveIntegerField(default=0)
     failed_rows = models.PositiveIntegerField(default=0)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    created_rows = models.PositiveIntegerField(default=0)
+    updated_rows = models.PositiveIntegerField(default=0)
+    skipped_rows = models.PositiveIntegerField(default=0)
+    conflict_rows = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.DRAFT)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -52,6 +57,8 @@ class SP2DRaw(models.Model):
         on_delete=models.SET_NULL,
         related_name="raw_rows",
     )
+    tahun = models.PositiveSmallIntegerField(null=True, blank=True)
+    identity_key = models.CharField(max_length=64, blank=True, null=True, unique=True)
     satker_code = models.CharField(max_length=32, blank=True)
     satker_name = models.CharField(max_length=255, blank=True)
     no_sp2d = models.CharField(max_length=100, blank=True)

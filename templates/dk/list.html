@@ -34,6 +34,87 @@
     </div>
   </div>
   <div class="note-box">Gunakan tombol Checklist untuk memeriksa dokumen pendukung transaksi yang membutuhkan verifikasi.</div>
+  
+  <div class="card-head mt-small"><div><h2>Header Paket Pembayaran (SP2D)</h2><p class="muted">Grup SP2D berdasarkan satker, nomor SPM, dan tahun.</p></div></div>
+  <div class="toolbar-row mb-small">
+    <form class="filter-panel" method="get">
+      <input type="hidden" name="q" value="{{ filters.q }}">
+      <input type="hidden" name="satker" value="{{ filters.satker }}">
+      <input type="hidden" name="bulan" value="{{ filters.bulan }}">
+      <input type="hidden" name="akun" value="{{ filters.akun }}">
+      <input type="hidden" name="kelengkapan" value="{{ filters.kelengkapan }}">
+      <input type="hidden" name="archive_status" value="{{ filters.archive_status }}">
+      <input type="hidden" name="page_size" value="{{ filters.page_size }}">
+      
+      <div class="filter-field">
+        <label>Status SP2D</label>
+        <select name="sp2d_status" onchange="this.form.submit()">
+          <option value="" {% if not sp2d_status_filter %}selected{% endif %}>Perlu Perhatian (Draft/Tidak Cocok)</option>
+          <option value="semua" {% if sp2d_status_filter == "semua" %}selected{% endif %}>Semua Status</option>
+        </select>
+      </div>
+    </form>
+  </div>
+  
+  <div class="table-wrap mt-small mb">
+    <table class="data-table compact table-sp2d">
+      <thead>
+        <tr>
+          <th class="col-no">No</th>
+          <th>Satker</th>
+          <th>No SP2D</th>
+          <th>Tahun</th>
+          <th>No SPM</th>
+          <th>Nilai SPM (Bruto)</th>
+          <th>Potongan</th>
+          <th>Nilai SP2D (Netto)</th>
+          <th>Status Rekonsiliasi</th>
+          <th>Catatan</th>
+          <th>Aksi</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in sp2d_page_obj %}
+        <tr>
+          <td class="col-no">{{ sp2d_start|add:forloop.counter0 }}</td>
+          <td>{{ row.satker_code }} - {{ row.satker_name }}</td>
+          <td>{{ row.no_sp2d }}</td>
+          <td>{{ row.tahun }}</td>
+          <td>{{ row.nomor_spm_extracted }}</td>
+          <td class="col-nominal">{{ row.nilai_spm|id_number }}</td>
+          <td class="col-nominal">{{ row.potongan|id_number }}</td>
+          <td class="col-nominal">{{ row.nilai_sp2d|id_number }}</td>
+          <td><span class="badge {% if row.status == 'COCOK' %}green{% elif row.status == 'TIDAK_COCOK' %}orange{% else %}gray{% endif %}">{{ row.get_status_display }}</span></td>
+          <td>{{ row.cek_akun }}</td>
+          <td>
+            <a class="btn tiny primary" href="{% url 'dk:transaction_create' %}?sp2d_raw_id={{ row.id }}">Tambah Rincian</a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="11" class="empty">Tidak ada Header SP2D yang cocok.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  
+  <div class="pagination-wrap" style="margin-bottom: 2rem;">
+    <div class="pagination-info">Menampilkan {{ sp2d_start }}-{{ sp2d_end }} dari {{ sp2d_paginator.count }} SP2D</div>
+    <div class="pagination-controls">
+      {% if sp2d_page_obj.has_previous %}
+        <a class="page-btn" href="?{% if sp2d_base_querystring %}{{ sp2d_base_querystring }}&{% endif %}sp2d_page={{ sp2d_page_obj.previous_page_number }}">Previous</a>
+      {% else %}
+        <span class="page-btn disabled">Previous</span>
+      {% endif %}
+      {% if sp2d_page_obj.has_next %}
+        <a class="page-btn" href="?{% if sp2d_base_querystring %}{{ sp2d_base_querystring }}&{% endif %}sp2d_page={{ sp2d_page_obj.next_page_number }}">Next</a>
+      {% else %}
+        <span class="page-btn disabled">Next</span>
+      {% endif %}
+    </div>
+  </div>
+  
+  <div class="card-head" style="border-top: 1px solid var(--border); padding-top: 24px;"><div><h2>Rincian Transaksi (D_K)</h2></div></div>
+
   {% if not is_role_viewer %}
   <form method="get" action="{% url 'dk:transaction_bulk_edit' %}">
   <div class="toolbar-row mt-small mb-small">

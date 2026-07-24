@@ -64,87 +64,16 @@
         </table>
       </div>
     {% else %}
-      <h2>Input Detail D_K</h2>
-      <p class="muted">Pecah data SP2D mentah menjadi database D_K web berdasarkan akun.</p>
-      <form method="post" class="form-grid mt-small">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="save_detail">
-
-        <div class="form-field full">
-          <label>Akun</label>
-          <select class="form-control" name="akun" required {% if not can_upload_document %}disabled{% endif %}>
-            <option value="">Pilih akun...</option>
-            {% for akun in akun_options %}
-              <option value="{{ akun.kode }}">{{ akun.kode }} - {{ akun.nama_akun }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="form-field">
-          <label>No. SPM</label>
-          <input class="form-control" name="nomor_spm" value="{{ manual_defaults.nomor_spm|default:'' }}" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field">
-          <label>Tanggal SPM</label>
-          <input class="form-control" type="date" name="tanggal_spm" value="{{ manual_defaults.tanggal_spm|date:'Y-m-d' }}" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field">
-          <label>Bulan SP2D</label>
-          <select class="form-control" name="bulan_sp2d" {% if not can_upload_document %}disabled{% endif %}>
-            <option value="">Pilih bulan...</option>
-            {% for value,label in months %}
-              <option value="{{ value }}" {% if manual_defaults.bulan_sp2d == value %}selected{% endif %}>{{ label }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="form-field">
-          <label>Cara Pembayaran</label>
-          <input class="form-control" name="cara_pembayaran" value="{{ manual_defaults.cara_pembayaran|default:'' }}" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field">
-          <label>Jenis SPM</label>
-          <input class="form-control" name="jenis_spm" value="{{ manual_defaults.jenis_spm|default:'' }}" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field">
-          <label>No. Kuitansi</label>
-          <input class="form-control" name="no_kuitansi" placeholder="Isi manual kalau ada" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field">
-          <label>No. DRPP</label>
-          <input class="form-control" name="no_drpp" placeholder="Isi manual kalau ada" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field full">
-          <label>Deskripsi Detail</label>
-          <textarea class="form-control" name="deskripsi" rows="3" {% if not can_upload_document %}disabled{% endif %}>{{ manual_defaults.deskripsi|default:'' }}</textarea>
-        </div>
-        <div class="form-field">
-          <label>Nilai Bruto</label>
-          <input class="form-control" name="nilai_bruto" value="{{ manual_defaults.nilai_bruto|floatformat:2 }}" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field">
-          <label>Nilai Netto</label>
-          <input class="form-control" name="nilai_netto" value="{{ manual_defaults.nilai_netto|floatformat:2 }}" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field">
-          <label>Pembebanan</label>
-          <input class="form-control" name="pembebanan" placeholder="Contoh: DIPA/POK" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field">
-          <label>FP</label>
-          <input class="form-control" name="fp" placeholder="Nomor faktur pajak jika ada" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-field full">
-          <label>PPh21</label>
-          <input class="form-control" name="pph21" value="0" {% if not can_upload_document %}disabled{% endif %}>
-        </div>
-        <div class="form-actions full">
-          {% if can_upload_document %}
-            <button class="primary-btn" type="submit">Simpan Detail &amp; Generate Checklist</button>
-          {% else %}
-            <button class="btn ghost" type="button" disabled>Read Only</button>
-          {% endif %}
-        </div>
-      </form>
+      <h2>Status Pencocokan</h2>
+      <p class="muted">SP2D mentah ini belum memiliki detail transaksi D_K yang cocok.</p>
+      <div class="note-box mt-small">
+        <p>Gunakan tombol <b>Tambah Rincian Manual</b> di halaman D_K, atau klik tombol di bawah ini untuk mengisi rincian yang merujuk pada SP2D ini secara otomatis.</p>
+      </div>
+      <div class="form-actions full mt-small">
+        {% if can_upload_document %}
+          <a class="btn primary" href="{% url 'dk:transaction_create' %}?sp2d_raw_id={{ row.id }}">Buat Rincian D_K</a>
+        {% endif %}
+      </div>
     {% endif %}
   </div>
 </section>

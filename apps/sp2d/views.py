@@ -11,7 +11,7 @@ from django.db.models import Exists, OuterRef, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.dateparse import parse_date
 
-from apps.accounts.access import can_upload_document, filter_by_satker, permission_context
+from apps.accounts.access import can_upload_document, filter_by_satker, permission_context, can_import_data
 from apps.core.parsers import parse_month, parse_sp2d_excel_file
 from apps.core.satker import infer_satker_from_name
 from apps.core.views import CHECKLIST_ROWS, MONTH_OPTIONS, build_pagination_window, normalize_page_size
@@ -22,11 +22,16 @@ from apps.dk.models import MasterAkun, TransactionDetail
 from apps.paket_spm.models import PaketSPMPreviewItem, PaketSPMUpload
 
 from .models import SP2DImportBatch, SP2DRaw
+from .services import classify_sp2d_rows, commit_sp2d_rows
 
 
 @login_required
 def sp2d_list(request):
     if request.method == "POST":
+        if not can_import_data(request.user):
+            messages.error(request, "Anda tidak memiliki izin untuk mengimport data SP2D.")
+            return redirect("sp2d:list")
+            
         tahun = request.POST.get("tahun")
         bulan = request.POST.get("bulan")
         upload_file = request.FILES.get("file_sp2d")
@@ -137,43 +142,8 @@ def sp2d_inbox_detail(request, pk):
     ).order_by("nomor_spm", "akun", "id")
 
     if request.method == "POST":
-        if not context_can_upload:
-            messages.error(request, "Akun ini tidak memiliki akses untuk membuat detail D_K.")
-            return redirect("sp2d:inbox_detail", pk=row.pk)
-        if request.POST.get("action") == "save_detail":
-            akun_code = request.POST.get("akun", "").strip()
-            if not akun_code:
-                messages.error(request, "Akun wajib dipilih sebelum menyimpan detail D_K.")
-                return redirect("sp2d:inbox_detail", pk=row.pk)
-            master_akun = MasterAkun.objects.filter(kode=akun_code, is_active=True).first()
-            with transaction.atomic():
-                detail = TransactionDetail.objects.create(
-                    sp2d_raw=row,
-                    satker_code=row.satker_code,
-                    akun=akun_code[:32],
-                    kategori=(master_akun.kategori if master_akun else "")[:100],
-                    bulan_sp2d=parse_month(request.POST.get("bulan_sp2d")) or row.bulan_sp2d,
-                    cara_pembayaran=request.POST.get("cara_pembayaran", "").strip()[:100],
-                    nomor_spm=request.POST.get("nomor_spm", "").strip()[:100],
-                    tanggal_spm=parse_date(request.POST.get("tanggal_spm", "")),
-                    jenis_spm=request.POST.get("jenis_spm", "").strip()[:100],
-                    no_kuitansi=request.POST.get("no_kuitansi", "").strip()[:100],
-                    no_drpp=request.POST.get("no_drpp", "").strip()[:100],
-                    deskripsi=request.POST.get("deskripsi", "").strip()[:1000],
-                    nilai_bruto=parse_money_input(request.POST.get("nilai_bruto"), row.nilai_spm),
-                    nilai_netto=parse_money_input(request.POST.get("nilai_netto"), row.nilai_sp2d),
-                    pembebanan=request.POST.get("pembebanan", "").strip()[:255],
-                    fp=request.POST.get("fp", "").strip()[:100],
-                    pph21=parse_money_input(request.POST.get("pph21"), Decimal("0")),
-                    status_detail=TransactionDetail.StatusDetail.DRAFT,
-                    drpp_status=TransactionDetail.DRPPStatus.BELUM_ADA,
-                    created_by=request.user,
-                )
-                generate_checklist_for_detail(detail, request.user, has_sp2d=True)
-                row.status = SP2DRaw.Status.COCOK
-                row.save(update_fields=["status", "updated_at"])
-            messages.success(request, "Detail D_K berhasil disimpan dan checklist dokumen sudah dibuat.")
-            return redirect("documents:checklist_detail", transaction_id=detail.pk)
+        messages.error(request, "Pembuatan Rincian D_K manual dari halaman ini telah dinonaktifkan. Silakan gunakan menu Tambah Rincian Manual pada Daftar D_K.")
+        return redirect("sp2d:inbox_detail", pk=row.pk)
 
     has_dk_detail = detail_query.exists()
     default_date = row.tanggal_invoice or row.tgl_sp2d or row.tanggal_selesai_sp2d
@@ -276,40 +246,24 @@ def sp2d_preview(request):
                         tahun=tahun,
                         bulan=bulan,
                         total_rows=parse_result["raw_rows"],
-                        success_rows=len(mapped_rows),
-                        failed_rows=max(parse_result["raw_rows"] - len(mapped_rows), 0),
-                        status=SP2DImportBatch.Status.COMPLETED,
+                        status=SP2DImportBatch.Status.PROCESSING,
                         uploaded_by=request.user,
                         notes=f"Sheet {parse_result['sheet']}, header row {parse_result['header_row']}",
                     )
-                    sp2d_objects = []
+                    # Normalize inputs before commit
                     for row_data in mapped_rows:
                         inferred_code, inferred_name = infer_satker_from_name(row_data.get("satker_name", ""))
-                        satker_code = str(row_data.get("satker_code") or inferred_code or "")[:32]
-                        satker_name = str(inferred_name or row_data.get("satker_name", ""))[:255]
-                        sp2d_objects.append(SP2DRaw(
-                            import_batch=batch,
-                            satker_code=satker_code,
-                            satker_name=satker_name,
-                            no_sp2d=str(row_data.get('no_sp2d', ''))[:100],
-                            tanggal_selesai_sp2d=row_data.get('tanggal_selesai_sp2d'),
-                            tgl_sp2d=row_data.get('tgl_sp2d'),
-                            mata_uang=str(row_data.get('mata_uang', ''))[:20],
-                            nilai_spm=row_data.get('nilai_spm') or Decimal("0"),
-                            potongan=row_data.get('potongan') or Decimal("0"),
-                            nilai_sp2d=row_data.get('nilai_sp2d') or Decimal("0"),
-                            nomor_invoice=str(row_data.get('nomor_invoice', ''))[:100],
-                            tanggal_invoice=row_data.get('tanggal_invoice'),
-                            jenis_spm=str(row_data.get('jenis_spm', ''))[:100],
-                            jenis_sp2d=str(row_data.get('jenis_sp2d', ''))[:100],
-                            deskripsi=str(row_data.get('deskripsi', '')),
-                            cek_akun=str(row_data.get('cek_akun', ''))[:255],
-                            nomor_spm_extracted=str(row_data.get('nomor_spm_extracted', ''))[:100],
-                            bulan_sp2d=bulan,
-                            original_file=import_data['original_filename'],
-                            created_by=request.user,
-                        ))
-                    SP2DRaw.objects.bulk_create(sp2d_objects)
+                        row_data["satker_code"] = str(row_data.get("satker_code") or inferred_code or "")[:32]
+                        row_data["satker_name"] = str(inferred_name or row_data.get("satker_name", ""))[:255]
+                        row_data["no_sp2d"] = str(row_data.get('no_sp2d', ''))[:100]
+                        row_data["mata_uang"] = str(row_data.get('mata_uang', ''))[:20]
+                        row_data["nomor_invoice"] = str(row_data.get('nomor_invoice', ''))[:100]
+                        row_data["jenis_spm"] = str(row_data.get('jenis_spm', ''))[:100]
+                        row_data["jenis_sp2d"] = str(row_data.get('jenis_sp2d', ''))[:100]
+                        row_data["deskripsi"] = str(row_data.get('deskripsi', ''))
+                        row_data["nomor_spm_extracted"] = str(row_data.get('nomor_spm_extracted', ''))[:100]
+                    
+                    commit_sp2d_rows(batch, mapped_rows, request.user)
                 drive_result, _ = archive_file_link(
                     file_path,
                     user=request.user,
@@ -326,9 +280,9 @@ def sp2d_preview(request):
                 del request.session['sp2d_import']
                 
                 if drive_result["status"] == "uploaded":
-                    messages.success(request, f"Berhasil menyimpan {len(sp2d_objects)} data SP2D dan mengarsipkan file ke Google Drive.")
+                    messages.success(request, f"Berhasil memproses import data SP2D secara idempoten dan mengarsipkan file ke Google Drive.")
                 else:
-                    messages.warning(request, f"Berhasil menyimpan {len(sp2d_objects)} data SP2D. {drive_result['error_message']}")
+                    messages.warning(request, f"Berhasil memproses import data SP2D secara idempoten. {drive_result['error_message']}")
                 return redirect("sp2d:list")
                 
             except Exception as e:
@@ -337,7 +291,16 @@ def sp2d_preview(request):
 
     try:
         parse_result = parse_sp2d_excel_file(file_path)
-        all_preview_rows = parse_result["rows"]
+        tahun = import_data.get('tahun')
+        all_preview_rows = classify_sp2d_rows(tahun, parse_result["rows"])
+        
+        preview_stats = {
+            "BARU": sum(1 for r in all_preview_rows if r.get("_status") == "BARU"),
+            "AKAN_DIPERBARUI": sum(1 for r in all_preview_rows if r.get("_status") == "AKAN_DIPERBARUI"),
+            "IDENTIK_DILEWATI": sum(1 for r in all_preview_rows if r.get("_status") == "IDENTIK_DILEWATI"),
+            "KONFLIK": sum(1 for r in all_preview_rows if r.get("_status") == "KONFLIK"),
+        }
+        
         if parse_result["valid_rows"] <= 100:
             preview_rows = all_preview_rows
             preview_page_obj = None
@@ -365,6 +328,7 @@ def sp2d_preview(request):
         "total_rows": parse_result["valid_rows"],
         "raw_rows": parse_result["raw_rows"],
         "parse_result": parse_result,
+        "preview_stats": preview_stats,
         "import_data": import_data,
         "can_commit": parse_result["ok"],
     })

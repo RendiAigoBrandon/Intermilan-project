@@ -104,6 +104,44 @@ def transaction_list(request):
     page_query = request.GET.copy()
     page_query.pop("page", None)
     base_querystring = page_query.urlencode()
+    
+    # Query SP2D Headers for the active scope
+    sp2d_qs = filter_by_satker(SP2DRaw.objects.select_related("import_batch"), request.user)
+    
+    sp2d_status_filter = request.GET.get("sp2d_status", "")
+    if sp2d_status_filter == "semua":
+        pass
+    else:
+        # Default: only PERLU_DETAIL, TIDAK_COCOK, DRAFT
+        sp2d_qs = sp2d_qs.filter(status__in=[SP2DRaw.Status.PERLU_DETAIL, SP2DRaw.Status.TIDAK_COCOK, SP2DRaw.Status.DRAFT])
+        
+    if filters["satker"]:
+        sp2d_qs = sp2d_qs.filter(satker_code=filters["satker"])
+    if filters["bulan"]:
+        sp2d_qs = sp2d_qs.filter(bulan_sp2d=filters["bulan"])
+    if filters["q"]:
+        # Only simple filter for SP2D matching D_K query
+        search = filters["q"]
+        sp2d_qs = sp2d_qs.filter(
+            Q(no_sp2d__icontains=search)
+            | Q(nomor_invoice__icontains=search)
+            | Q(nomor_spm_extracted__icontains=search)
+            | Q(deskripsi__icontains=search)
+            | Q(satker_code__icontains=search)
+        )
+        
+    sp2d_qs = sp2d_qs.order_by("-created_at")
+    
+    # Separate pagination for SP2D headers (for simplicity, using a different page param or just first 20)
+    # The requirement says "Header SP2D pada D_K harus dipaginasi"
+    # Let's use `sp2d_page` param
+    sp2d_page_size = 5
+    sp2d_paginator = Paginator(sp2d_qs, sp2d_page_size)
+    sp2d_page_obj = sp2d_paginator.get_page(request.GET.get("sp2d_page"))
+    
+    sp2d_page_query = request.GET.copy()
+    sp2d_page_query.pop("sp2d_page", None)
+    sp2d_base_querystring = sp2d_page_query.urlencode()
 
     profile = get_profile(request.user)
     context = permission_context(request.user)
@@ -138,6 +176,12 @@ def transaction_list(request):
                 "num_pages": paginator.num_pages,
                 "current_page": page_obj.number,
             },
+            "sp2d_page_obj": sp2d_page_obj,
+            "sp2d_paginator": sp2d_paginator,
+            "sp2d_base_querystring": sp2d_base_querystring,
+            "sp2d_start": sp2d_page_obj.start_index() if sp2d_paginator.count else 0,
+            "sp2d_end": sp2d_page_obj.end_index() if sp2d_paginator.count else 0,
+            "sp2d_status_filter": sp2d_status_filter,
         }
     )
     return render(request, "dk/list.html", context)
@@ -247,7 +291,22 @@ def transaction_create(request):
                 return redirect('dk:transaction_create')
             return redirect('dk:transaction_list')
     else:
-        form = TransactionDetailForm(user=request.user)
+        initial_data = {}
+        sp2d_id = request.GET.get("sp2d_raw_id")
+        if sp2d_id:
+            sp2d = SP2DRaw.objects.filter(id=sp2d_id).first()
+            if sp2d:
+                initial_data = {
+                    "sp2d_raw": sp2d.id,
+                    "satker_code": sp2d.satker_code,
+                    "nomor_spm": sp2d.nomor_spm_extracted or (sp2d.nomor_invoice.split("/")[0] if sp2d.nomor_invoice else ""),
+                    "tanggal_spm": sp2d.tanggal_invoice or sp2d.tgl_sp2d or sp2d.tanggal_selesai_sp2d,
+                    "bulan_sp2d": sp2d.bulan_sp2d,
+                    "cara_pembayaran": sp2d.jenis_spm,
+                    "jenis_spm": sp2d.jenis_spm,
+                    "deskripsi": sp2d.deskripsi,
+                }
+        form = TransactionDetailForm(user=request.user, initial=initial_data)
     
     context = permission_context(request.user)
     context.update({'form': form, 'page_title': 'Tambah Baris D_K'})
