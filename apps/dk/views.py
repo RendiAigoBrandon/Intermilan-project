@@ -271,6 +271,17 @@ def transaction_create(request):
                 raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
             instance = form.save(commit=False)
             instance.created_by = request.user
+            
+            # SP2D Linkage only on create
+            sp2d_raw_id = form.cleaned_data.get("sp2d_raw_id")
+            linked_sp2d = None
+            if sp2d_raw_id:
+                sp2d = filter_by_satker(SP2DRaw.objects, request.user).filter(id=sp2d_raw_id).first()
+                if sp2d and can_edit_satker(request.user, sp2d.satker_code):
+                    instance.sp2d_raw = sp2d
+                    instance.status_detail = TransactionDetail.StatusDetail.DRAFT
+                    linked_sp2d = sp2d
+            
             instance.save()
             
             # Log fields that were filled
@@ -285,6 +296,18 @@ def transaction_create(request):
                         change_source=TransactionChangeLog.ChangeSource.MANUAL,
                         changed_by=request.user
                     )
+            
+            if linked_sp2d:
+                TransactionChangeLog.objects.create(
+                    transaction=instance,
+                    field_name="sp2d_raw",
+                    old_value="",
+                    new_value=str(linked_sp2d.id),
+                    change_source=TransactionChangeLog.ChangeSource.MANUAL,
+                    changed_by=request.user
+                )
+                from apps.sp2d.services import reconcile_sp2d_with_dk
+                reconcile_sp2d_with_dk(linked_sp2d, request.user)
                     
             messages.success(request, "Baris D_K berhasil ditambahkan.")
             if "save_and_add" in request.POST:
@@ -294,12 +317,12 @@ def transaction_create(request):
         initial_data = {}
         sp2d_id = request.GET.get("sp2d_raw_id")
         if sp2d_id:
-            sp2d = SP2DRaw.objects.filter(id=sp2d_id).first()
+            sp2d = filter_by_satker(SP2DRaw.objects, request.user).filter(id=sp2d_id).first()
             if sp2d:
                 initial_data = {
-                    "sp2d_raw": sp2d.id,
+                    "sp2d_raw_id": sp2d.id,
                     "satker_code": sp2d.satker_code,
-                    "nomor_spm": sp2d.nomor_spm_extracted or (sp2d.nomor_invoice.split("/")[0] if sp2d.nomor_invoice else ""),
+                    "nomor_spm": sp2d.nomor_spm_extracted,
                     "tanggal_spm": sp2d.tanggal_invoice or sp2d.tgl_sp2d or sp2d.tanggal_selesai_sp2d,
                     "bulan_sp2d": sp2d.bulan_sp2d,
                     "cara_pembayaran": sp2d.jenis_spm,

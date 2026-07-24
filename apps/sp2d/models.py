@@ -57,6 +57,13 @@ class SP2DRaw(models.Model):
         on_delete=models.SET_NULL,
         related_name="raw_rows",
     )
+    last_import_batch = models.ForeignKey(
+        SP2DImportBatch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="updated_raw_rows",
+    )
     tahun = models.PositiveSmallIntegerField(null=True, blank=True)
     identity_key = models.CharField(max_length=64, blank=True, null=True, unique=True)
     satker_code = models.CharField(max_length=32, blank=True)

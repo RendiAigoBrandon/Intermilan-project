@@ -62,7 +62,7 @@
       </thead>
       <tbody>
         {% for row in preview_rows %}
-        <tr>
+        <tr class="{% if row.preview_status == 'GAGAL' or row.preview_status == 'KONFLIK' %}danger-row{% elif row.preview_status == 'IDENTIK_DILEWATI' %}warning-row{% elif row.preview_status == 'AKAN_DIPERBARUI' %}info-row{% else %}success-row{% endif %}">
           <td>{{ forloop.counter0|add:preview_start_index }}</td>
           <td>{% if row.satker_name %}{{ row.satker_name }}{% else %}{{ row.satker_code|default:"-" }}{% endif %}</td>
           <td>{{ row.no_sp2d }}</td>
@@ -72,7 +72,12 @@
           <td>{{ row.nilai_sp2d|id_number }}</td>
           <td>{{ row.nomor_invoice }}</td>
           <td>{{ row.jenis_spm }}</td>
-          <td><span class="badge {% if row.status == 'BARU' %}blue{% elif row.status == 'AKAN_DIPERBARUI' %}orange{% elif row.status == 'KONFLIK' %}red{% else %}gray{% endif %}">{{ row|get_item:"_status" }}</span></td>
+          <td>
+            <span class="badge {% if row.preview_status == 'BARU' %}blue{% elif row.preview_status == 'AKAN_DIPERBARUI' %}orange{% elif row.preview_status == 'KONFLIK' %}red{% elif row.preview_status == 'GAGAL' %}red{% else %}gray{% endif %}">{{ row.preview_status }}</span>
+            {% if row.preview_reason %}
+            <br><small class="muted" style="display:block; margin-top:4px;">{{ row.preview_reason }}</small>
+            {% endif %}
+          </td>
         </tr>
         {% empty %}
         <tr><td colspan="11" class="empty">File berhasil dibaca, tetapi tidak ada data SP2D valid yang ditemukan.</td></tr>

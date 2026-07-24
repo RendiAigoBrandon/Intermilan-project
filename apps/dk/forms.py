@@ -21,6 +21,7 @@ class TransactionDetailForm(forms.ModelForm):
     bulan_sp2d = forms.ChoiceField(choices=BULAN_CHOICES, required=False, label="SP2D Bulan")
     cara_pembayaran = forms.ChoiceField(choices=CARA_PEMBAYARAN_CHOICES, required=False, label="Cara Pembayaran")
     tanggal_spm = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}), required=False, label="Tanggal SPM")
+    sp2d_raw_id = forms.IntegerField(widget=forms.HiddenInput, required=False)
 
     class Meta:
         model = TransactionDetail

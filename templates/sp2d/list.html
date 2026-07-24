@@ -20,6 +20,45 @@
 
 <section class="card mt">
   <div class="card-head"><div><h2>Riwayat Import SP2D</h2><p class="muted">Pantau hasil import dan rekonsiliasi SP2D dengan D_K.</p></div></div>
+  <div class="table-wrap wide-table-wrap">
+    <table class="data-table compact">
+      <thead>
+        <tr>
+          <th>Tanggal Import</th>
+          <th>Bulan/Tahun</th>
+          <th>File Asli</th>
+          <th>Total Baris</th>
+          <th>Status</th>
+          <th>Aksi</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for batch in batch_rows %}
+        <tr>
+          <td>{{ batch.created_at|date:"Y-m-d H:i" }}</td>
+          <td>{{ batch.get_bulan_display }} {{ batch.tahun }}</td>
+          <td>{{ batch.original_filename }}</td>
+          <td>{{ batch.total_rows }}</td>
+          <td><span class="badge {{ batch.status|lower }}">{{ batch.get_status_display }}</span></td>
+          <td>-</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="empty">Belum ada riwayat import.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination-wrap">
+    <div class="pagination-info">Menampilkan {{ batch_page_obj.start_index|default:0 }}-{{ batch_page_obj.end_index|default:0 }} dari {{ batch_paginator.count }} riwayat</div>
+    <div class="pagination-controls">
+      {% if batch_page_obj.has_previous %}<a class="page-btn" href="?{% if batch_base_querystring %}{{ batch_base_querystring }}&{% endif %}batch_page={{ batch_page_obj.previous_page_number }}">Previous</a>{% else %}<span class="page-btn disabled">Previous</span>{% endif %}
+      {% if batch_page_obj.has_next %}<a class="page-btn" href="?{% if batch_base_querystring %}{{ batch_base_querystring }}&{% endif %}batch_page={{ batch_page_obj.next_page_number }}">Next</a>{% else %}<span class="page-btn disabled">Next</span>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="card mt">
+  <div class="card-head"><div><h2>Data SP2D Mentah</h2><p class="muted">Hasil ekstraksi SP2D yang perlu dilengkapi rincian D_K-nya.</p></div></div>
   <div class="toolbar-panel">
     <div class="toolbar-row">
       <form class="filter-panel" method="get">
@@ -33,8 +72,6 @@
       </form>
       <div class="page-actions">
         <a class="btn ghost" href="{% url 'sp2d:completeness' %}">Cek Kelengkapan</a>
-        {% if can_upload_document %}<a class="btn primary" href="{% url 'paket_spm:list' %}">Upload Paket SPM PDF/ZIP</a>{% endif %}
-        {% if can_export_data %}<button class="btn ghost" type="button">Export Excel</button>{% else %}<span class="badge">Read Only</span>{% endif %}
       </div>
     </div>
   </div>
@@ -62,7 +99,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for row in rows %}
+        {% for row in header_rows %}
         <tr>
           <td class="col-no">{{ page_start|add:forloop.counter0 }}</td>
           <td class="col-satker">{% if row.satker_code and row.satker_name %}{{ row.satker_code }} - {{ row.satker_name }}{% elif row.satker_code %}{{ row.satker_code }}{% elif row.satker_name %}{{ row.satker_name }}{% else %}-{% endif %}</td>
@@ -79,8 +116,8 @@
           <td class="col-jenis">{{ row.jenis_spm|dash }}</td>
           <td class="col-jenis">{{ row.jenis_sp2d|dash }}</td>
           <td class="col-deskripsi">{{ row.deskripsi|dash }}</td>
-          <td class="col-status"><span class="badge {% if row.has_dk_detail %}green{% else %}orange{% endif %}">{{ row.status_detail_label }}</span></td>
-          <td class="col-aksi">{% if row.has_dk_detail %}<a class="btn tiny ghost" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %}<a class="btn tiny primary" href="{% url 'sp2d:inbox_detail' row.id %}">Inbox</a>{% endif %}</td>
+          <td class="col-status"><span class="badge {% if row.status == 'COCOK' %}green{% else %}orange{% endif %}">{{ row.status_detail_label }}</span></td>
+          <td class="col-aksi">{% if row.status == 'COCOK' %}<a class="btn tiny ghost" href="{% url 'dk:transaction_list' %}?q={{ row.nomor_spm_extracted|urlencode }}">Lihat D_K</a>{% else %}<a class="btn tiny primary" href="{% url 'sp2d:inbox_detail' row.id %}">Inbox</a>{% endif %}</td>
         </tr>
         {% empty %}
         <tr><td colspan="17" class="empty">Belum ada data mentah SP2D.</td></tr>

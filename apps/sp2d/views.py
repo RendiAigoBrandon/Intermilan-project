@@ -40,8 +40,13 @@ def sp2d_list(request):
             messages.error(request, "Harap pilih file Excel.")
             return redirect("sp2d:list")
             
-        if not upload_file.name.endswith(('.xlsx', '.xls')):
-            messages.error(request, "Format file tidak valid. Harap unggah file .xlsx atau .xls.")
+        if not upload_file.name.lower().endswith('.xlsx'):
+            messages.error(request, "Format file tidak valid. Harap unggah file .xlsx.")
+            return redirect("sp2d:list")
+            
+        max_mb = getattr(settings, "SP2D_MAX_UPLOAD_MB", 10)
+        if upload_file.size > max_mb * 1024 * 1024:
+            messages.error(request, f"Ukuran file melebihi batas maksimal ({max_mb} MB).")
             return redirect("sp2d:list")
             
         tmp_dir = os.path.join(settings.MEDIA_ROOT, "tmp")
@@ -54,27 +59,22 @@ def sp2d_list(request):
             'file_path': file_path,
             'original_filename': upload_file.name,
             'tahun': tahun,
-            'bulan': bulan
+            'bulan': bulan,
+            'uploaded_by_user_id': request.user.id
         }
         return redirect("sp2d:preview")
 
+    # Header Rows (SP2DRaw)
     rows = filter_by_satker(SP2DRaw.objects.select_related("import_batch", "created_by"), request.user)
-    match_query = (
-        TransactionDetail.objects.filter(satker_code=OuterRef("satker_code"))
-        .exclude(nomor_spm="", no_kuitansi="")
-        .filter(
-            Q(sp2d_raw=OuterRef("pk"))
-            | Q(nomor_spm=OuterRef("nomor_spm_extracted"))
-            | Q(nomor_spm=OuterRef("nomor_invoice"))
-            | Q(no_kuitansi=OuterRef("nomor_invoice"))
-        )
-    )
-    rows = rows.annotate(has_dk_detail=Exists(match_query))
+    
+    # Batch Rows (SP2DImportBatch)
+    batch_qs = SP2DImportBatch.objects.all()
 
     search = request.GET.get("q", "").strip()
     status = request.GET.get("status", "").strip()
     satker = request.GET.get("satker", "").strip()
     bulan = request.GET.get("bulan", "").strip()
+    
     if search:
         rows = rows.filter(
             Q(no_sp2d__icontains=search)
@@ -85,9 +85,9 @@ def sp2d_list(request):
             | Q(satker_name__icontains=search)
         )
     if status == "sudah":
-        rows = rows.filter(has_dk_detail=True)
+        rows = rows.filter(status=SP2DRaw.Status.COCOK)
     elif status == "belum":
-        rows = rows.filter(has_dk_detail=False)
+        rows = rows.exclude(status=SP2DRaw.Status.COCOK)
     if satker:
         rows = rows.filter(satker_code=satker)
     if bulan:
@@ -96,18 +96,28 @@ def sp2d_list(request):
     page_size = normalize_page_size(request.GET.get("page_size"))
     paginator = Paginator(rows.order_by("-created_at", "id"), page_size)
     page_obj = paginator.get_page(request.GET.get("page"))
-    rows = list(page_obj.object_list)
-    for row in rows:
-        row.status_detail_label = "Sudah Ada D_K" if row.has_dk_detail else "Belum Ada Detail"
+    
+    batch_paginator = Paginator(batch_qs, 10)
+    batch_page_obj = batch_paginator.get_page(request.GET.get("batch_page"))
+    batch_rows = list(batch_page_obj.object_list)
+    
+    header_rows = list(page_obj.object_list)
+    for row in header_rows:
+        row.status_detail_label = "Sudah Ada D_K" if row.status == SP2DRaw.Status.COCOK else "Belum Lengkap"
+        
     base_query = request.GET.copy()
     base_query.pop("page", None)
+    
+    batch_query = request.GET.copy()
+    batch_query.pop("batch_page", None)
 
     context = permission_context(request.user)
     context.update(
         {
-            "page_title": "Upload & Inbox SP2D",
-            "page_subtitle": "Data mentah SP2D dan status pencocokan ke D_K.",
-            "rows": rows,
+            "page_title": "Upload SP2D",
+            "page_subtitle": "Data mentah SP2D dan riwayat import.",
+            "header_rows": header_rows,
+            "batch_rows": batch_rows,
             "filters": {"q": search, "status": status, "satker": satker, "bulan": bulan},
             "months": MONTH_OPTIONS,
             "satker_options": get_satker_options(request.user),
@@ -118,7 +128,10 @@ def sp2d_list(request):
             "page_start": page_obj.start_index() if paginator.count else 0,
             "page_end": page_obj.end_index() if paginator.count else 0,
             "base_querystring": base_query.urlencode(),
+            "batch_base_querystring": batch_query.urlencode(),
             "pagination_window": build_pagination_window(page_obj),
+            "batch_paginator": batch_paginator,
+            "batch_page_obj": batch_page_obj,
         }
     )
     return render(request, "sp2d/list.html", context)
@@ -129,17 +142,7 @@ def sp2d_inbox_detail(request, pk):
     queryset = filter_by_satker(SP2DRaw.objects.select_related("import_batch", "created_by"), request.user)
     row = get_object_or_404(queryset, pk=pk)
     context_can_upload = can_upload_document(request.user)
-    detail_query = TransactionDetail.objects.filter(
-        Q(sp2d_raw=row)
-        | (
-            Q(satker_code=row.satker_code)
-            & (
-                Q(nomor_spm=row.nomor_spm_extracted)
-                | Q(nomor_spm=row.nomor_invoice)
-                | Q(no_kuitansi=row.nomor_invoice)
-            )
-        )
-    ).order_by("nomor_spm", "akun", "id")
+    detail_query = TransactionDetail.objects.filter(sp2d_raw=row).order_by("nomor_spm", "akun", "id")
 
     if request.method == "POST":
         messages.error(request, "Pembuatan Rincian D_K manual dari halaman ini telah dinonaktifkan. Silakan gunakan menu Tambah Rincian Manual pada Daftar D_K.")
@@ -216,6 +219,10 @@ def sp2d_preview(request):
         messages.error(request, "Sesi upload tidak ditemukan. Silakan upload ulang.")
         return redirect("sp2d:list")
         
+    if import_data.get('uploaded_by_user_id') != request.user.id or not can_import_data(request.user):
+        messages.error(request, "Anda tidak memiliki izin untuk memproses sesi import ini.")
+        return redirect("sp2d:list")
+        
     file_path = import_data['file_path']
     if not os.path.exists(file_path):
         messages.error(request, "File sementara hilang. Silakan upload ulang.")
@@ -263,7 +270,7 @@ def sp2d_preview(request):
                         row_data["deskripsi"] = str(row_data.get('deskripsi', ''))
                         row_data["nomor_spm_extracted"] = str(row_data.get('nomor_spm_extracted', ''))[:100]
                     
-                    commit_sp2d_rows(batch, mapped_rows, request.user)
+                    commit_sp2d_rows(batch, mapped_rows, request.user, filename=import_data['original_filename'])
                 drive_result, _ = archive_file_link(
                     file_path,
                     user=request.user,
@@ -295,10 +302,11 @@ def sp2d_preview(request):
         all_preview_rows = classify_sp2d_rows(tahun, parse_result["rows"])
         
         preview_stats = {
-            "BARU": sum(1 for r in all_preview_rows if r.get("_status") == "BARU"),
-            "AKAN_DIPERBARUI": sum(1 for r in all_preview_rows if r.get("_status") == "AKAN_DIPERBARUI"),
-            "IDENTIK_DILEWATI": sum(1 for r in all_preview_rows if r.get("_status") == "IDENTIK_DILEWATI"),
-            "KONFLIK": sum(1 for r in all_preview_rows if r.get("_status") == "KONFLIK"),
+            "BARU": sum(1 for r in all_preview_rows if r.get("preview_status") == "BARU"),
+            "AKAN_DIPERBARUI": sum(1 for r in all_preview_rows if r.get("preview_status") == "AKAN_DIPERBARUI"),
+            "IDENTIK_DILEWATI": sum(1 for r in all_preview_rows if r.get("preview_status") == "IDENTIK_DILEWATI"),
+            "KONFLIK": sum(1 for r in all_preview_rows if r.get("preview_status") == "KONFLIK"),
+            "GAGAL": sum(1 for r in all_preview_rows if r.get("preview_status") == "GAGAL"),
         }
         
         if parse_result["valid_rows"] <= 100:
