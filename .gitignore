@@ -57,3 +57,16 @@ Thumbs.db
 # === Logs ===
 *.log
 logs/
+
+# === Audit Exclusions ===
+media/ocr_cache/
+tmp_extract/
+tmp_extract_v*/
+test_output.txt
+debug_hang.py
+inspect_details.py
+test_regex.py
+test_spm_pdf.py
+test_upload.py
+document-graph.patch
+*.patch
