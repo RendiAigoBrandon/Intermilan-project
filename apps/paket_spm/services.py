@@ -612,11 +612,16 @@ def analyze_matching_transactions(meta):
 
     first = existing[0]
     best_match = {
+        "all_matched_rows": existing,
+        "first_match": first,
         "id": first.id,
         "nomor_spm": first.nomor_spm,
         "satker_code": first.satker_code,
         "akun": first.akun,
         "tanggal_spm": first.tanggal_spm.isoformat() if first.tanggal_spm else "",
+        "jenis_spm": first.jenis_spm,
+        "cara_pembayaran": first.cara_pembayaran,
+        "bulan_sp2d": first.bulan_sp2d,
         "nilai_bruto": str(first.nilai_bruto) if first.nilai_bruto else "0",
         "nilai_netto": str(first.nilai_netto) if first.nilai_netto else "0",
     }
@@ -635,11 +640,15 @@ def _match_existing_dk_from_kw_items(satker_clean, tahun_spm, kw_items):
     rows = list(query)
     matched = []
     used_ids = set()
+    drpp_to_spms = {}
+    
     for item in kw_items:
-        item_kw = normalize_key(item.get("no_bukti"))
+        item_kw = normalize_key(short_document_number(item.get("no_bukti")))
         item_akun = normalize_key(item.get("akun"))
         item_amount = money_value(item.get("jumlah"))
         item_pembebanan = normalize_key(item.get("pembebanan"))
+        no_drpp = normalize_key(item.get("no_drpp")) or "unknown"
+        
         candidates = []
         for row in rows:
             if row.id in used_ids:
@@ -653,12 +662,28 @@ def _match_existing_dk_from_kw_items(satker_clean, tahun_spm, kw_items):
             if item_pembebanan and normalize_key(row.pembebanan) and normalize_key(row.pembebanan) != item_pembebanan:
                 continue
             candidates.append(row)
-        if len(candidates) != 1:
+            
+        if len(candidates) == 1:
+            match_row = candidates[0]
+            used_ids.add(match_row.id)
+            matched.append(match_row)
+            
+            # Inject match into the parsed item directly
+            item["nomor_spm"] = match_row.nomor_spm
+            item["tanggal_spm"] = match_row.tanggal_spm.isoformat() if match_row.tanggal_spm else ""
+            item["jenis_spm"] = match_row.jenis_spm
+            item["cara_pembayaran"] = match_row.cara_pembayaran
+            item["bulan_sp2d"] = match_row.bulan_sp2d
+            
+            spm = normalize_key(match_row.nomor_spm)
+            if spm:
+                drpp_to_spms.setdefault(no_drpp, set()).add(spm)
+                
+    for spms in drpp_to_spms.values():
+        if len(spms) > 1:
             return []
-        used_ids.add(candidates[0].id)
-        matched.append(candidates[0])
-    nomor_set = {normalize_key(row.nomor_spm) for row in matched if normalize_key(row.nomor_spm)}
-    return matched if len(nomor_set) == 1 else []
+            
+    return matched
 
 
 def find_matching_sp2d(meta):
@@ -836,7 +861,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None, curre
 
     if matched_transaction and matched_transaction.get("nomor_spm"):
         meta["nomor_spm_matching"] = normalize_key(matched_transaction.get("nomor_spm"))
-        _apply_matched_nomor_spm_to_parsed(parsed, meta["nomor_spm_matching"])
+        _apply_matched_spm_to_parsed(parsed, matched_transaction)
     elif candidates and candidates[0]["transaction"].get("nomor_spm"):
         meta["nomor_spm_matching"] = normalize_key(candidates[0]["transaction"].get("nomor_spm"))
     elif matched_sp2d and matched_sp2d.nomor_spm_extracted:
@@ -858,7 +883,7 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None, curre
             parsed["spm"].setdefault("warnings", [])
             if warning not in parsed["spm"]["warnings"]:
                 parsed["spm"]["warnings"].insert(0, warning)
-        _apply_matched_nomor_spm_to_parsed(parsed, meta["nomor_spm_matching"])
+        _apply_matched_spm_to_parsed(parsed, matched_transaction)
         notes = [warning] + [note for note in notes if note != warning]
         document_status, fresh_notes = evaluate_document_status(parsed)
         notes = [warning] + [note for note in fresh_notes if note != warning]
@@ -1171,20 +1196,131 @@ def transaction_from_values(values, defaults, user=None, sp2d_raw=None, document
     )
 
 
-def _apply_matched_nomor_spm_to_parsed(parsed, nomor_spm):
-    nomor_spm = normalize_key(nomor_spm)
-    if not nomor_spm:
+def _apply_matched_spm_to_parsed(parsed, matched_transaction):
+    all_rows = matched_transaction.get("all_matched_rows") or []
+    
+    item_to_row = {}
+    for row in all_rows:
+        if not isinstance(row, dict):
+            akun = normalize_key(row.akun)
+            kw = normalize_key(short_document_number(row.no_kuitansi))
+            item_to_row[(akun, kw)] = row
+
+    global_nomor_spm = normalize_key(matched_transaction.get("nomor_spm"))
+    if not global_nomor_spm:
         return
+        
+    global_tanggal_spm = matched_transaction.get("tanggal_spm")
+    global_jenis_spm = matched_transaction.get("jenis_spm")
+    global_cara_pembayaran = matched_transaction.get("cara_pembayaran")
+    global_bulan_sp2d = matched_transaction.get("bulan_sp2d")
+
+    # Only fallback to global matched_transaction if this package actually HAS an SPM 
+    # (meaning the whole package is bound to one SPM document)
+    package_has_spm_doc = bool(parsed.get("spm"))
+
+    # Save to parsed["spm"]["metadata"] ONLY if it already exists
+    if "spm" in parsed and isinstance(parsed["spm"], dict):
+        if "metadata" not in parsed["spm"] or not isinstance(parsed["spm"]["metadata"], dict):
+            parsed["spm"]["metadata"] = {}
+        meta = parsed["spm"]["metadata"]
+        meta["nomor_spm"] = global_nomor_spm
+        if global_tanggal_spm: meta["tanggal_spm"] = global_tanggal_spm
+        if global_jenis_spm: meta["jenis_spm"] = global_jenis_spm
+        if global_cara_pembayaran: meta["cara_pembayaran"] = global_cara_pembayaran
+        if global_bulan_sp2d: meta["bulan_sp2d"] = global_bulan_sp2d
+
     for drpp in parsed.get("drpps") or []:
         if not drpp:
             continue
-        drpp.setdefault("metadata", {})["nomor_spm"] = nomor_spm
+        drpp_meta = drpp.setdefault("metadata", {})
+        
+        drpp_row = None
+        for item in drpp.get("items") or []:
+            key = (normalize_key(item.get("akun")), normalize_key(short_document_number(item.get("no_bukti"))))
+            if key in item_to_row:
+                drpp_row = item_to_row[key]
+                break
+                
+        row_source = drpp_row
+        if not row_source and package_has_spm_doc:
+            row_source = matched_transaction
+            
+        if not row_source:
+            continue
+            
+        nomor_spm = getattr(row_source, "nomor_spm", "") if not isinstance(row_source, dict) else row_source.get("nomor_spm", "")
+        tanggal_spm = row_source.tanggal_spm.isoformat() if not isinstance(row_source, dict) and getattr(row_source, "tanggal_spm", None) else (row_source.get("tanggal_spm") if isinstance(row_source, dict) else "")
+        jenis_spm = getattr(row_source, "jenis_spm", "") if not isinstance(row_source, dict) else row_source.get("jenis_spm")
+        cara_pembayaran = getattr(row_source, "cara_pembayaran", "") if not isinstance(row_source, dict) else row_source.get("cara_pembayaran")
+        bulan_sp2d = getattr(row_source, "bulan_sp2d", "") if not isinstance(row_source, dict) else row_source.get("bulan_sp2d")
+        
+        if not nomor_spm:
+            continue
+
+        existing_drpp_spm = normalize_key(drpp_meta.get("nomor_spm"))
+        if existing_drpp_spm and existing_drpp_spm != nomor_spm:
+            continue
+
+        drpp_meta["nomor_spm"] = nomor_spm
+        if tanggal_spm: drpp_meta["tanggal_spm"] = tanggal_spm
+        if jenis_spm: drpp_meta["jenis_spm"] = jenis_spm
+        if cara_pembayaran: drpp_meta["cara_pembayaran"] = cara_pembayaran
+        if bulan_sp2d: drpp_meta["bulan_sp2d"] = bulan_sp2d
+        
         for item in drpp.get("items") or []:
             item["nomor_spm"] = nomor_spm
-    if parsed.get("drpp"):
-        parsed["drpp"].setdefault("metadata", {})["nomor_spm"] = nomor_spm
+            if tanggal_spm: item["tanggal_spm"] = tanggal_spm
+            if jenis_spm: item["jenis_spm"] = jenis_spm
+            if cara_pembayaran: item["cara_pembayaran"] = cara_pembayaran
+            if bulan_sp2d: item["bulan_sp2d"] = bulan_sp2d
+            
     for item in parsed.get("kw_items") or []:
+        key = (normalize_key(item.get("akun")), normalize_key(short_document_number(item.get("no_bukti"))))
+        row_source = item_to_row.get(key)
+        if not row_source and package_has_spm_doc:
+            row_source = matched_transaction
+            
+        if not row_source:
+            continue
+            
+        nomor_spm = getattr(row_source, "nomor_spm", "") if not isinstance(row_source, dict) else row_source.get("nomor_spm", "")
+        tanggal_spm = row_source.tanggal_spm.isoformat() if not isinstance(row_source, dict) and getattr(row_source, "tanggal_spm", None) else (row_source.get("tanggal_spm") if isinstance(row_source, dict) else "")
+        jenis_spm = getattr(row_source, "jenis_spm", "") if not isinstance(row_source, dict) else row_source.get("jenis_spm")
+        cara_pembayaran = getattr(row_source, "cara_pembayaran", "") if not isinstance(row_source, dict) else row_source.get("cara_pembayaran")
+        bulan_sp2d = getattr(row_source, "bulan_sp2d", "") if not isinstance(row_source, dict) else row_source.get("bulan_sp2d")
+        
+        item_spm = normalize_key(item.get("nomor_spm"))
+        if item_spm and item_spm != nomor_spm:
+            continue
+            
         item["nomor_spm"] = nomor_spm
+        if tanggal_spm: item["tanggal_spm"] = tanggal_spm
+        if jenis_spm: item["jenis_spm"] = jenis_spm
+        if cara_pembayaran: item["cara_pembayaran"] = cara_pembayaran
+        if bulan_sp2d: item["bulan_sp2d"] = bulan_sp2d
+        
+    for item in parsed.get("preview_rows") or []:
+        key = (normalize_key(item.get("akun")), normalize_key(short_document_number(item.get("no_bukti"))))
+        row_source = item_to_row.get(key)
+        if not row_source:
+            row_source = matched_transaction
+            
+        nomor_spm = normalize_key(row_source.nomor_spm) if not isinstance(row_source, dict) else normalize_key(row_source.get("nomor_spm"))
+        tanggal_spm = row_source.tanggal_spm.isoformat() if not isinstance(row_source, dict) and getattr(row_source, "tanggal_spm", None) else (row_source.get("tanggal_spm") if isinstance(row_source, dict) else "")
+        jenis_spm = getattr(row_source, "jenis_spm", "") if not isinstance(row_source, dict) else row_source.get("jenis_spm")
+        cara_pembayaran = getattr(row_source, "cara_pembayaran", "") if not isinstance(row_source, dict) else row_source.get("cara_pembayaran")
+        bulan_sp2d = getattr(row_source, "bulan_sp2d", "") if not isinstance(row_source, dict) else row_source.get("bulan_sp2d")
+        
+        item_spm = normalize_key(item.get("nomor_spm"))
+        if item_spm and item_spm != nomor_spm:
+            continue
+            
+        item["nomor_spm"] = nomor_spm
+        if tanggal_spm: item["tanggal_spm"] = tanggal_spm
+        if jenis_spm: item["jenis_spm"] = jenis_spm
+        if cara_pembayaran: item["cara_pembayaran"] = cara_pembayaran
+        if bulan_sp2d: item["bulan_sp2d"] = bulan_sp2d
 
 
 def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP, save=True, skip_existing=True):

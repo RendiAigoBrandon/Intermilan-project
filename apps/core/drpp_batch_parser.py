@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+from apps.sp2d.models import SP2DRaw
 import shutil
 import tempfile
 import threading
@@ -294,14 +295,18 @@ def _hash_distance(left, right):
 def deduplicate_pages(page_index, max_distance=3):
     representatives = []
     for page in page_index:
+        # DO NOT protect DRPP_SUMMARY from deduplication across files! 
+        # But we do protect SPM.
         protected = page.get("force_probe") or (
-            page.get("type_hint") in {"DRPP_SUMMARY", "SPM"} and page.get("page_number", 0) <= 4
+            page.get("type_hint") in {"SPM"} and page.get("page_number", 0) <= 4
         )
-        duplicate = None if protected else next(
+        max_distance = 0 if protected else 10
+        duplicate = next(
             (
                 candidate
                 for candidate in representatives
                 if _hash_distance(page.get("page_hash"), candidate.get("page_hash")) <= max_distance
+                and candidate.get("type_hint") == page.get("type_hint")
             ),
             None,
         )
@@ -314,6 +319,10 @@ def deduplicate_pages(page_index, max_distance=3):
         page["is_representative"] = duplicate is None
         if duplicate is None:
             representatives.append(page)
+            
+    # Cross mapping: if page A is a duplicate of B, items parsed from B belong to A's file context?
+    # No, parser just extracts items from B. But wait, if two PDFs have the same DRPP, it will only OCR B.
+    # The KW pages from A are still unique pages! They will be extracted and put into the same drpp_group!
     return page_index
 
 
@@ -475,33 +484,61 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
                 break
 
     if not numbers:
-        # Bundel bernama SPM ... KW ... menaruh SPM/DRPP di blok awal.
-        # Batasi probe agar kuitansi puluhan halaman tidak dibaca seluruhnya.
-        bundle_file = next(
-            (
-                page["file_name"]
-                for page in page_index
-                if re.search(r"\bSPM\b", Path(page["file_name"]).stem.upper())
-            ),
-            "",
-        )
-        for page in page_index:
-            if page["file_name"] != bundle_file or page["page_number"] > 12:
-                continue
-            started = time.monotonic()
-            probe = _probe_page_text(page)
-            page["probe_duration"] = time.monotonic() - started
-            page["probe_ocr_called"] = not probe.get("cache_hit", False)
-            page["probe_cache_hit"] = bool(probe.get("cache_hit"))
-            if _classification(probe.get("text", ""))[0] != "DRPP_SUMMARY":
-                continue
-            for candidate in page_index:
-                if (
-                    candidate["file_name"] == bundle_file
-                    and page["page_number"] <= candidate["page_number"] <= page["page_number"] + 2
-                ):
-                    candidate["force_probe"] = True
-            break
+        bundle_files = {
+            page["file_name"]
+            for page in page_index
+            if re.search(r"\bSPM\b", Path(page["file_name"]).stem.upper())
+        }
+        for bundle_file in bundle_files:
+            log_stats = {
+                "file": bundle_file,
+                "total_pages": 0,
+                "unique_pages": 0,
+                "native_pages": 0,
+                "candidate_pages": [],
+                "ocr_pages": [],
+                "drpp_pages": [],
+                "kw_pages": [],
+                "cache_hits": 0,
+                "duration_probe": 0.0,
+            }
+            file_pages = [p for p in page_index if p["file_name"] == bundle_file]
+            log_stats["total_pages"] = len(file_pages)
+            unique_pages = [p for p in file_pages if p.get("is_representative", True)]
+            log_stats["unique_pages"] = len(unique_pages)
+            
+            for page in unique_pages:
+                if page.get("native_text", "").strip():
+                    log_stats["native_pages"] += 1
+                    
+                if page["page_number"] > 12:
+                    continue
+                    
+                log_stats["candidate_pages"].append(page["page_number"])
+                started = time.monotonic()
+                probe = _probe_page_text(page)
+                probe_dur = time.monotonic() - started
+                log_stats["duration_probe"] += probe_dur
+                
+                page["probe_duration"] = probe_dur
+                page["probe_ocr_called"] = not probe.get("cache_hit", False)
+                page["probe_cache_hit"] = bool(probe.get("cache_hit"))
+                
+                if probe.get("cache_hit"):
+                    log_stats["cache_hits"] += 1
+                
+                cls_type = _classification(probe.get("text", ""))[0]
+                if cls_type == "DRPP_SUMMARY":
+                    log_stats["drpp_pages"].append(page["page_number"])
+                    page["primary_for_drpp"] = True
+                    page["type_hint"] = "DRPP_SUMMARY"
+                    for candidate in page_index:
+                        if candidate["file_name"] == bundle_file and page["page_number"] <= candidate["page_number"] <= page["page_number"] + 2:
+                            candidate["force_probe"] = True
+                    break
+                    
+            print(f"[DRPP PAGE DISCOVERY] file={log_stats['file']} total_pages={log_stats['total_pages']} unique_pages={log_stats['unique_pages']} native_pages={log_stats['native_pages']} candidate_pages={log_stats['candidate_pages']} drpp_pages={log_stats['drpp_pages']} cache_hits={log_stats['cache_hits']} duration_probe={log_stats['duration_probe']:.3f}s")
+            
     return page_index
 
 
@@ -582,6 +619,10 @@ def _classification(text):
         if evidence:
             confidence = min(100, 65 + 15 * len(evidence))
             return document_type, confidence, evidence
+            
+    if re.search(r"\b\d{4,6}\s*[/|:]\s*DRPP\s*[/|:]\s*\d{4,6}\s*[/|:]\s*20\d{2}\b", upper):
+        return "DRPP_SUMMARY", 80, ["pola nomor drpp"]
+        
     if upper:
         return "SUPPORT_DOCUMENT", 45, ["teks terbaca tanpa anchor transaksi"]
     return "UNKNOWN", 0, []
@@ -1084,89 +1125,152 @@ def _spm_from_sp2d(row):
     }
 
 
+def _normalize_date(date_val):
+    if not date_val: return None
+    if isinstance(date_val, str):
+        # Very simple check, if it looks like YYYY-MM-DD
+        if re.match(r"\d{4}-\d{2}-\d{2}", date_val): return date_val
+    elif hasattr(date_val, "strftime"):
+        return date_val.strftime("%Y-%m-%d")
+    return date_val
+
+def _determine_cara_pembayaran(jenis_spm):
+    jenis = str(jenis_spm or "").upper()
+    if any(k in jenis for k in ["GUP", "KKP", "UP", "TUP", "NIHIL"]):
+        return "UP/TUP"
+    if "LS" in jenis:
+        if "NON" in jenis:
+            return "LS Non Kontraktual"
+        return "LS Kontraktual"
+    return ""
 def _exact_sp2d(number, satker="", year=None):
-    if not number:
+    if not number or not satker or not year:
         return None
     from apps.sp2d.models import SP2DRaw
 
     query = SP2DRaw.objects.filter(nomor_spm_extracted__iexact=number)
-    if satker:
-        query = query.filter(satker_code=satker)
-    if year:
-        query = query.filter(
-            Q(import_batch__tahun=year)
-            | Q(tgl_sp2d__year=year)
-            | Q(tanggal_selesai_sp2d__year=year)
-        )
-    return query.order_by("id").first()
+    query = query.filter(satker_code=satker)
+    query = query.filter(
+        Q(import_batch__tahun=year)
+        | Q(tgl_sp2d__year=year)
+        | Q(tanggal_selesai_sp2d__year=year)
+    )
+    results = list(query[:2])
+    if len(results) == 1:
+        return results[0]
+    return None
 
 
-def resolve_spm_parent(drpps, pages):
+def resolve_spm_parent(drpps, page_index):
     metas = [drpp.get("metadata", {}) for drpp in drpps if drpp]
     number = next((str(meta.get("nomor_spm") or "").strip().upper() for meta in metas if meta.get("nomor_spm")), "")
-    satker = next((str(meta.get("satker_app_code") or meta.get("satker_code") or "") for meta in metas if meta.get("satker_app_code") or meta.get("satker_code")), "")
-    year = next((meta.get("tahun") for meta in metas if str(meta.get("tahun") or "").isdigit()), None)
-    year = int(year) if year else None
-
-    sp2d = _exact_sp2d(number, satker, year)
-    if sp2d:
-        return _spm_from_sp2d(sp2d), sp2d
-
-    from apps.dk.models import TransactionDetail
-
+    satker = next((str(meta.get("satker_code") or "").strip() for meta in metas if meta.get("satker_code")), "")
+    year = next((meta.get("tahun") for meta in metas if meta.get("tahun")), None)
+    
     if number:
-        query = TransactionDetail.objects.filter(nomor_spm__iexact=number)
+        sp2d = _exact_sp2d(number, satker, year)
+        if sp2d:
+            return _spm_from_sp2d(sp2d), sp2d
+            
+        query = SP2DRaw.objects.filter(nomor_spm_extracted__iexact=number)
         if satker:
             query = query.filter(satker_code=satker)
-        if year:
-            query = query.filter(tanggal_spm__year=year)
-        existing = query.exclude(tanggal_spm__isnull=True).order_by("id").first()
+        
+        if query.count() == 1:
+            existing = query.first()
+        else:
+            existing = None
         if existing:
             return {
-                "file_name": "D_K",
+                "file_name": "DATABASE",
                 "status": "parsed_text",
                 "method": "transaction_database",
-                "warnings": [],
+                "confidence": 100,
                 "metadata": {
-                    "nomor_spm": existing.nomor_spm,
-                    "tanggal_spm": existing.tanggal_spm,
+                    "nomor_spm": existing.nomor_spm_extracted,
+                    "tanggal_spm": _normalize_date(existing.tgl_sp2d or existing.tanggal_selesai_sp2d),
                     "jenis_spm": existing.jenis_spm,
-                    "satker_code": existing.satker_code,
-                    "satker_app_code": existing.satker_code,
-                    "jumlah_pengeluaran": Decimal("0"),
-                    "jumlah_potongan": Decimal("0"),
+                    "kppn": "",
+                    "supplier": "",
+                    "bank": "",
+                    "rekening": "",
                     "total_pembayaran": Decimal("0"),
+                    "tanggal_sp2d": None,
                     "bulan_sp2d": existing.bulan_sp2d,
                 },
-                "detail_items": [],
-                "akun_rows": [],
-            }, existing.sp2d_raw
+                "sp2d_raw_id": existing.id,
+            }, existing
 
-    spm_pages = [page for page in pages if page.get("document_type") == "SPM" and page.get("is_representative")]
-    if not spm_pages:
-        return None, None
-    page = max(spm_pages, key=lambda item: len(item.get("text", "")))
-    spm = parse_spm_pdf(page["_path"], ocr=False, extracted=_extracted_from_pages([page]), parse_details=False)
-    spm_meta = spm.get("metadata", {})
-    detected = str(spm_meta.get("nomor_spm") or "").strip().upper()
-    filename_match = re.search(r"\b(\d{5}[A-Z])\b", page.get("file_name", "").upper())
-    filename_number = filename_match.group(1) if filename_match else ""
-    if filename_number and detected[:-1] == filename_number[:-1] and detected != filename_number:
-        filename_sp2d = _exact_sp2d(filename_number, satker, year)
-        if filename_sp2d:
-            return _spm_from_sp2d(filename_sp2d), filename_sp2d
-        spm_meta["nomor_spm_ocr"] = detected
-        spm_meta["nomor_spm"] = filename_number
-        spm_meta["nomor_spm_final"] = filename_number
-        spm_meta["nomor_spm_final_source"] = "filename_batch"
-        spm_meta["nomor_spm_reason"] = "Suffix batch DRPP mengikuti nama PDF SPM saat nomor dasar sama."
-        detected = filename_number
-    if str(spm_meta.get("jenis_spm") or "").upper() in {"GUP", "TUP"}:
-        spm_meta["cara_pembayaran"] = "UP/TUP"
-    sp2d = _exact_sp2d(detected, satker, year)
-    if sp2d:
-        return _spm_from_sp2d(sp2d), sp2d
-    return spm, None
+    for candidate in page_index:
+        if candidate.get("document_type") == "SPM":
+            spm = _load_page_cache(candidate, "spm-detail")
+            if not spm:
+                extracted = {
+                    "pages": [candidate["text"]], 
+                    "page_details": [{"text": candidate["text"], "page_number": candidate["page_number"]}]
+                }
+                spm = parse_spm_pdf(
+                    file_path=candidate.get("_path") or candidate["file_name"], 
+                    ocr=False, 
+                    extracted=extracted, 
+                    parse_details=False
+                )
+                _save_page_cache(candidate, "spm-detail", spm)
+            
+            if spm:
+                spm_meta = spm.get("metadata", {})
+                detected = str(spm_meta.get("nomor_spm") or "").strip().upper()
+                filename_number = _normalize_drpp(re.search(r"\bSPM.*?(\d{3,6})", candidate["file_name"], re.I).group(1)) if re.search(r"\bSPM.*?(\d{3,6})", candidate["file_name"], re.I) else ""
+                
+                if detected and filename_number and filename_number in candidate["file_name"] and detected != filename_number:
+                    filename_sp2d = _exact_sp2d(filename_number, satker, year)
+                    if filename_sp2d:
+                        return _spm_from_sp2d(filename_sp2d), filename_sp2d
+                    spm_meta["nomor_spm_ocr"] = detected
+                    spm_meta["nomor_spm"] = filename_number
+                    spm_meta["nomor_spm_final"] = filename_number
+                    spm_meta["nomor_spm_final_source"] = "filename_batch"
+                    spm_meta["nomor_spm_reason"] = "Suffix batch DRPP mengikuti nama PDF SPM saat nomor dasar sama."
+                    detected = filename_number
+                
+                spm_meta["tanggal_spm"] = _normalize_date(spm_meta.get("tanggal_spm"))
+                spm_meta["cara_pembayaran"] = _determine_cara_pembayaran(spm_meta.get("jenis_spm"))
+                
+                sp2d = _exact_sp2d(detected, satker, year)
+                if sp2d:
+                    return _spm_from_sp2d(sp2d), sp2d
+                
+                spm_meta["bulan_sp2d"] = None # explicitly clear if no SP2D found
+                return spm, None
+
+    return None, None
+
+
+def _populate_drpp_metadata(drpp, spm, sp2d):
+    meta = drpp.get("metadata", {})
+    spm_meta = (spm or {}).get("metadata", {})
+    sp2d_meta = sp2d if isinstance(sp2d, dict) else {}
+    
+    # Use canonical keys
+    updates = {
+        "satker": meta.get("satker_code") or spm_meta.get("satker_code"),
+        "tahun": meta.get("tahun") or (str(spm_meta.get("tanggal_spm"))[:4] if spm_meta.get("tanggal_spm") else ""),
+        "bulan_sp2d": spm_meta.get("bulan_sp2d"), # Exact match from SP2D
+        "cara_pembayaran": spm_meta.get("cara_pembayaran") or _determine_cara_pembayaran(spm_meta.get("jenis_spm")),
+        "nomor_spm": spm_meta.get("nomor_spm") or meta.get("nomor_spm") or "",
+        "tanggal_spm": spm_meta.get("tanggal_spm") or meta.get("tanggal_spm"),
+        "jenis_spm": spm_meta.get("jenis_spm") or "",
+    }
+    
+    for key, value in updates.items():
+        if value:
+            meta[key] = value
+            
+    # Also propagate to all items
+    for item in drpp.get("items", []):
+        for key in ["nomor_spm", "tanggal_spm", "jenis_spm", "cara_pembayaran", "bulan_sp2d", "satker", "tahun"]:
+            if meta.get(key) and not item.get(key):
+                item[key] = meta[key]
 
 
 def build_transaction_items(drpp, spm=None):

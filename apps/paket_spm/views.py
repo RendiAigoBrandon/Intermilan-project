@@ -198,7 +198,7 @@ def paket_spm_list(request):
                                 "method": active_doc.get("method", "parser"),
                                 "warnings": active_doc.get("warnings", []),
                             }],
-                            "spm": None,
+                            "spm": drpp,
                             "drpp": drpp,
                             "drpps": [drpp] if drpp else [],
                             "kw_by_drpp": {drpp.get("metadata", {}).get("nomor_drpp", "DRPP"): drpp.get("items", [])} if drpp else {},
@@ -362,13 +362,19 @@ def paket_spm_preview(request):
             paket.satker_code = raw_satker.split(" - ")[0].strip()[:32]
 
             # We also update the parsed_data so it reflects in decision and UI
-            if "spm" not in parsed or not parsed["spm"]:
+            if "spm" not in parsed or not isinstance(parsed["spm"], dict):
                 parsed["spm"] = {"metadata": {}}
-            parsed["spm"]["metadata"]["nomor_spm"] = paket.nomor_spm
-            parsed["spm"]["metadata"]["nomor_sp2d"] = paket.nomor_sp2d
-            parsed["spm"]["metadata"]["nomor_invoice"] = paket.nomor_invoice
-            parsed["spm"]["metadata"]["satker_code"] = raw_satker
-            parsed["spm"]["metadata"]["nomor_drpp"] = clean_text(request.POST.get("nomor_drpp", parsed["spm"]["metadata"].get("nomor_drpp", "")))
+            if "metadata" not in parsed["spm"] or not isinstance(parsed["spm"]["metadata"], dict):
+                parsed["spm"]["metadata"] = {}
+                
+            _meta = parsed["spm"]["metadata"]
+            if paket.nomor_spm: _meta["nomor_spm"] = paket.nomor_spm
+            if paket.nomor_sp2d: _meta["nomor_sp2d"] = paket.nomor_sp2d
+            if paket.nomor_invoice: _meta["nomor_invoice"] = paket.nomor_invoice
+            if raw_satker: _meta["satker_code"] = paket.satker_code
+            
+            post_drpp = clean_text(request.POST.get("nomor_drpp"))
+            if post_drpp: _meta["nomor_drpp"] = post_drpp
 
             # Remove premature serialization and decision building
 
@@ -423,10 +429,21 @@ def paket_spm_preview(request):
                 parsed["preview_rows"] = preview_rows
                 if preview_rows:
                     first = preview_rows[0]
-                    parsed["spm"]["metadata"]["nomor_spm"] = first.get("nomor_spm") or paket.nomor_spm
-                    parsed["spm"]["metadata"]["tanggal_spm"] = first.get("tanggal_spm") or parsed["spm"]["metadata"].get("tanggal_spm")
-                    parsed["spm"]["metadata"]["jenis_spm"] = first.get("jenis_spm") or parsed["spm"]["metadata"].get("jenis_spm")
-                    parsed["spm"]["metadata"]["cara_pembayaran"] = first.get("cara_pembayaran") or parsed["spm"]["metadata"].get("cara_pembayaran")
+                    _meta["nomor_spm"] = first.get("nomor_spm") or _meta.get("nomor_spm") or paket.nomor_spm
+                    _meta["tanggal_spm"] = first.get("tanggal_spm") or _meta.get("tanggal_spm")
+                    _meta["jenis_spm"] = first.get("jenis_spm") or _meta.get("jenis_spm")
+                    _meta["cara_pembayaran"] = first.get("cara_pembayaran") or _meta.get("cara_pembayaran")
+                    
+                    # Update all KW items in parsed["drpp_groups"] if they exist
+                    # to keep them in sync with preview_rows editing, ONLY if it's a single SPM package
+                    if parsed.get("drpp_groups") and parsed.get("parser_version") != DRPP_BATCH_VERSION:
+                        for group in parsed["drpp_groups"]:
+                            if not group.get("items"): continue
+                            for item in group["items"]:
+                                if first.get("nomor_spm"): item["nomor_spm"] = first.get("nomor_spm")
+                                if first.get("tanggal_spm"): item["tanggal_spm"] = first.get("tanggal_spm")
+                                if first.get("jenis_spm"): item["jenis_spm"] = first.get("jenis_spm")
+                                if first.get("cara_pembayaran"): item["cara_pembayaran"] = first.get("cara_pembayaran")
                     total_bruto = sum((parse_user_decimal(row.get("nilai_bruto")) for row in preview_rows), Decimal("0"))
                     total_netto = sum((parse_user_decimal(row.get("nilai_netto")) for row in preview_rows), Decimal("0"))
                     if parsed.get("parser_version") != DRPP_BATCH_VERSION:
@@ -524,10 +541,18 @@ def paket_spm_preview(request):
                 if is_gup_reguler:
                     groups = parsed.get("drpp_groups") or []
                     commit_group = next((g for g in groups if g.get("no_drpp") == commit_drpp), None)
+                    
+                    if commit_drpp == "TANPA_DRPP":
+                        messages.error(request, "Dokumen GUP Reguler diwajibkan memiliki DRPP (TANPA_DRPP tidak diizinkan).")
+                        return redirect("paket_spm:preview")
+                        
                     if commit_group:
                         items = commit_group.get("items") or []
                         validation = commit_group.get("validation") or {}
                         errors = []
+                        
+                        if not spm_meta.get("nomor_spm") or not spm_meta.get("tanggal_spm") or not spm_meta.get("jenis_spm") or not spm_meta.get("cara_pembayaran"):
+                            errors.append("Atribut metadata parent (Nomor SPM, Tanggal, Jenis, Cara Pembayaran) belum lengkap.")
                         
                         if validation.get("status") != "BALANCE":
                             errors.append(validation.get("status_message") or "DRPP tidak balance.")

@@ -88,9 +88,9 @@
             </a>
             {% if row.requires_drpp %}
               {% if row.has_drpp_record %}
-              <a class="btn tiny ghost" href="{% url 'drpp:list' %}?transaction_id={{ row.id }}">Lihat DRPP</a>
+              <a class="btn tiny ghost" href="{% url 'paket_spm:list' %}?q={{ row.nomor_drpp|default:row.nomor_spm|urlencode }}">Lihat DRPP</a>
               {% elif row.can_edit %}
-              <a class="btn tiny primary" href="{% url 'drpp:list' %}?transaction_id={{ row.id }}">Upload DRPP</a>
+              <a class="btn tiny primary" href="{% url 'paket_spm:list' %}">Upload DRPP</a>
               {% endif %}
             {% endif %}
           </td>

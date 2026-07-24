@@ -187,3 +187,163 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
         self.assertEqual(row["no_kuitansi"], "00243/KW/019937/2026")
         self.assertEqual(row["nilai_bruto"], Decimal("1800000"))
         self.assertEqual(row["pembebanan"], "2886.EBD.961.051.522151")
+
+from django.test import TestCase, RequestFactory
+from django.contrib.messages.storage.fallback import FallbackStorage
+from django.contrib.auth.models import User
+from apps.sp2d.models import SP2DRaw, SP2DImportBatch
+from apps.paket_spm.models import PaketSPMUpload
+from apps.paket_spm.views import paket_spm_preview
+
+class DRPPBatchIntegrationTests(TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(username="test", password="123")
+        
+    def test_A_preview_post_preserves_metadata(self):
+        """Test A: POST preview hanya mengubah sebagian data, metadata parent/index tetap utuh."""
+        paket = PaketSPMUpload.objects.create(
+            uploaded_by=self.user,
+            status=PaketSPMUpload.Status.PREVIEW,
+            original_filename="dummy.zip",
+            parsed_data={
+                "parser_version": 2,
+                "spm": {
+                    "metadata": {
+                        "nomor_spm": "00186A",
+                        "tanggal_spm": "2026-06-30",
+                        "jenis_spm": "GUP",
+                        "cara_pembayaran": "UP/TUP",
+                        "satker_code": "411222"
+                    },
+                    "metrics": {"duration": 1.2}
+                },
+                "page_index": [{"page_number": 1, "file_name": "SPM 001.pdf"}]
+            }
+        )
+        
+        request = self.factory.post("/paket-spm/preview/", {
+            "action": "recalculate",
+            "nomor_spm": "00186A-EDITED",
+            "satker_code": "411222 - KPPN JAKARTA",
+        })
+        request.user = self.user
+        request.session = {"paket_spm_preview_id": paket.id}
+        setattr(request, "session", request.session)
+        messages = FallbackStorage(request)
+        setattr(request, "_messages", messages)
+        
+        response = paket_spm_preview(request)
+        self.assertEqual(response.status_code, 302)
+        
+        paket.refresh_from_db()
+        spm_meta = paket.parsed_data["spm"]["metadata"]
+        
+        self.assertEqual(paket.parsed_data["spm"]["metrics"]["duration"], 1.2)
+        self.assertEqual(len(paket.parsed_data["page_index"]), 1)
+        
+        self.assertEqual(spm_meta["nomor_spm"], "00186A-EDITED")
+        self.assertEqual(spm_meta["satker_code"], "411222") # Was splitting raw_satker
+        
+        self.assertEqual(spm_meta["tanggal_spm"], "2026-06-30")
+        self.assertEqual(spm_meta["jenis_spm"], "GUP")
+
+    @patch("apps.core.drpp_batch_parser.parse_spm_pdf")
+    @patch("apps.core.drpp_batch_parser._classification")
+    def test_B_multiple_pdf_same_drpp_deduplication(self, mock_classification, mock_parse_spm):
+        """Test B: Dua PDF memiliki parent SPM & halaman DRPP yang sama, kuitansi berbeda."""
+        mock_classification.return_value = ("UNKNOWN", 0, [])
+        mock_parse_spm.return_value = {"metadata": {"nomor_spm": "00186A", "tanggal_spm": "2026-06-30", "jenis_spm": "GUP"}}
+        
+        page_index = [
+            {"file_name": "SPM NOMOR 00186A KW 1.pdf", "page_number": 1, "page_hash": "0f", "text": "SURAT PERINTAH MEMBAYAR", "type_hint": "SPM", "is_representative": True},
+            {"file_name": "SPM NOMOR 00186A KW 1.pdf", "page_number": 2, "page_hash": "f0", "text": "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "type_hint": "DRPP_SUMMARY", "is_representative": True},
+            {"file_name": "SPM NOMOR 00186A KW 1.pdf", "page_number": 3, "page_hash": "ffff", "text": "KUITANSI 1", "type_hint": "KUITANSI", "is_representative": True},
+            
+            {"file_name": "SPM NOMOR 00186A KW 2.pdf", "page_number": 1, "page_hash": "0f", "text": "SURAT PERINTAH MEMBAYAR", "type_hint": "SPM", "is_representative": False}, # duplicate
+            {"file_name": "SPM NOMOR 00186A KW 2.pdf", "page_number": 2, "page_hash": "f0", "text": "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "type_hint": "DRPP_SUMMARY", "is_representative": False}, # duplicate
+            {"file_name": "SPM NOMOR 00186A KW 2.pdf", "page_number": 3, "page_hash": "0000", "text": "KUITANSI 2", "type_hint": "KUITANSI", "is_representative": True},
+        ]
+        
+        from apps.core.drpp_batch_parser import deduplicate_pages
+        page_index = deduplicate_pages(page_index)
+        
+        kept_spms = [p for p in page_index if p["type_hint"] == "SPM" and p["is_representative"]]
+        kept_drpps = [p for p in page_index if p["type_hint"] == "DRPP_SUMMARY" and p["is_representative"]]
+        kept_kws = [p for p in page_index if p["type_hint"] == "KUITANSI" and p["is_representative"]]
+        
+        self.assertEqual(len(kept_spms), 1)
+        self.assertEqual(len(kept_drpps), 1)
+        self.assertEqual(len(kept_kws), 2)
+        
+    def test_C_jenis_spm_gup_cara_pembayaran_uptup(self):
+        """Test C: Jenis SPM GUP menghasilkan cara_pembayaran UP/TUP."""
+        from apps.core.drpp_batch_parser import _determine_cara_pembayaran
+        self.assertEqual(_determine_cara_pembayaran("GUP Reguler"), "UP/TUP")
+        self.assertEqual(_determine_cara_pembayaran("GUP-KKP"), "UP/TUP")
+        self.assertEqual(_determine_cara_pembayaran("TUP"), "UP/TUP")
+        self.assertEqual(_determine_cara_pembayaran("PTUP"), "UP/TUP")
+        self.assertEqual(_determine_cara_pembayaran("GTUP Nihil"), "UP/TUP")
+        self.assertEqual(_determine_cara_pembayaran("LS Non Kontraktual"), "LS Non Kontraktual")
+        self.assertEqual(_determine_cara_pembayaran("LS Kontraktual"), "LS Kontraktual")
+
+    def test_D_sp2d_exact_match_juli(self):
+        """Test D: SPM Juni dan SP2D Juli exact match -> sp2d_bulan Juli."""
+        batch = SP2DImportBatch.objects.create(tahun="2026")
+        SP2DRaw.objects.create(
+            nomor_spm_extracted="00186A",
+            satker_code="411222",
+            tgl_sp2d="2026-07-02",
+            bulan_sp2d=7,
+            import_batch=batch,
+        )
+        
+        from apps.core.drpp_batch_parser import resolve_spm_parent
+        drpps = [{"metadata": {"nomor_spm": "00186A", "satker_code": "411222", "tahun": "2026"}}]
+        
+        spm, sp2d = resolve_spm_parent(drpps, [])
+        self.assertIsNotNone(sp2d)
+        self.assertEqual(spm["metadata"]["bulan_sp2d"], 7)
+        
+    def test_E_sp2d_ambiguous_review(self):
+        """Test E: Lebih dari satu SP2D cocok, sp2d_bulan kosong dan review."""
+        batch = SP2DImportBatch.objects.create(tahun="2026")
+        SP2DRaw.objects.create(nomor_spm_extracted="00195A", satker_code="411222", tgl_sp2d="2026-07-02", bulan_sp2d=7, import_batch=batch)
+        SP2DRaw.objects.create(nomor_spm_extracted="00195A", satker_code="411222", tgl_sp2d="2026-08-02", bulan_sp2d=8, import_batch=batch)
+        
+        from apps.core.drpp_batch_parser import resolve_spm_parent
+        drpps = [{"metadata": {"nomor_spm": "00195A", "satker_code": "411222", "tahun": "2026"}}]
+        
+        spm, sp2d = resolve_spm_parent(drpps, [])
+        self.assertIsNone(sp2d)
+        
+    def test_F_probe_discovers_multiple_pdf(self):
+        """Test F: Probe mampu mendeteksi DRPP di dalam PDF kedua (tidak cuma PDF pertama)."""
+        page_index = [
+            {"file_name": "SPM 001.pdf", "page_number": 1, "is_representative": True},
+            {"file_name": "SPM 001.pdf", "page_number": 2, "is_representative": True},
+            {"file_name": "SPM 002.pdf", "page_number": 1, "is_representative": True},
+            {"file_name": "SPM 002.pdf", "page_number": 2, "is_representative": True},
+        ]
+        
+        with patch("apps.core.drpp_batch_parser._classification") as mock_cls:
+            with patch("apps.core.drpp_batch_parser._probe_page_text") as mock_probe:
+                def mock_class_fn(text):
+                    if text == "TARGET": return ("DRPP_SUMMARY", 100, [])
+                    return ("UNKNOWN", 0, [])
+                mock_cls.side_effect = mock_class_fn
+                
+                def mock_probe_fn(page):
+                    if page["file_name"] == "SPM 002.pdf" and page["page_number"] == 2:
+                        return {"text": "TARGET", "cache_hit": False}
+                    return {"text": "BLANK", "cache_hit": False}
+                mock_probe.side_effect = mock_probe_fn
+                
+                from apps.core.drpp_batch_parser import discover_embedded_drpp_pages
+                page_index = discover_embedded_drpp_pages(page_index)
+                
+                drpp_page = next((p for p in page_index if p.get("type_hint") == "DRPP_SUMMARY"), None)
+                print('\n=== PAGE INDEX ===\n', page_index, '\n======\n')
+                self.assertIsNotNone(drpp_page)
+                self.assertEqual(drpp_page["file_name"], "SPM 002.pdf")
+                self.assertEqual(drpp_page["page_number"], 2)
