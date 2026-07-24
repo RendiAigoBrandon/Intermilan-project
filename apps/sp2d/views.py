@@ -164,7 +164,6 @@ def sp2d_list(request):
 def sp2d_inbox_detail(request, pk):
     queryset = filter_by_satker(SP2DRaw.objects.select_related("import_batch", "created_by"), request.user)
     row = get_object_or_404(queryset, pk=pk)
-    context_can_upload = can_upload_document(request.user)
     detail_query = TransactionDetail.objects.filter(sp2d_raw=row).order_by("nomor_spm", "akun", "id")
 
     if request.method == "POST":
@@ -176,12 +175,11 @@ def sp2d_inbox_detail(request, pk):
     context.update(
         {
             "page_title": "Detail Inbox SP2D",
-            "page_subtitle": "Data awal SP2D yang perlu dilengkapi dengan detail D_K dan dokumen Paket SPM.",
+            "page_subtitle": "Detail read-only data awal SP2D yang telah diimpor.",
             "row": row,
             "detail_rows": detail_query[:50],
             "has_dk_detail": has_dk_detail,
             "status_detail_label": "Sudah Ada D_K" if has_dk_detail else "Belum Ada Detail D_K",
-            "can_upload_document": context_can_upload,
         }
     )
     return render(request, "sp2d/inbox_detail.html", context)

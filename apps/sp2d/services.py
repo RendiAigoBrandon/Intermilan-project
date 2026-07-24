@@ -244,6 +244,27 @@ def classify_sp2d_rows(batch_tahun, mapped_rows):
         
     return results
 
+
+def persist_import_metadata(record, key, tahun, batch, filename):
+    fields_to_update = []
+    if record.identity_key != key:
+        record.identity_key = key
+        fields_to_update.append("identity_key")
+    if record.tahun != tahun:
+        record.tahun = tahun
+        fields_to_update.append("tahun")
+    if record.last_import_batch_id != batch.id:
+        record.last_import_batch = batch
+        fields_to_update.append("last_import_batch")
+    if filename and record.original_file != filename:
+        record.original_file = filename
+        fields_to_update.append("original_file")
+        
+    if fields_to_update:
+        fields_to_update.append("updated_at")
+        record.save(update_fields=fields_to_update)
+
+
 @transaction.atomic
 def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
     """
@@ -311,23 +332,7 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
                 success_count += 1
                 
                 # Persist identity_key + batch history on IDENTIK skip
-                fields_to_update = []
-                if record.identity_key != key:
-                    record.identity_key = key
-                    fields_to_update.append("identity_key")
-                if record.tahun != row["batch_tahun"]:
-                    record.tahun = row["batch_tahun"]
-                    fields_to_update.append("tahun")
-                if record.last_import_batch_id != batch.id:
-                    record.last_import_batch = batch
-                    fields_to_update.append("last_import_batch")
-                if filename and record.original_file != filename:
-                    record.original_file = filename
-                    fields_to_update.append("original_file")
-                    
-                if fields_to_update:
-                    fields_to_update.append("updated_at")
-                    record.save(update_fields=fields_to_update)
+                persist_import_metadata(record, key, row["batch_tahun"], batch, filename)
                     
                 reconcile_sp2d_with_dk(record, user)
                 continue
@@ -367,6 +372,7 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
             else:
                 skipped_count += 1
                 success_count += 1
+                persist_import_metadata(record, key, row["batch_tahun"], batch, filename)
 
             reconcile_sp2d_with_dk(record, user)
         else:
@@ -408,10 +414,7 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
                     if _is_identical(record, row, row["batch_tahun"]):
                         skipped_count += 1
                         success_count += 1
-                        record.last_import_batch = batch
-                        if filename:
-                            record.original_file = filename
-                        record.save(update_fields=['last_import_batch', 'original_file'])
+                        persist_import_metadata(record, key, row["batch_tahun"], batch, filename)
                         reconcile_sp2d_with_dk(record, user)
                     else:
                         conflict_count += 1

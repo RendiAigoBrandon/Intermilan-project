@@ -374,18 +374,58 @@ class SP2DHardeningTests(TestCase):
         profile.satker_code = "777777"
         profile.save()
         
-        # User 1 batch for 888
         batch1 = SP2DImportBatch.objects.create(
             uploaded_by=self.user, filename="b1.xlsx", original_filename="b1.xlsx", tahun=2026, bulan=1
         )
+        SP2DRaw.objects.create(satker_code="777777", no_sp2d="SP2D-777", tahun=2026, status="PERLU_DETAIL", import_batch=batch1)
+        
+        batch2 = SP2DImportBatch.objects.create(
+            uploaded_by=self.user, filename="b2.xlsx", original_filename="b2.xlsx", tahun=2026, bulan=1
+        )
+        SP2DRaw.objects.create(satker_code="888888", no_sp2d="SP2D-888", tahun=2026, status="PERLU_DETAIL", import_batch=batch2)
         
         self.client.login(username="op_batch", password="password")
         response = self.client.get(reverse("sp2d:list"))
         
         self.assertEqual(response.status_code, 200)
-        # Operator cannot see batch uploaded by Admin Pusat for other satkers if logic applied
-        # Actually in views, batch is just filtered by can_view_all_satker. Wait, operator can only see their own uploads?
-        # The test checks if list renders successfully.
+        self.assertContains(response, "b1.xlsx")
+        self.assertNotContains(response, "b2.xlsx")
+
+    def test_legacy_skip_persists_metadata(self):
+        """
+        legacy identity_key NULL, nilai lama nonzero, incoming zero/blank
+        yang tidak boleh overwrite -> skipped_rows=1 -> nilai lama tetap, identity_key terisi, last_import_batch terbaru
+        """
+        self.client.login(username="test_upload", password="password")
+        
+        # create legacy record with NULL identity key and nonzero nilai
+        record = SP2DRaw.objects.create(
+            satker_code="555555", satker_name="Satker Leg", no_sp2d="SP2D-LEGACY-01", tahun=2026,
+            tgl_sp2d="2026-01-15",
+            nilai_spm=1000, nilai_sp2d=1000,
+            nomor_invoice="INV/L1", jenis_spm="LS", deskripsi="Test Leg",
+            nomor_spm_extracted="INV/L1",
+            identity_key=None
+        )
+        
+        # Incoming zero/blank so it skipped overwrite
+        excel_data = self._create_mock_excel([
+            ["555555", "Satker Leg", "SP2D-LEGACY-01", "2026-01-15", 0, 0, 0, "INV/L1", "LS", "Test Leg"],
+        ])
+        
+        uploaded = SimpleUploadedFile("legacy.xlsx", excel_data, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        self.client.post(reverse("sp2d:list"), {"tahun": "2026", "bulan": "1", "file_sp2d": uploaded})
+        self.client.post(reverse("sp2d:preview"), {"action": "commit"})
+        
+        batch = SP2DImportBatch.objects.last()
+        self.assertEqual(batch.skipped_rows, 1)
+        self.assertEqual(batch.updated_rows, 0)
+        
+        record.refresh_from_db()
+        self.assertIsNotNone(record.identity_key)
+        self.assertEqual(record.nilai_spm, 1000)
+        self.assertEqual(record.last_import_batch, batch)
+        self.assertEqual(record.original_file, "legacy.xlsx")
         
     def test_three_way_cocok(self):
         """three-way COCOK - bruto, netto, potongan match"""
