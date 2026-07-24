@@ -12,6 +12,7 @@
           <div class="filter-field"><label>Bulan</label><select name="bulan"><option value="">Semua bulan</option>{% for value,label in months %}<option value="{{ value }}" {% if filters.bulan == value|stringformat:"s" %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
           <div class="filter-field"><label>Akun</label><select name="akun"><option value="">Semua akun</option>{% for akun in akun_options %}<option value="{{ akun.kode }}" {% if filters.akun == akun.kode %}selected{% endif %}>{{ akun.kode }} - {{ akun.nama_akun }}</option>{% endfor %}</select></div>
           <div class="filter-field"><label>Status Kelengkapan</label><select name="kelengkapan"><option value="">Semua status</option><option value="lengkap" {% if filters.kelengkapan == "lengkap" %}selected{% endif %}>Lengkap</option><option value="belum" {% if filters.kelengkapan == "belum" %}selected{% endif %}>Belum Lengkap</option></select></div>
+          <div class="filter-field"><label>Status Arsip</label><select name="archive_status"><option value="aktif" {% if filters.archive_status == "aktif" %}selected{% endif %}>Aktif</option><option value="arsip" {% if filters.archive_status == "arsip" %}selected{% endif %}>Diarsipkan</option><option value="semua" {% if filters.archive_status == "semua" %}selected{% endif %}>Semua</option></select></div>
           <div class="filter-field"><label>Data/halaman</label><select name="page_size">{% for option in page_size_options %}<option value="{{ option }}" {% if page_size == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></div>
           <div class="filter-actions"><button class="btn primary" type="submit">Terapkan Filter</button><a class="btn ghost" href="{% url 'dk:transaction_list' %}">Reset</a></div>
         </div>
@@ -19,6 +20,7 @@
     </div>
     <div class="toolbar-row">
       <div class="action-bar">
+        <a class="btn primary" href="{% url 'dk:transaction_create' %}">Tambah Baris Manual</a>
         {% if can_export_data %}
         <button class="btn ghost" type="button">Export Excel</button>
         <a class="btn ghost" href="{% url 'core:akun_index' %}">Lihat Per Akun</a>
@@ -30,10 +32,15 @@
     </div>
   </div>
   <div class="note-box">Gunakan tombol Checklist untuk memeriksa dokumen pendukung transaksi yang membutuhkan verifikasi.</div>
+  <form method="get" action="{% url 'dk:transaction_bulk_edit' %}">
+  <div class="toolbar-row mt-small mb-small">
+    <button type="submit" class="btn warning">Bulk Edit Terpilih</button>
+  </div>
   <div class="table-wrap wide-table-wrap large mt-small">
     <table class="data-table compact table-dk dk-full-table">
       <thead>
         <tr>
+          <th class="col-no"><input type="checkbox" id="selectAll"></th>
           <th class="col-no">No</th>
           <th class="col-status">Sumber Data</th>
           <th class="col-satker">Satker</th>
@@ -53,6 +60,7 @@
           <th class="col-pembebanan">Pembebanan</th>
           <th class="col-compact">FP</th>
           <th class="col-nominal">PPh21</th>
+          <th class="col-status">Helper</th>
           <th class="col-status">Status Dokumen</th>
           <th class="col-status">Status Rekonsiliasi</th>
           <th class="col-status">Aksi</th>
@@ -61,6 +69,7 @@
       <tbody>
         {% for row in rows %}
         <tr>
+          <td class="col-no"><input type="checkbox" name="ids" value="{{ row.id }}" class="row-checkbox"></td>
           <td class="col-no">{{ page_start|add:forloop.counter0 }}</td>
           <td class="col-status"><span class="badge">{{ row.source_data_label }}</span></td>
           <td class="col-satker">{{ row.satker_code|dash }}</td>
@@ -80,9 +89,26 @@
           <td class="col-pembebanan">{{ row.pembebanan|dash }}</td>
           <td class="col-compact">{{ row.fp|dash }}</td>
           <td class="col-nominal">{{ row.pph21|id_number }}</td>
+          <td class="col-status">{{ row.helper|dash }}</td>
           <td class="col-status">{{ row.document_status_label|dash }}</td>
           <td class="col-status">{{ row.reconciliation_status_label|dash }}</td>
           <td class="col-status action-cell">
+            <a class="btn tiny primary" href="{% url 'dk:transaction_edit' row.id %}">Edit</a>
+            <form method="post" action="{% url 'dk:transaction_duplicate' row.id %}" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn tiny ghost">Duplikat</button>
+            </form>
+            {% if row.status_detail != "DIARSIPKAN" %}
+            <form method="post" action="{% url 'dk:transaction_archive' row.id %}" style="display:inline;" onsubmit="return confirm('Yakin ingin mengarsipkan baris ini?');">
+                {% csrf_token %}
+                <button type="submit" class="btn tiny danger">Arsipkan</button>
+            </form>
+            {% else %}
+            <form method="post" action="{% url 'dk:transaction_restore' row.id %}" style="display:inline;" onsubmit="return confirm('Yakin ingin memulihkan baris arsip ini?');">
+                {% csrf_token %}
+                <button type="submit" class="btn tiny warning">Pulihkan</button>
+            </form>
+            {% endif %}
             <a class="btn tiny ghost" href="{% url 'documents:checklist_detail' row.id %}">
               {% if row.can_edit %}Checklist{% else %}Lihat Checklist{% endif %}
             </a>
@@ -96,11 +122,12 @@
           </td>
         </tr>
         {% empty %}
-        <tr><td colspan="22" class="empty">Belum ada data D_K.</td></tr>
+        <tr><td colspan="24" class="empty">Belum ada data D_K.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+  </form>
   <div class="pagination-wrap">
     <div class="pagination-info">Menampilkan {{ page_start }}-{{ page_end }} dari {{ paginator.count }} data - {{ page_size }} data/halaman</div>
     <div class="pagination-controls">
@@ -126,5 +153,11 @@
     </div>
   </div>
 </section>
-{% endblock %}
 
+<script>
+document.getElementById('selectAll').addEventListener('change', function(e) {
+    var checkboxes = document.querySelectorAll('.row-checkbox');
+    checkboxes.forEach(function(cb) { cb.checked = e.target.checked; });
+});
+</script>
+{% endblock %}

@@ -95,13 +95,23 @@ class TransactionDetail(models.Model):
 
 
 class TransactionChangeLog(models.Model):
+    class ChangeSource(models.TextChoices):
+        MANUAL = "MANUAL", "Manual"
+        PARSER = "PARSER", "Parser"
+        IMPORT = "IMPORT", "Import"
+        SYSTEM = "SYSTEM", "System"
+
     transaction = models.ForeignKey(TransactionDetail, on_delete=models.CASCADE, related_name="change_logs")
     field_name = models.CharField(max_length=100)
     old_value = models.TextField(blank=True, null=True)
     new_value = models.TextField(blank=True, null=True)
-    change_source = models.CharField(max_length=50) # MANUAL, PARSER, IMPORT, SYSTEM
+    change_source = models.CharField(max_length=50, choices=ChangeSource.choices, default=ChangeSource.MANUAL)
     changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     changed_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-changed_at"]
+        indexes = [
+            models.Index(fields=["transaction", "changed_at"]),
+            models.Index(fields=["transaction", "field_name", "change_source"]),
+        ]

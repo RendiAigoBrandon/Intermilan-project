@@ -1158,7 +1158,6 @@ def build_transaction_groups(parsed, transaction_rows):
             errors.append("Duplikat exact key ditemukan dalam upload yang sama.")
         for index, row in enumerate(rows):
             row.form_index = transaction_rows.index(row)
-            row.helper = f"{row.akun}{row.no_kuitansi}"
             row_errors = []
             if not row.no_kuitansi:
                 row_errors.append("nomor kuitansi kosong")

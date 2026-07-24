@@ -40,7 +40,16 @@ def transaction_list(request):
         "akun": request.GET.get("akun", "").strip(),
         "kelengkapan": request.GET.get("kelengkapan", "").strip(),
         "page_size": request.GET.get("page_size", "").strip(),
+        "archive_status": request.GET.get("archive_status", "aktif").strip(),
     }
+    
+    if filters["archive_status"] == "arsip":
+        queryset = queryset.filter(status_detail=TransactionDetail.StatusDetail.DIARSIPKAN)
+    elif filters["archive_status"] == "semua":
+        pass
+    else:
+        queryset = queryset.exclude(status_detail=TransactionDetail.StatusDetail.DIARSIPKAN)
+
     if filters["q"]:
         search = filters["q"]
         matching_satker_codes = list(
@@ -201,13 +210,15 @@ def get_satker_options(user):
 from django.shortcuts import get_object_or_404, redirect
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
-from .forms import TransactionDetailForm
+from django.db import transaction
+from .forms import TransactionDetailForm, TransactionBulkEditForm
 from .models import TransactionChangeLog
 
 @login_required
+@transaction.atomic
 def transaction_create(request):
     if request.method == "POST":
-        form = TransactionDetailForm(request.POST)
+        form = TransactionDetailForm(request.POST, user=request.user)
         if form.is_valid():
             satker_code = form.cleaned_data.get('satker_code')
             if not can_edit_satker(request.user, satker_code):
@@ -215,16 +226,32 @@ def transaction_create(request):
             instance = form.save(commit=False)
             instance.created_by = request.user
             instance.save()
+            
+            # Log fields that were filled
+            for field in form.cleaned_data:
+                new_val = form.cleaned_data.get(field)
+                if new_val is not None and new_val != "":
+                    TransactionChangeLog.objects.create(
+                        transaction=instance,
+                        field_name=field,
+                        old_value="",
+                        new_value=str(new_val),
+                        change_source=TransactionChangeLog.ChangeSource.MANUAL,
+                        changed_by=request.user
+                    )
+                    
             messages.success(request, "Baris D_K berhasil ditambahkan.")
+            if "save_and_add" in request.POST:
+                return redirect('dk:transaction_create')
             return redirect('dk:transaction_list')
     else:
-        form = TransactionDetailForm()
+        form = TransactionDetailForm(user=request.user)
     
     context = permission_context(request.user)
     context.update({'form': form, 'page_title': 'Tambah Baris D_K'})
     return render(request, 'dk/form.html', context)
 
-def log_transaction_changes(instance, form, user, source="MANUAL"):
+def log_transaction_changes(instance, form, user, source=TransactionChangeLog.ChangeSource.MANUAL):
     if not form.has_changed():
         return
     for field in form.changed_data:
@@ -240,50 +267,152 @@ def log_transaction_changes(instance, form, user, source="MANUAL"):
         )
 
 @login_required
+@transaction.atomic
 def transaction_edit(request, pk):
     instance = get_object_or_404(TransactionDetail, pk=pk)
     if not can_edit_satker(request.user, instance.satker_code):
         raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
     if request.method == "POST":
-        form = TransactionDetailForm(request.POST, instance=instance)
+        form = TransactionDetailForm(request.POST, instance=instance, user=request.user)
         if form.is_valid():
             satker_code = form.cleaned_data.get('satker_code')
             if not can_edit_satker(request.user, satker_code):
                 raise PermissionDenied("Anda tidak memiliki izin memindahkan ke satker ini.")
             instance = form.save()
-            log_transaction_changes(instance, form, request.user, source="MANUAL")
+            log_transaction_changes(instance, form, request.user, source=TransactionChangeLog.ChangeSource.MANUAL)
             messages.success(request, "Baris D_K berhasil diubah.")
             return redirect('dk:transaction_list')
     else:
-        form = TransactionDetailForm(instance=instance)
+        form = TransactionDetailForm(instance=instance, user=request.user)
     
     context = permission_context(request.user)
     context.update({'form': form, 'page_title': 'Edit Baris D_K', 'instance': instance})
     return render(request, 'dk/form.html', context)
 
 @login_required
+@transaction.atomic
 def transaction_duplicate(request, pk):
     instance = get_object_or_404(TransactionDetail, pk=pk)
     if not can_edit_satker(request.user, instance.satker_code):
         raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
     if request.method == "POST":
+        original_pk = instance.pk
         instance.pk = None
         instance.status_detail = TransactionDetail.StatusDetail.DRAFT
         instance.created_by = request.user
         instance.save()
+        
+        # Log the duplication source on the NEW instance
+        TransactionChangeLog.objects.create(
+            transaction=instance,
+            field_name="duplicated_from",
+            old_value=str(original_pk),
+            new_value=str(instance.pk),
+            change_source=TransactionChangeLog.ChangeSource.MANUAL,
+            changed_by=request.user
+        )
+        
         messages.success(request, "Baris D_K berhasil diduplikat.")
         return redirect('dk:transaction_edit', pk=instance.pk)
     return redirect('dk:transaction_list')
 
 @login_required
+@transaction.atomic
 def transaction_archive(request, pk):
     instance = get_object_or_404(TransactionDetail, pk=pk)
     if not can_edit_satker(request.user, instance.satker_code):
         raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
     if request.method == "POST":
+        old_status = instance.status_detail
         instance.status_detail = TransactionDetail.StatusDetail.DIARSIPKAN
-        instance.save()
-        TransactionChangeLog.objects.create(transaction=instance, field_name="status_detail", old_value="", new_value="DIARSIPKAN", change_source="MANUAL", changed_by=request.user)
+        instance.save(update_fields=['status_detail'])
+        TransactionChangeLog.objects.create(
+            transaction=instance,
+            field_name="status_detail",
+            old_value=str(old_status),
+            new_value="DIARSIPKAN",
+            change_source=TransactionChangeLog.ChangeSource.MANUAL,
+            changed_by=request.user
+        )
         messages.success(request, "Baris D_K berhasil diarsipkan.")
     return redirect('dk:transaction_list')
+
+@login_required
+@transaction.atomic
+def transaction_restore(request, pk):
+    instance = get_object_or_404(TransactionDetail, pk=pk)
+    if not can_edit_satker(request.user, instance.satker_code):
+        raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
+    if request.method == "POST":
+        # Find the last archive log to get original status
+        last_log = instance.change_logs.filter(
+            field_name="status_detail", 
+            new_value="DIARSIPKAN"
+        ).order_by("-changed_at").first()
+        
+        original_status = last_log.old_value if last_log and last_log.old_value else TransactionDetail.StatusDetail.DRAFT
+        
+        instance.status_detail = original_status
+        instance.save(update_fields=['status_detail'])
+        TransactionChangeLog.objects.create(
+            transaction=instance,
+            field_name="status_detail",
+            old_value="DIARSIPKAN",
+            new_value=str(original_status),
+            change_source=TransactionChangeLog.ChangeSource.MANUAL,
+            changed_by=request.user
+        )
+        messages.success(request, "Baris D_K berhasil dipulihkan.")
+    return redirect('dk:transaction_list')
+
+@login_required
+@transaction.atomic
+def transaction_bulk_edit(request):
+    if request.method == "POST":
+        selected_ids = request.POST.getlist('selected_ids')
+        if not selected_ids:
+            messages.warning(request, "Tidak ada data yang dipilih.")
+            return redirect('dk:transaction_list')
+            
+        transactions = TransactionDetail.objects.filter(id__in=selected_ids)
+        for t in transactions:
+            if not can_edit_satker(request.user, t.satker_code):
+                raise PermissionDenied(f"Anda tidak memiliki izin untuk mengedit satker {t.satker_code}.")
+                
+        form = TransactionBulkEditForm(request.POST)
+        if form.is_valid():
+            updated_count = 0
+            for t in transactions:
+                changed = False
+                for field in ['bulan_sp2d', 'cara_pembayaran', 'jenis_spm', 'status_detail']:
+                    new_val = form.cleaned_data.get(field)
+                    if new_val:
+                        old_val = getattr(t, field)
+                        if str(old_val) != str(new_val):
+                            setattr(t, field, new_val)
+                            changed = True
+                            TransactionChangeLog.objects.create(
+                                transaction=t,
+                                field_name=field,
+                                old_value=str(old_val) if old_val is not None else "",
+                                new_value=str(new_val),
+                                change_source=TransactionChangeLog.ChangeSource.MANUAL,
+                                changed_by=request.user
+                            )
+                if changed:
+                    t.save()
+                    updated_count += 1
+                    
+            messages.success(request, f"{updated_count} baris D_K berhasil diubah secara bulk.")
+            return redirect('dk:transaction_list')
+    else:
+        selected_ids = request.GET.get('ids', '').split(',')
+        if not any(selected_ids):
+            messages.warning(request, "Pilih baris terlebih dahulu.")
+            return redirect('dk:transaction_list')
+        form = TransactionBulkEditForm()
+        
+    context = permission_context(request.user)
+    context.update({'form': form, 'page_title': 'Bulk Edit D_K', 'selected_ids': selected_ids})
+    return render(request, 'dk/bulk_edit.html', context)
 

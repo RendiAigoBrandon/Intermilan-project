@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card form-card">
+  <div class="card-header">
+    <h3>Bulk Edit Baris D_K</h3>
+  </div>
+  
+  <form method="post">
+    {% csrf_token %}
+    
+    {% for hidden in form.hidden_fields %}
+      {{ hidden }}
+    {% endfor %}
+    
+    {% for selected_id in selected_ids %}
+      <input type="hidden" name="selected_ids" value="{{ selected_id }}">
+    {% endfor %}
+
+    <div class="note-box info mb-small">
+      Anda akan mengubah <strong>{{ selected_ids|length }}</strong> baris transaksi. 
+      Hanya kolom yang diisi yang akan diubah. Kosongkan jika tidak ingin mengubah nilai tersebut.
+    </div>
+
+    <div class="form-grid">
+      {% for field in form.visible_fields %}
+      <div class="form-field {% if field.errors %}has-error{% endif %}">
+        <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+        {% if field.help_text %}
+        <span class="help-text">{{ field.help_text }}</span>
+        {% endif %}
+        {% for error in field.errors %}
+        <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="form-actions mt-medium">
+      <button type="submit" class="btn warning">Simpan Perubahan Bulk</button>
+      <a href="{% url 'dk:transaction_list' %}" class="btn ghost">Batal</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

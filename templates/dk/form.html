@@ -30,7 +30,10 @@
     </div>
 
     <div class="form-actions mt-large">
-      <button type="submit" class="btn primary">Simpan Data D_K</button>
+      <button type="submit" class="btn primary">Simpan</button>
+      {% if not instance %}
+      <button type="submit" name="save_and_add" value="true" class="btn secondary">Simpan dan Tambah Lagi</button>
+      {% endif %}
       <a href="{% url 'dk:transaction_list' %}" class="btn ghost">Batal</a>
     </div>
   </form>
