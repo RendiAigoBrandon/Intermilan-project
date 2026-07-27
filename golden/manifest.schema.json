@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://intermilan.local/schemas/golden-manifest-v1.json",
+  "title": "INTERMILAN D_K Golden Dataset Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "fixture", "transactions"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "filename", "sha256", "pipeline"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "filename": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "pipeline": {"type": "string", "minLength": 1}
+      }
+    },
+    "transactions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/transaction"}
+    }
+  },
+  "$defs": {
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value", "availability", "source_file", "source_page",
+        "document_type", "locator", "reason"
+      ],
+      "properties": {
+        "value": {"type": ["string", "number", "null"]},
+        "availability": {
+          "enum": ["PRESENT", "CONFIRMED_ABSENT", "AMBIGUOUS", "NOT_APPLICABLE"]
+        },
+        "source_file": {"type": "string", "minLength": 1},
+        "source_page": {"type": ["integer", "null"], "minimum": 1},
+        "document_type": {"type": "string", "minLength": 1},
+        "locator": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "columns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "akun", "bulan_sp2d", "cara_pembayaran", "nomor_spm", "tanggal_spm",
+        "jenis_spm", "no_kuitansi", "no_drpp", "deskripsi", "nilai_bruto",
+        "nilai_netto", "pembebanan", "fp", "pph21"
+      ],
+      "properties": {
+        "akun": {"$ref": "#/$defs/cell"},
+        "bulan_sp2d": {"$ref": "#/$defs/cell"},
+        "cara_pembayaran": {"$ref": "#/$defs/cell"},
+        "nomor_spm": {"$ref": "#/$defs/cell"},
+        "tanggal_spm": {"$ref": "#/$defs/cell"},
+        "jenis_spm": {"$ref": "#/$defs/cell"},
+        "no_kuitansi": {"$ref": "#/$defs/cell"},
+        "no_drpp": {"$ref": "#/$defs/cell"},
+        "deskripsi": {"$ref": "#/$defs/cell"},
+        "nilai_bruto": {"$ref": "#/$defs/cell"},
+        "nilai_netto": {"$ref": "#/$defs/cell"},
+        "pembebanan": {"$ref": "#/$defs/cell"},
+        "fp": {"$ref": "#/$defs/cell"},
+        "pph21": {"$ref": "#/$defs/cell"}
+      }
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["row_key", "case_id", "document_id", "extraction", "enrichment"],
+      "properties": {
+        "row_key": {"type": "string", "minLength": 1},
+        "case_id": {"type": "string", "minLength": 1},
+        "document_id": {"type": "string", "minLength": 1},
+        "extraction": {"$ref": "#/$defs/columns"},
+        "enrichment": {"$ref": "#/$defs/columns"}
+      }
+    }
+  }
+}
