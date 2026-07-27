@@ -9,6 +9,7 @@ from .golden_accuracy import (
     GoldenCorpusMissing,
     GoldenValidationError,
     actual_value,
+    build_annotation_draft,
     build_report,
     compare_layer,
     computed_helper,
@@ -51,7 +52,7 @@ def expected_columns(**overrides):
 
 def manifest(*transactions):
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "fixture": {
             "id": "synthetic",
             "filename": "synthetic.pdf",
@@ -65,7 +66,7 @@ def manifest(*transactions):
 def actual_columns(**overrides):
     values = {field: cell["value"] for field, cell in expected_columns().items()}
     values.update(overrides)
-    return {
+    columns = {
         field: actual_value(
             value,
             "PARSER_STRUCTURAL",
@@ -79,22 +80,33 @@ def actual_columns(**overrides):
         )
         for field, value in values.items()
     }
+    columns["helper"] = actual_value(
+        computed_helper(values["akun"], values["no_kuitansi"]),
+        "COMPUTED",
+        extraction_method="concatenate",
+        inputs=["akun", "no_kuitansi"],
+    )
+    return columns
 
 
 class GoldenAccuracyFrameworkTests(SimpleTestCase):
     def transaction(self, row_key="row-1", case_id="case-1", **overrides):
         columns = expected_columns(**overrides)
+        candidate = actual_columns(**overrides)
         return {
             "row_key": row_key,
             "case_id": case_id,
             "document_id": "synthetic-document",
-            "extraction": columns,
-            "enrichment": columns,
+            "parser_candidate": {"extraction": candidate, "enrichment": candidate},
+            "reviewer_expected": {"extraction": columns, "enrichment": columns},
+            "reviewer_status": "APPROVED",
         }
 
     def test_manifest_rejects_typed_helper(self):
         tx = self.transaction()
-        tx["extraction"]["helper"] = {"value": "wrong", "availability": "PRESENT"}
+        tx["reviewer_expected"]["extraction"]["helper"] = {
+            "value": "wrong", "availability": "PRESENT"
+        }
         with self.assertRaisesMessage(GoldenValidationError, "Helper tidak boleh diketik"):
             validate_manifest(manifest(tx))
 
@@ -149,7 +161,7 @@ class GoldenAccuracyFrameworkTests(SimpleTestCase):
 
     def test_ambiguous_field_requires_explicit_review(self):
         tx = self.transaction(fp=None)
-        tx["extraction"]["fp"]["availability"] = "AMBIGUOUS"
+        tx["reviewer_expected"]["extraction"]["fp"]["availability"] = "AMBIGUOUS"
         validated = validate_manifest(manifest(tx))
         columns = actual_columns(fp=None)
         columns["fp"]["review"] = True
@@ -202,3 +214,24 @@ class GoldenAccuracyFrameworkTests(SimpleTestCase):
         reverse = compare_layer(validated, [second, first], "extraction")
         key = lambda item: (item["row_key"], item["field"], item["status"])
         self.assertEqual(sorted(map(key, forward)), sorted(map(key, reverse)))
+
+    def test_pending_or_rejected_annotation_cannot_enter_acceptance(self):
+        for status in ("PENDING", "REJECTED"):
+            tx = self.transaction(case_id=f"case-{status.lower()}")
+            tx["reviewer_status"] = status
+            validated = validate_manifest(manifest(tx))
+            with self.assertRaisesMessage(GoldenValidationError, "APPROVED"):
+                compare_layer(validated, [], "extraction")
+
+    def test_annotation_draft_keeps_candidate_separate_from_reviewer_truth(self):
+        fixture = manifest()["fixture"]
+        rows = [{"row_key": "row-1", "columns": actual_columns(akun="522222")}]
+        draft = build_annotation_draft(fixture, rows, rows)
+        transaction = draft["transactions"][0]
+        self.assertEqual(transaction["reviewer_status"], "PENDING")
+        self.assertEqual(
+            transaction["parser_candidate"]["extraction"]["akun"]["value"], "522222"
+        )
+        expected = transaction["reviewer_expected"]["extraction"]["akun"]
+        self.assertIsNone(expected["value"])
+        self.assertEqual(expected["availability"], "AMBIGUOUS")

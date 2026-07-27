@@ -40,13 +40,13 @@
       "annotation_status": "pending_reviewer_approval"
     },
     {
-      "id": "spm-canonical-pending",
+      "id": "spm-canonical-00195a-1",
       "filename": "SPM NOMOR 00195A(1).pdf",
-      "sha256": null,
+      "sha256": "57f01626d243e839590ca33f6f4186b8f67776afc60577caacffcc03c2431c16",
       "pipeline": "spm",
       "required": true,
       "canonical_substitution_allowed": false,
-      "annotation_status": "blocked_missing_canonical_fixture"
+      "annotation_status": "pending_reviewer_approval"
     }
   ]
 }

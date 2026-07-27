@@ -10,7 +10,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, override_settings
 
 from apps.core.golden_accuracy import GoldenCorpusMissing, GoldenValidationError, sha256_file
-from apps.core.golden_runner import probe_fixture, probe_spm
+from apps.core.golden_runner import probe_fixture, probe_spm, sp2d_month_source
 
 
 class GoldenRunnerTests(SimpleTestCase):
@@ -24,7 +24,7 @@ class GoldenRunnerTests(SimpleTestCase):
             existing.write_text("{}", encoding="utf-8")
             created = cache_dir / "created.json"
 
-            def fake_probe(_path, *, ocr):
+            def fake_probe(_path, *, ocr, redact=True):
                 created.write_text("{}", encoding="utf-8")
                 return {"metrics": {}, "ocr": ocr}
 
@@ -86,11 +86,48 @@ class GoldenRunnerTests(SimpleTestCase):
             "nilai_bruto", "nilai_netto", "pembebanan", "fp", "pph21",
         )))
         self.assertTrue(required.issubset(columns["akun"]))
+        self.assertEqual(columns["akun"]["source_file"], "fixture.pdf")
         self.assertIsNone(columns["no_kuitansi"]["value"])
         self.assertEqual(columns["helper"]["value"], "511111")
         self.assertIsNone(columns["helper"]["confidence"])
         self.assertEqual(report["actual_layers"]["extraction"]["transaction_count"], 1)
         self.assertEqual(report["actual_layers"]["enrichment"]["transaction_count"], 1)
+
+    def test_bulan_sp2d_provenance_distinguishes_every_supported_origin(self):
+        joined = sp2d_month_source({"sp2d_parent_id": 7}, 6, layer="enrichment")
+        self.assertEqual(joined["source"], "SP2D_IMPORT")
+        self.assertEqual(joined["extraction_method"], "exact_sp2d_raw_join")
+        not_enriched = sp2d_month_source({"sp2d_parent_id": 7}, 6, layer="extraction")
+        self.assertNotEqual(not_enriched["source"], "SP2D_IMPORT")
+        self.assertTrue(not_enriched["review"])
+
+        for engine, expected_source in (("tesseract", "OCR"), ("native_pdf", "PARSER_STRUCTURAL")):
+            parsed = {
+                "spm": {
+                    "file_name": "source.pdf",
+                    "metadata": {"field_sources": {"bulan_sp2d": {"page": 2}}},
+                },
+                "page_index": [{
+                    "file_name": "source.pdf", "page_number": 2, "engine": engine,
+                }],
+            }
+            source = sp2d_month_source(parsed, 6, layer="extraction")
+            self.assertEqual(source["source"], expected_source)
+
+        computed = sp2d_month_source(
+            {"file_name": "source.pdf", "metadata": {"tanggal_sp2d": date(2026, 6, 2)}},
+            6,
+            layer="extraction",
+        )
+        self.assertEqual(computed["source"], "COMPUTED")
+        self.assertEqual(computed["inputs"], ["tanggal_sp2d"])
+        self.assertIsNone(computed["confidence"])
+
+        absent = sp2d_month_source(
+            {"file_name": "source.pdf", "metadata": {}}, None, layer="extraction"
+        )
+        self.assertEqual(absent["source"], "PARSER_STRUCTURAL")
+        self.assertEqual(absent["extraction_method"], "confirmed_absent_sp2d")
 
 
 class GoldenOCRCorpusPolicyTests(SimpleTestCase):
@@ -102,19 +139,26 @@ class GoldenOCRCorpusPolicyTests(SimpleTestCase):
         self.assertIn("explicit_skip", registry["corpus_policy"]["ordinary_ci"])
         self.assertEqual(registry["corpus_policy"]["pii_in_reports"], "redacted")
 
-    def test_canonical_missing_fixture_cannot_be_substituted(self):
+    def test_canonical_fixture_has_frozen_hash_and_cannot_be_substituted(self):
         registry = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        pending = next(item for item in registry["fixtures"] if item["sha256"] is None)
-        self.assertFalse(pending["canonical_substitution_allowed"])
-        self.assertIn("missing_canonical", pending["annotation_status"])
+        canonical = next(
+            item for item in registry["fixtures"]
+            if item["filename"] == "SPM NOMOR 00195A(1).pdf"
+        )
+        self.assertEqual(
+            canonical["sha256"],
+            "57f01626d243e839590ca33f6f4186b8f67776afc60577caacffcc03c2431c16",
+        )
+        self.assertFalse(canonical["canonical_substitution_allowed"])
+        self.assertEqual(canonical["annotation_status"], "pending_reviewer_approval")
 
     def test_golden_ocr_is_explicitly_skipped_without_external_corpus(self):
-        corpus_dir = os.environ.get("GOLDEN_OCR_CORPUS_DIR")
+        corpus_dir = os.environ.get("GOLDEN_FIXTURE_DIR") or os.environ.get("GOLDEN_OCR_CORPUS_DIR")
         required = os.environ.get("GOLDEN_OCR_REQUIRED") == "1"
         if not corpus_dir and not required:
-            self.skipTest("golden_ocr skipped explicitly: GOLDEN_OCR_CORPUS_DIR is not configured")
+            self.skipTest("golden_ocr skipped explicitly: GOLDEN_FIXTURE_DIR is not configured")
         if not corpus_dir:
-            raise GoldenCorpusMissing("Local acceptance requires GOLDEN_OCR_CORPUS_DIR.")
+            raise GoldenCorpusMissing("Local acceptance requires GOLDEN_FIXTURE_DIR.")
 
         registry = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         for fixture in registry["fixtures"]:

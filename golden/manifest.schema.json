@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://intermilan.local/schemas/golden-manifest-v1.json",
-  "title": "INTERMILAN D_K Golden Dataset Manifest",
+  "$id": "https://intermilan.local/schemas/golden-annotation-v2.json",
+  "title": "INTERMILAN D_K Golden Annotation Draft",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "fixture", "transactions"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "fixture": {
       "type": "object",
       "additionalProperties": false,
@@ -18,13 +18,10 @@
         "pipeline": {"type": "string", "minLength": 1}
       }
     },
-    "transactions": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/transaction"}
-    }
+    "transactions": {"type": "array", "items": {"$ref": "#/$defs/transaction"}}
   },
   "$defs": {
-    "cell": {
+    "expectedCell": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -43,7 +40,29 @@
         "reason": {"type": "string", "minLength": 1}
       }
     },
-    "columns": {
+    "actualEnvelope": {
+      "type": "object",
+      "required": [
+        "value", "source", "engine", "extraction_method", "confidence",
+        "source_file", "source_page", "document_type", "locator", "inputs"
+      ],
+      "properties": {
+        "value": {},
+        "source": {
+          "enum": ["OCR", "PARSER_STRUCTURAL", "SP2D_IMPORT", "MASTER_AKUN", "MANUAL_CORRECTION", "COMPUTED"]
+        },
+        "engine": {"type": "string"},
+        "extraction_method": {"type": "string"},
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+        "source_file": {"type": "string"},
+        "source_page": {"type": ["integer", "null"], "minimum": 1},
+        "document_type": {"type": "string"},
+        "locator": {"type": "string"},
+        "inputs": {"type": "array", "items": {"type": "string"}},
+        "review": {"type": "boolean"}
+      }
+    },
+    "expectedColumns": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -52,32 +71,80 @@
         "nilai_netto", "pembebanan", "fp", "pph21"
       ],
       "properties": {
-        "akun": {"$ref": "#/$defs/cell"},
-        "bulan_sp2d": {"$ref": "#/$defs/cell"},
-        "cara_pembayaran": {"$ref": "#/$defs/cell"},
-        "nomor_spm": {"$ref": "#/$defs/cell"},
-        "tanggal_spm": {"$ref": "#/$defs/cell"},
-        "jenis_spm": {"$ref": "#/$defs/cell"},
-        "no_kuitansi": {"$ref": "#/$defs/cell"},
-        "no_drpp": {"$ref": "#/$defs/cell"},
-        "deskripsi": {"$ref": "#/$defs/cell"},
-        "nilai_bruto": {"$ref": "#/$defs/cell"},
-        "nilai_netto": {"$ref": "#/$defs/cell"},
-        "pembebanan": {"$ref": "#/$defs/cell"},
-        "fp": {"$ref": "#/$defs/cell"},
-        "pph21": {"$ref": "#/$defs/cell"}
+        "akun": {"$ref": "#/$defs/expectedCell"},
+        "bulan_sp2d": {"$ref": "#/$defs/expectedCell"},
+        "cara_pembayaran": {"$ref": "#/$defs/expectedCell"},
+        "nomor_spm": {"$ref": "#/$defs/expectedCell"},
+        "tanggal_spm": {"$ref": "#/$defs/expectedCell"},
+        "jenis_spm": {"$ref": "#/$defs/expectedCell"},
+        "no_kuitansi": {"$ref": "#/$defs/expectedCell"},
+        "no_drpp": {"$ref": "#/$defs/expectedCell"},
+        "deskripsi": {"$ref": "#/$defs/expectedCell"},
+        "nilai_bruto": {"$ref": "#/$defs/expectedCell"},
+        "nilai_netto": {"$ref": "#/$defs/expectedCell"},
+        "pembebanan": {"$ref": "#/$defs/expectedCell"},
+        "fp": {"$ref": "#/$defs/expectedCell"},
+        "pph21": {"$ref": "#/$defs/expectedCell"}
+      }
+    },
+    "actualColumns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "helper", "akun", "bulan_sp2d", "cara_pembayaran", "nomor_spm", "tanggal_spm",
+        "jenis_spm", "no_kuitansi", "no_drpp", "deskripsi", "nilai_bruto",
+        "nilai_netto", "pembebanan", "fp", "pph21"
+      ],
+      "properties": {
+        "helper": {"$ref": "#/$defs/actualEnvelope"},
+        "akun": {"$ref": "#/$defs/actualEnvelope"},
+        "bulan_sp2d": {"$ref": "#/$defs/actualEnvelope"},
+        "cara_pembayaran": {"$ref": "#/$defs/actualEnvelope"},
+        "nomor_spm": {"$ref": "#/$defs/actualEnvelope"},
+        "tanggal_spm": {"$ref": "#/$defs/actualEnvelope"},
+        "jenis_spm": {"$ref": "#/$defs/actualEnvelope"},
+        "no_kuitansi": {"$ref": "#/$defs/actualEnvelope"},
+        "no_drpp": {"$ref": "#/$defs/actualEnvelope"},
+        "deskripsi": {"$ref": "#/$defs/actualEnvelope"},
+        "nilai_bruto": {"$ref": "#/$defs/actualEnvelope"},
+        "nilai_netto": {"$ref": "#/$defs/actualEnvelope"},
+        "pembebanan": {"$ref": "#/$defs/actualEnvelope"},
+        "fp": {"$ref": "#/$defs/actualEnvelope"},
+        "pph21": {"$ref": "#/$defs/actualEnvelope"}
+      }
+    },
+    "expectedLayers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extraction", "enrichment"],
+      "properties": {
+        "extraction": {"$ref": "#/$defs/expectedColumns"},
+        "enrichment": {"$ref": "#/$defs/expectedColumns"}
+      }
+    },
+    "actualLayers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extraction", "enrichment"],
+      "properties": {
+        "extraction": {"$ref": "#/$defs/actualColumns"},
+        "enrichment": {"$ref": "#/$defs/actualColumns"}
       }
     },
     "transaction": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["row_key", "case_id", "document_id", "extraction", "enrichment"],
+      "required": [
+        "row_key", "case_id", "document_id", "parser_candidate",
+        "reviewer_expected", "reviewer_status"
+      ],
       "properties": {
         "row_key": {"type": "string", "minLength": 1},
         "case_id": {"type": "string", "minLength": 1},
         "document_id": {"type": "string", "minLength": 1},
-        "extraction": {"$ref": "#/$defs/columns"},
-        "enrichment": {"$ref": "#/$defs/columns"}
+        "parser_candidate": {"$ref": "#/$defs/actualLayers"},
+        "reviewer_expected": {"$ref": "#/$defs/expectedLayers"},
+        "reviewer_status": {"enum": ["PENDING", "APPROVED", "REJECTED"]}
       }
     }
   }

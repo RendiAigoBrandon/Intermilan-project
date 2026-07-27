@@ -44,6 +44,7 @@ PROVENANCE_SOURCES = {
 
 CELL_STATUSES = {"EXACT", "MISMATCH", "MISSING", "EXTRA", "REVIEW"}
 AVAILABILITY = {"PRESENT", "CONFIRMED_ABSENT", "AMBIGUOUS", "NOT_APPLICABLE"}
+REVIEWER_STATUSES = {"PENDING", "APPROVED", "REJECTED"}
 MONEY_COLUMNS = {"nilai_bruto", "nilai_netto", "pph21"}
 SENSITIVE_COLUMNS = {"deskripsi"}
 EXPECTED_CELL_FIELDS = {
@@ -156,9 +157,67 @@ def validate_actual_envelope(envelope):
         raise GoldenValidationError("inputs provenance harus list.")
 
 
+def _validate_expected_columns(columns, *, location):
+    if not isinstance(columns, dict):
+        raise GoldenValidationError(f"{location} harus object.")
+    if "helper" in columns:
+        raise GoldenValidationError("Helper tidak boleh diketik di golden; nilainya selalu COMPUTED.")
+    missing_columns = set(DK_COLUMNS[1:]) - set(columns)
+    if missing_columns:
+        raise GoldenValidationError(
+            f"{location} kurang kolom: " + ", ".join(sorted(missing_columns))
+        )
+    for field in DK_COLUMNS[1:]:
+        cell = columns[field]
+        if not isinstance(cell, dict):
+            raise GoldenValidationError(f"{location}.{field} harus object.")
+        missing_cell_fields = EXPECTED_CELL_FIELDS - set(cell)
+        if missing_cell_fields:
+            raise GoldenValidationError(
+                f"{location}.{field} kurang metadata: "
+                + ", ".join(sorted(missing_cell_fields))
+            )
+        availability = cell.get("availability", "PRESENT")
+        if availability not in AVAILABILITY:
+            raise GoldenValidationError(f"Availability tidak valid: {availability!r}")
+        if availability == "PRESENT" and canonical_value(field, cell["value"]) is None:
+            raise GoldenValidationError(f"{location}.{field} PRESENT tetapi kosong.")
+        if availability != "PRESENT" and canonical_value(field, cell["value"]) is not None:
+            raise GoldenValidationError(f"{location}.{field} {availability} tetapi berisi nilai.")
+        if not str(cell.get("source_file") or "").strip():
+            raise GoldenValidationError(f"{location}.{field}.source_file wajib diisi.")
+        source_page = cell.get("source_page")
+        if source_page is not None and (
+            isinstance(source_page, bool) or not isinstance(source_page, int) or source_page < 1
+        ):
+            raise GoldenValidationError(f"{location}.{field}.source_page tidak valid.")
+        for key in ("document_type", "locator", "reason"):
+            if not str(cell.get(key) or "").strip():
+                raise GoldenValidationError(f"{location}.{field}.{key} wajib diisi.")
+
+
+def _validate_parser_candidate(candidate, *, location):
+    if not isinstance(candidate, dict):
+        raise GoldenValidationError(f"{location} harus object.")
+    for layer in ("extraction", "enrichment"):
+        columns = candidate.get(layer)
+        if not isinstance(columns, dict):
+            raise GoldenValidationError(f"{location}.{layer} harus object.")
+        missing = set(DK_COLUMNS) - set(columns)
+        if missing:
+            raise GoldenValidationError(
+                f"{location}.{layer} kurang kolom: " + ", ".join(sorted(missing))
+            )
+        for field in DK_COLUMNS:
+            validate_actual_envelope(columns[field])
+        helper = columns["helper"]
+        if helper["source"] != "COMPUTED":
+            raise GoldenValidationError(f"{location}.{layer}.helper wajib COMPUTED.")
+
+
 def validate_manifest(manifest):
-    if manifest.get("schema_version") != 1:
-        raise GoldenValidationError("schema_version golden harus 1.")
+    if manifest.get("schema_version") != 2:
+        raise GoldenValidationError("schema_version golden annotation harus 2.")
     fixture = manifest.get("fixture") or {}
     for key in ("id", "filename", "sha256", "pipeline"):
         if not fixture.get(key):
@@ -183,48 +242,44 @@ def validate_manifest(manifest):
             raise GoldenValidationError(f"{case_id}.document_id wajib diisi.")
         row_keys.add(row_key)
         case_ids.add(case_id)
+        reviewer_status = transaction.get("reviewer_status")
+        if reviewer_status not in REVIEWER_STATUSES:
+            raise GoldenValidationError(f"{case_id}.reviewer_status tidak valid: {reviewer_status!r}")
+        _validate_parser_candidate(
+            transaction.get("parser_candidate"), location=f"{case_id}.parser_candidate"
+        )
+        reviewer_expected = transaction.get("reviewer_expected")
+        if not isinstance(reviewer_expected, dict):
+            raise GoldenValidationError(f"{case_id}.reviewer_expected harus object.")
         for layer in ("extraction", "enrichment"):
-            columns = transaction.get(layer)
-            if not isinstance(columns, dict):
-                raise GoldenValidationError(f"{case_id}.{layer} harus object.")
-            if "helper" in columns:
-                raise GoldenValidationError("Helper tidak boleh diketik di golden; nilainya selalu COMPUTED.")
-            missing_columns = set(DK_COLUMNS[1:]) - set(columns)
-            if missing_columns:
-                raise GoldenValidationError(
-                    f"{case_id}.{layer} kurang kolom: " + ", ".join(sorted(missing_columns))
-                )
-            for field in DK_COLUMNS[1:]:
-                cell = columns[field]
-                if not isinstance(cell, dict):
-                    raise GoldenValidationError(f"{case_id}.{layer}.{field} harus object.")
-                missing_cell_fields = EXPECTED_CELL_FIELDS - set(cell)
-                if missing_cell_fields:
-                    raise GoldenValidationError(
-                        f"{case_id}.{layer}.{field} kurang metadata: "
-                        + ", ".join(sorted(missing_cell_fields))
-                    )
-                availability = cell.get("availability", "PRESENT")
-                if availability not in AVAILABILITY:
-                    raise GoldenValidationError(f"Availability tidak valid: {availability!r}")
-                if availability == "PRESENT" and canonical_value(field, cell["value"]) is None:
-                    raise GoldenValidationError(f"{case_id}.{layer}.{field} PRESENT tetapi kosong.")
-                if availability != "PRESENT" and canonical_value(field, cell["value"]) is not None:
-                    raise GoldenValidationError(f"{case_id}.{layer}.{field} {availability} tetapi berisi nilai.")
-                if not str(cell.get("source_file") or "").strip():
-                    raise GoldenValidationError(f"{case_id}.{layer}.{field}.source_file wajib diisi.")
-                source_page = cell.get("source_page")
-                if source_page is not None and (
-                    isinstance(source_page, bool) or not isinstance(source_page, int) or source_page < 1
-                ):
-                    raise GoldenValidationError(f"{case_id}.{layer}.{field}.source_page tidak valid.")
-                if not str(cell.get("document_type") or "").strip():
-                    raise GoldenValidationError(f"{case_id}.{layer}.{field}.document_type wajib diisi.")
-                if not str(cell.get("locator") or "").strip():
-                    raise GoldenValidationError(f"{case_id}.{layer}.{field}.locator wajib diisi.")
-                if not str(cell.get("reason") or "").strip():
-                    raise GoldenValidationError(f"{case_id}.{layer}.{field}.reason wajib diisi.")
+            _validate_expected_columns(
+                reviewer_expected.get(layer), location=f"{case_id}.reviewer_expected.{layer}"
+            )
     return manifest
+
+
+def approved_expectations(manifest):
+    """Return comparator input, rejecting parser candidates not approved by a human."""
+    validate_manifest(manifest)
+    pending = [
+        transaction["case_id"] for transaction in manifest["transactions"]
+        if transaction["reviewer_status"] != "APPROVED"
+    ]
+    if pending:
+        raise GoldenValidationError(
+            "Golden acceptance hanya boleh membaca reviewer_expected APPROVED: "
+            + ", ".join(pending)
+        )
+    return [
+        {
+            "row_key": transaction["row_key"],
+            "case_id": transaction["case_id"],
+            "document_id": transaction["document_id"],
+            "extraction": transaction["reviewer_expected"]["extraction"],
+            "enrichment": transaction["reviewer_expected"]["enrichment"],
+        }
+        for transaction in manifest["transactions"]
+    ]
 
 
 def load_manifest(path):
@@ -311,7 +366,7 @@ def _compare_cell(field, expected, actual):
 def compare_layer(manifest, actual_rows, layer):
     if layer not in {"extraction", "enrichment"}:
         raise GoldenValidationError(f"Layer tidak valid: {layer}")
-    expected_by_key = {row["row_key"]: row for row in manifest["transactions"]}
+    expected_by_key = {row["row_key"]: row for row in approved_expectations(manifest)}
     actual_by_key = {}
     for row in actual_rows:
         row_key = row.get("row_key")
@@ -437,7 +492,7 @@ def build_report(manifest, extraction_rows, enrichment_rows, *, run_metrics=None
         if item["status"] in {"MISMATCH", "MISSING", "EXTRA"}
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "fixture": {
             "id": manifest["fixture"]["id"],
             "filename": manifest["fixture"]["filename"],
@@ -458,3 +513,43 @@ def build_report(manifest, extraction_rows, enrichment_rows, *, run_metrics=None
         "mismatches": mismatches,
         "metrics": dict(run_metrics or {}),
     }
+
+
+def _pending_expected_cell(field, candidate, fixture):
+    candidate = candidate or {}
+    return {
+        "value": None,
+        "availability": "AMBIGUOUS",
+        "source_file": candidate.get("source_file") or fixture["filename"],
+        "source_page": candidate.get("source_page"),
+        "document_type": candidate.get("document_type") or str(fixture["pipeline"]).upper(),
+        "locator": candidate.get("locator") or field,
+        "reason": "PENDING_REVIEW: verify value and evidence against the source document.",
+    }
+
+
+def build_annotation_draft(fixture, extraction_rows, enrichment_rows):
+    """Create an external reviewer worksheet without promoting parser output to truth."""
+    extraction_by_key = {row["row_key"]: row for row in extraction_rows}
+    enrichment_by_key = {row["row_key"]: row for row in enrichment_rows}
+    row_keys = sorted(set(extraction_by_key) | set(enrichment_by_key))
+    transactions = []
+    for index, row_key in enumerate(row_keys, start=1):
+        extraction = _actual_columns(extraction_by_key[row_key])
+        enrichment = _actual_columns(enrichment_by_key[row_key])
+        reviewer_expected = {}
+        for layer, columns in (("extraction", extraction), ("enrichment", enrichment)):
+            reviewer_expected[layer] = {
+                field: _pending_expected_cell(field, columns.get(field), fixture)
+                for field in DK_COLUMNS[1:]
+            }
+        transactions.append({
+            "row_key": row_key,
+            "case_id": f"review-row-{index:04d}",
+            "document_id": fixture["id"],
+            "parser_candidate": {"extraction": extraction, "enrichment": enrichment},
+            "reviewer_expected": reviewer_expected,
+            "reviewer_status": "PENDING",
+        })
+    draft = {"schema_version": 2, "fixture": dict(fixture), "transactions": transactions}
+    return validate_manifest(draft)

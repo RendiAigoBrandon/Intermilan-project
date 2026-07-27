@@ -398,7 +398,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(meta["satker_app_code"], "1300")
         self.assertEqual(meta["satker_app_name"], "BPS Provinsi Sumatera Barat")
 
-    def test_exact_match_links_existing(self):
+    def test_exact_match_links_legacy_shared_cell_but_candidate_remains_canonical(self):
         parsed = self.parsed_package()
         paket = self.paket_for(parsed)
         TransactionDetail.objects.create(
@@ -413,7 +413,8 @@ class PaketSPMRegressionTests(TestCase):
         decision = build_package_decision(parsed, current_paket_id=paket.id)
         self.assertEqual(decision["commit_action"], "link_existing")
         rows = build_transaction_rows_from_package(parsed, paket, self.user, save=False)
-        self.assertEqual(rows, [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].no_kuitansi, "")
 
     def test_different_year_is_not_duplicate(self):
         parsed = self.parsed_package()

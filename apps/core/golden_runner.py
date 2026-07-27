@@ -106,6 +106,7 @@ def _source_from_index(parsed, *, file_name="", page_number=None, document_type=
         {},
     )
     engine = indexed.get("engine") or indexed.get("method") or ""
+    resolved_file_name = file_name or indexed.get("file_name") or parsed.get("file_name") or ""
     source = "OCR" if engine not in {"", "text", "native_pdf", "pymupdf", "pdfplumber", "pypdf"} else "PARSER_STRUCTURAL"
     confidence = indexed.get("confidence") if source == "OCR" else None
     return {
@@ -113,7 +114,7 @@ def _source_from_index(parsed, *, file_name="", page_number=None, document_type=
         "engine": engine,
         "extraction_method": extraction_method or indexed.get("extraction_method") or indexed.get("method") or "document_structure",
         "confidence": confidence if isinstance(confidence, (int, float)) else None,
-        "source_file": file_name,
+        "source_file": resolved_file_name,
         "source_page": page_number,
         "document_type": document_type or indexed.get("document_type") or "",
     }
@@ -141,7 +142,71 @@ def _batch_spm_source(parsed, field):
     )
 
 
-def _batch_columns(parsed, group, item):
+def sp2d_month_source(parsed, value, *, layer):
+    """Describe the real origin of a materialized SP2D month."""
+    spm = parsed.get("spm") or parsed
+    metadata = spm.get("metadata") or {}
+    if layer == "enrichment" and parsed.get("sp2d_parent_id"):
+        return {
+            "source": "SP2D_IMPORT",
+            "engine": "",
+            "extraction_method": "exact_sp2d_raw_join",
+            "confidence": None,
+            "source_file": "",
+            "source_page": None,
+            "document_type": "SP2D_IMPORT",
+            "inputs": ["sp2d_parent_id"],
+        }
+
+    field_sources = metadata.get("field_sources") or {}
+    month_hint = field_sources.get("bulan_sp2d") or {}
+    if isinstance(month_hint, dict) and month_hint:
+        source = _source_from_index(
+            parsed,
+            file_name=spm.get("file_name") or parsed.get("file_name") or "",
+            page_number=month_hint.get("page"),
+            document_type="SP2D",
+            extraction_method=month_hint.get("method") or "sp2d_month_field",
+        )
+        return source
+
+    tanggal_sp2d = metadata.get("tanggal_sp2d")
+    if tanggal_sp2d and value not in {None, ""}:
+        date_hint = field_sources.get("tanggal_sp2d") or {}
+        return {
+            "source": "COMPUTED",
+            "engine": "",
+            "extraction_method": "month_from_sp2d_date",
+            "confidence": None,
+            "source_file": spm.get("file_name") or parsed.get("file_name") or "",
+            "source_page": date_hint.get("page") if isinstance(date_hint, dict) else None,
+            "document_type": "SP2D",
+            "inputs": ["tanggal_sp2d"],
+        }
+
+    if value in {None, ""}:
+        return {
+            "source": "PARSER_STRUCTURAL",
+            "engine": "",
+            "extraction_method": "confirmed_absent_sp2d",
+            "confidence": None,
+            "source_file": spm.get("file_name") or parsed.get("file_name") or "",
+            "source_page": None,
+            "document_type": "SP2D",
+        }
+    return {
+        "source": "PARSER_STRUCTURAL",
+        "engine": "",
+        "extraction_method": "unverified_materialized_month",
+        "confidence": None,
+        "source_file": spm.get("file_name") or parsed.get("file_name") or "",
+        "source_page": None,
+        "document_type": "SP2D",
+        "review": True,
+    }
+
+
+def _batch_columns(parsed, group, item, *, layer):
     drpp = group.get("drpp") or {}
     detail_source = _page_source(parsed, item, drpp)
     values = {
@@ -166,15 +231,7 @@ def _batch_columns(parsed, group, item):
         if field in spm_fields:
             source = _batch_spm_source(parsed, field)
         elif field == "bulan_sp2d":
-            source = {
-                "source": "SP2D_IMPORT" if value not in {None, ""} else "PARSER_STRUCTURAL",
-                "engine": "",
-                "extraction_method": "sp2d_parent_month" if value not in {None, ""} else "confirmed_absent_sp2d",
-                "confidence": None,
-                "source_file": "",
-                "source_page": None,
-                "document_type": "SP2D",
-            }
+            source = sp2d_month_source(parsed, value, layer=layer)
         else:
             source = detail_source
         columns[field] = actual_value(value, locator=field, **source)
@@ -216,7 +273,7 @@ def _redacted_rows(rows):
     return output, dict(source_counts)
 
 
-def _spm_field_source(parsed, detail_item, field):
+def _spm_field_source(parsed, detail_item, field, *, layer, value=None):
     metadata = parsed.get("metadata") or {}
     detail_map = {
         "akun": "akun", "deskripsi": "keperluan", "nilai_bruto": "bruto",
@@ -237,15 +294,7 @@ def _spm_field_source(parsed, detail_item, field):
         return source
 
     if field == "bulan_sp2d":
-        return {
-            "source": "COMPUTED",
-            "engine": "",
-            "extraction_method": "month_from_sp2d_date",
-            "confidence": None,
-            "source_file": "",
-            "source_page": None,
-            "document_type": "SP2D",
-        }
+        return sp2d_month_source(parsed, value, layer=layer)
     if field in {"no_kuitansi", "no_drpp"}:
         return {
             "source": "PARSER_STRUCTURAL",
@@ -275,7 +324,7 @@ def _spm_field_source(parsed, detail_item, field):
     )
 
 
-def _spm_columns(parsed, row, detail_item):
+def _spm_columns(parsed, row, detail_item, *, layer):
     values = {
         "akun": row.akun,
         "bulan_sp2d": row.bulan_sp2d,
@@ -293,7 +342,11 @@ def _spm_columns(parsed, row, detail_item):
         "pph21": row.pph21,
     }
     columns = {
-        field: actual_value(value, locator=field, **_spm_field_source(parsed, detail_item, field))
+        field: actual_value(
+            value,
+            locator=field,
+            **_spm_field_source(parsed, detail_item, field, layer=layer, value=value),
+        )
         for field, value in values.items()
     }
     columns["helper"] = actual_value(
@@ -306,9 +359,10 @@ def _spm_columns(parsed, row, detail_item):
     return columns
 
 
-def probe_drpp_batch(path, *, ocr):
+def probe_drpp_batch(path, *, ocr, redact=True):
     parsed = parse_drpp_upload_batch(str(path), ocr=ocr)
-    rows = []
+    extraction_rows = []
+    enrichment_rows = []
     group_summary = []
     for group_index, group in enumerate(parsed.get("drpp_groups") or [], start=1):
         items = group.get("items") or []
@@ -326,8 +380,20 @@ def probe_drpp_batch(path, *, ocr):
                 f"drpp:{group.get('no_drpp') or ''}",
                 f"row:{item_index}",
             ))
-            rows.append({"row_key": row_key, "columns": _batch_columns(parsed, group, item)})
-    public_rows, source_counts = _redacted_rows(rows)
+            extraction_rows.append({
+                "row_key": row_key,
+                "columns": _batch_columns(parsed, group, item, layer="extraction"),
+            })
+            enrichment_rows.append({
+                "row_key": row_key,
+                "columns": _batch_columns(parsed, group, item, layer="enrichment"),
+            })
+    if redact:
+        public_rows, extraction_source_counts = _redacted_rows(extraction_rows)
+        public_enrichment_rows, enrichment_source_counts = _redacted_rows(enrichment_rows)
+    else:
+        public_rows, extraction_source_counts = extraction_rows, _source_counts(extraction_rows)
+        public_enrichment_rows, enrichment_source_counts = enrichment_rows, _source_counts(enrichment_rows)
     spm_meta = (parsed.get("spm") or {}).get("metadata", {})
     return {
         "pipeline": "drpp_batch",
@@ -336,17 +402,17 @@ def probe_drpp_batch(path, *, ocr):
             "spm": spm_meta.get("nomor_spm") or None,
             "sp2d": spm_meta.get("nomor_sp2d") or None,
         },
-        "transaction_count": len(rows),
-        "total_nominal": _json_value(sum((Decimal(str(item["columns"]["nilai_bruto"]["value"] or 0)) for item in rows), Decimal("0"))),
+        "transaction_count": len(extraction_rows),
+        "total_nominal": _json_value(sum((Decimal(str(item["columns"]["nilai_bruto"]["value"] or 0)) for item in extraction_rows), Decimal("0"))),
         "groups": group_summary,
         "metrics": parsed.get("metrics") or {},
-        "provenance_source_counts": source_counts,
+        "provenance_source_counts": extraction_source_counts,
         "actual_layers": {
-            "extraction": {"transaction_count": len(rows), "provenance_source_counts": source_counts},
-            "enrichment": {"transaction_count": len(rows), "provenance_source_counts": source_counts},
+            "extraction": {"transaction_count": len(extraction_rows), "provenance_source_counts": extraction_source_counts},
+            "enrichment": {"transaction_count": len(enrichment_rows), "provenance_source_counts": enrichment_source_counts},
         },
         "rows": public_rows,
-        "enrichment_rows": public_rows,
+        "enrichment_rows": public_enrichment_rows,
         "warnings": parsed.get("warnings") or [],
     }
 
@@ -362,7 +428,7 @@ def _spm_metrics(parsed, elapsed):
     }
 
 
-def probe_spm(path, *, ocr):
+def probe_spm(path, *, ocr, redact=True):
     started = time.monotonic()
     parsed = parse_spm_pdf(str(path), ocr=ocr)
     elapsed = time.monotonic() - started
@@ -387,15 +453,26 @@ def probe_spm(path, *, ocr):
     except Exception as exc:
         materialization_error = str(exc)
     detail_items = parsed.get("detail_items") or []
-    actual_rows = []
+    extraction_rows = []
+    enrichment_rows = []
     for index, row in enumerate(rows):
         detail_item = detail_items[index] if index < len(detail_items) else {}
         source_page = detail_item.get("source_page")
-        actual_rows.append({
-            "row_key": f"page:{source_page or 0}|row:{index + 1}|account:{row.akun}",
-            "columns": _spm_columns(parsed, row, detail_item),
+        row_key = f"page:{source_page or 0}|row:{index + 1}|account:{row.akun}"
+        extraction_rows.append({
+            "row_key": row_key,
+            "columns": _spm_columns(parsed, row, detail_item, layer="extraction"),
         })
-    public_rows, source_counts = _redacted_rows(actual_rows)
+        enrichment_rows.append({
+            "row_key": f"page:{source_page or 0}|row:{index + 1}|account:{row.akun}",
+            "columns": _spm_columns(parsed, row, detail_item, layer="enrichment"),
+        })
+    if redact:
+        public_rows, extraction_source_counts = _redacted_rows(extraction_rows)
+        public_enrichment_rows, enrichment_source_counts = _redacted_rows(enrichment_rows)
+    else:
+        public_rows, extraction_source_counts = extraction_rows, _source_counts(extraction_rows)
+        public_enrichment_rows, enrichment_source_counts = enrichment_rows, _source_counts(enrichment_rows)
     return {
         "pipeline": "spm",
         "document_identity": {
@@ -406,13 +483,13 @@ def probe_spm(path, *, ocr):
         "transaction_count": len(rows),
         "total_nominal": _json_value(sum((row.nilai_bruto for row in rows), Decimal("0"))),
         "metrics": _spm_metrics(parsed, elapsed),
-        "provenance_source_counts": source_counts,
+        "provenance_source_counts": extraction_source_counts,
         "actual_layers": {
-            "extraction": {"transaction_count": len(actual_rows), "provenance_source_counts": source_counts},
-            "enrichment": {"transaction_count": len(actual_rows), "provenance_source_counts": source_counts},
+            "extraction": {"transaction_count": len(extraction_rows), "provenance_source_counts": extraction_source_counts},
+            "enrichment": {"transaction_count": len(enrichment_rows), "provenance_source_counts": enrichment_source_counts},
         },
         "rows": public_rows,
-        "enrichment_rows": public_rows,
+        "enrichment_rows": public_enrichment_rows,
         "materialization_error": materialization_error,
         "parser_diagnostics": {
             "detail_parse_summary": meta.get("detail_parse_summary") or {},
@@ -423,15 +500,15 @@ def probe_spm(path, *, ocr):
     }
 
 
-def probe_fixture(path, *, ocr=True, cleanup_cache=True):
+def probe_fixture(path, *, ocr=True, cleanup_cache=True, redact=True):
     path = Path(path).resolve()
     before = cache_snapshot(path)
     started = time.monotonic()
     try:
         if path.suffix.lower() == ".zip":
-            result = probe_drpp_batch(path, ocr=ocr)
+            result = probe_drpp_batch(path, ocr=ocr, redact=redact)
         elif path.suffix.lower() == ".pdf":
-            result = probe_spm(path, ocr=ocr)
+            result = probe_spm(path, ocr=ocr, redact=redact)
         else:
             raise ValueError("Fixture harus PDF atau ZIP.")
         result["fixture"] = {
