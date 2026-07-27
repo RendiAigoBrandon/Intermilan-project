@@ -211,7 +211,41 @@ class PaketSPMRegressionTests(TestCase):
         rows = build_transaction_rows_from_package(parsed, paket, self.user, save=False)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].akun, "522191")
-        self.assertEqual(rows[0].no_kuitansi, "00074A")
+        self.assertEqual(rows[0].no_kuitansi, "")
+
+    def test_two_ls_rows_with_same_account_and_blank_receipt_are_not_merged(self):
+        parsed = self.parsed_package()
+        parsed["spm"]["metadata"]["detail_parse_summary"] = {"source": "DETAIL_SPP_SPM_SP2D"}
+        parsed["spm"]["detail_items"] = [
+            {
+                "akun": "522191",
+                "jumlah": "400",
+                "keperluan": "Pembayaran bagian pertama",
+                "pembebanan": "2886.EBA.994.002.522191",
+                "source_priority": "DETAIL_SPP_SPM_SP2D",
+                "source_row_id": "spm:1:row:1",
+            },
+            {
+                "akun": "522191",
+                "jumlah": "600",
+                "keperluan": "Pembayaran bagian kedua",
+                "pembebanan": "2886.EBA.994.002.522191",
+                "source_priority": "DETAIL_SPP_SPM_SP2D",
+                "source_row_id": "spm:1:row:2",
+            },
+        ]
+        parsed["spm"]["metadata"]["jumlah_pengeluaran"] = "1000"
+        parsed["spm"]["metadata"]["total_pembayaran"] = "1000"
+        paket = self.paket_for(parsed)
+
+        first = build_transaction_rows_from_package(parsed, paket, self.user, save=True, skip_existing=True)
+        second = build_transaction_rows_from_package(parsed, paket, self.user, save=True, skip_existing=True)
+
+        self.assertEqual(len(first), 2)
+        self.assertEqual(second, [])
+        self.assertEqual({row.no_kuitansi for row in first}, {""})
+        self.assertEqual({row.akun + row.no_kuitansi for row in first}, {"522191"})
+        self.assertEqual(TransactionDetail.objects.filter(nomor_spm=paket.nomor_spm).count(), 2)
 
     def test_multiple_receipts_create_multiple_rows(self):
         parsed = self.parsed_package()
@@ -426,14 +460,14 @@ class PaketSPMRegressionTests(TestCase):
             row.fp,
             row.pph21,
         ], [
-            "52219100074A",
+            "522191",
             "522191",
             4,
             "LS Pegawai",
             "00074A",
             datetime.date(2026, 3, 27),
             "Penghasilan PPNPN Induk",
-            "00074A",
+            "",
             "",
             "Pembayaran Belanja Barang Berupa Honor PPNPN Bulan Maret Tahun 2026 untuk 3 Pegawai",
             Decimal("9744780.00"),
@@ -483,14 +517,14 @@ class PaketSPMRegressionTests(TestCase):
             row.fp,
             row.pph21,
         ], [
-            "51112900084A",
+            "511129",
             "511129",
             4,
             "LS Non Kontraktual",
             "00084A",
             datetime.date(2026, 4, 6),
             "229 - GAJI LAINNYA",
-            "00084A",
+            "",
             "",
             "Pembayaran Belanja Pegawai berupa uang makan bulan Maret 2026 sebanyak 53 pegawai",
             Decimal("33201000.00"),

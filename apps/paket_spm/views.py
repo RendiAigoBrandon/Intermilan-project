@@ -303,7 +303,7 @@ def paket_spm_list(request):
     context.update(
         {
             "page_title": "Upload DRPP",
-            "page_subtitle": "Unggah maksimal dua DRPP beserta seluruh kuitansi yang terkait. Sistem akan mencocokkan data dengan SP2D dan menampilkan hasil sebelum disimpan ke D_K.",
+            "page_subtitle": "Unggah satu paket DRPP beserta seluruh kuitansi yang terkait. Sistem akan mencocokkan data dengan SP2D dan menampilkan hasil sebelum disimpan ke D_K.",
             "rows": rows[:50],
             "max_zip_size_mb": settings.MAX_ZIP_SIZE_MB,
             "max_upload_size_mb": settings.MAX_UPLOAD_SIZE_MB,

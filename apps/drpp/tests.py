@@ -937,7 +937,7 @@ class PrepareDRPPRowsHardeningTest(TestCase):
         self.assertEqual(row["bruto"], Decimal("5000"))
         self.assertEqual(row["netto"], Decimal("4500"))
 
-    def test_more_than_two_drpp_is_rejected_and_temp_cleaned(self):
+    def test_more_than_two_drpp_are_materialized_and_temp_cleaned(self):
         extracted_dir = tempfile.mkdtemp(prefix="drpp-extracted-")
         parsed = {
             "ok": True,
@@ -948,7 +948,8 @@ class PrepareDRPPRowsHardeningTest(TestCase):
         }
         with mock.patch("apps.drpp.services.parse_paket_spm_zip", return_value=parsed):
             result = prepare_drpp_rows(self.source_path, satker_code="SAT1", tahun=2025)
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["rows"]), 3)
         self.assertFalse(os.path.exists(extracted_dir))
 
 

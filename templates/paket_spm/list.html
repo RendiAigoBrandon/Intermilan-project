@@ -5,7 +5,7 @@
   <div class="card-head">
     <div>
       <h2>Upload DRPP dan Kuitansi</h2>
-      <p class="muted">Unggah maksimal dua DRPP beserta seluruh kuitansi yang terkait. Sistem akan mencocokkan data dengan SP2D dan menampilkan hasil sebelum disimpan ke D_K.</p>
+      <p class="muted">Unggah satu paket DRPP beserta seluruh kuitansi yang terkait. Sistem akan mencocokkan data dengan SP2D dan menampilkan hasil sebelum disimpan ke D_K.</p>
     </div>
     <div class="page-actions"><a class="btn ghost" href="{% url 'dk:transaction_list' %}">Lihat D_K</a></div>
   </div>
@@ -33,7 +33,7 @@
       <label>DRPP dan kuitansi</label>
       <div class="upload-dropzone js-upload-dropzone">
         <strong>Pilih File / Folder</strong>
-        <span>Pilih ZIP, beberapa PDF, atau folder berisi satu hingga dua DRPP beserta kuitansinya.</span>
+        <span>Pilih ZIP, beberapa PDF, atau folder berisi seluruh DRPP beserta kuitansinya.</span>
         <input class="form-control js-upload-files" type="file" name="file_paket" multiple accept=".pdf,.zip,application/zip,application/pdf">
       </div>
       <input class="js-folder-files" type="file" name="document_files" multiple webkitdirectory directory hidden>
@@ -57,7 +57,7 @@
   </form>
 
   <div class="note-box">
-    Maksimal dua nomor DRPP unik per unggahan. Batas ZIP {{ max_zip_size_mb|default:2048 }} MB.
+    Seluruh DRPP dalam satu paket akan diproses. Batas ZIP {{ max_zip_size_mb|default:2048 }} MB.
   </div>
 </section>
 
@@ -120,7 +120,7 @@
       });
       var steps = [
         ["Membaca file", "Membuat manifest PDF", "12%"],
-        ["Mengelompokkan DRPP", "Memastikan maksimal dua nomor DRPP", "26%"],
+        ["Mengelompokkan DRPP", "Memetakan seluruh nomor DRPP", "26%"],
         ["Mendeteksi halaman duplikat", "Membuat indeks halaman resolusi rendah", "40%"],
         ["Membaca DRPP", "Membaca ringkasan dan Detail COA", "56%"],
         ["Mencocokkan kuitansi", "Memverifikasi halaman kandidat", "70%"],

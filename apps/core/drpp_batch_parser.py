@@ -1,4 +1,4 @@
-"""Parser cepat untuk upload maksimal dua DRPP beserta kuitansinya.
+"""Parser cepat untuk upload DRPP beserta kuitansinya.
 
 Parser ini sengaja tidak memakai classifier Paket SPM sebagai keputusan akhir.
 Halaman diindeks pada resolusi rendah, dideduplikasi, lalu OCR resolusi tinggi
@@ -25,7 +25,7 @@ from pathlib import Path
 from django.conf import settings
 from django.db.models import Q
 
-from apps.core.exceptions import UploadTechnicalError, UploadBusinessLimitError
+from apps.core.exceptions import UploadTechnicalError
 
 from apps.core.ocr import (
     configure_tesseract,
@@ -38,11 +38,6 @@ from apps.core.parsers import parse_drpp_pdf, parse_spm_pdf
 
 
 PARSER_VERSION = "drpp-batch-v4"
-MAX_DRPP = 2
-TOO_MANY_DRPP_MESSAGE = (
-    "Unggahan memuat lebih dari dua DRPP. Pisahkan dokumen menjadi beberapa "
-    "unggahan agar proses pemindaian tetap cepat."
-)
 
 PAGE_TYPES = (
     "DRPP_SUMMARY",
@@ -1167,40 +1162,8 @@ def resolve_spm_parent(drpps, page_index):
     satker = next((str(meta.get("satker_code") or "").strip() for meta in metas if meta.get("satker_code")), "")
     year = next((meta.get("tahun") for meta in metas if meta.get("tahun")), None)
     
-    if number:
-        sp2d = _exact_sp2d(number, satker, year)
-        if sp2d:
-            return _spm_from_sp2d(sp2d), sp2d
-            
-        query = SP2DRaw.objects.filter(nomor_spm_extracted__iexact=number)
-        if satker:
-            query = query.filter(satker_code=satker)
-        
-        if query.count() == 1:
-            existing = query.first()
-        else:
-            existing = None
-        if existing:
-            return {
-                "file_name": "DATABASE",
-                "status": "parsed_text",
-                "method": "transaction_database",
-                "confidence": 100,
-                "metadata": {
-                    "nomor_spm": existing.nomor_spm_extracted,
-                    "tanggal_spm": _normalize_date(existing.tgl_sp2d or existing.tanggal_selesai_sp2d),
-                    "jenis_spm": existing.jenis_spm,
-                    "kppn": "",
-                    "supplier": "",
-                    "bank": "",
-                    "rekening": "",
-                    "total_pembayaran": Decimal("0"),
-                    "tanggal_sp2d": None,
-                    "bulan_sp2d": existing.bulan_sp2d,
-                },
-                "sp2d_raw_id": existing.id,
-            }, existing
-
+    # Identitas berlabel pada halaman SPM lebih kuat daripada metadata DRPP,
+    # database fallback, dan nama arsip/member.
     for candidate in page_index:
         if candidate.get("document_type") == "SPM":
             spm = _load_page_cache(candidate, "spm-detail")
@@ -1220,19 +1183,6 @@ def resolve_spm_parent(drpps, page_index):
             if spm:
                 spm_meta = spm.get("metadata", {})
                 detected = str(spm_meta.get("nomor_spm") or "").strip().upper()
-                filename_number = _normalize_drpp(re.search(r"\bSPM.*?(\d{3,6})", candidate["file_name"], re.I).group(1)) if re.search(r"\bSPM.*?(\d{3,6})", candidate["file_name"], re.I) else ""
-                
-                if detected and filename_number and filename_number in candidate["file_name"] and detected != filename_number:
-                    filename_sp2d = _exact_sp2d(filename_number, satker, year)
-                    if filename_sp2d:
-                        return _spm_from_sp2d(filename_sp2d), filename_sp2d
-                    spm_meta["nomor_spm_ocr"] = detected
-                    spm_meta["nomor_spm"] = filename_number
-                    spm_meta["nomor_spm_final"] = filename_number
-                    spm_meta["nomor_spm_final_source"] = "filename_batch"
-                    spm_meta["nomor_spm_reason"] = "Suffix batch DRPP mengikuti nama PDF SPM saat nomor dasar sama."
-                    detected = filename_number
-                
                 spm_meta["tanggal_spm"] = _normalize_date(spm_meta.get("tanggal_spm"))
                 spm_meta["cara_pembayaran"] = _determine_cara_pembayaran(spm_meta.get("jenis_spm"))
                 
@@ -1242,6 +1192,36 @@ def resolve_spm_parent(drpps, page_index):
                 
                 spm_meta["bulan_sp2d"] = None # explicitly clear if no SP2D found
                 return spm, None
+
+    if number:
+        sp2d = _exact_sp2d(number, satker, year)
+        if sp2d:
+            return _spm_from_sp2d(sp2d), sp2d
+
+        query = SP2DRaw.objects.filter(nomor_spm_extracted__iexact=number)
+        if satker:
+            query = query.filter(satker_code=satker)
+        existing = query.first() if query.count() == 1 else None
+        if existing:
+            return {
+                "file_name": "DATABASE",
+                "status": "parsed_text",
+                "method": "transaction_database",
+                "confidence": None,
+                "metadata": {
+                    "nomor_spm": existing.nomor_spm_extracted,
+                    "tanggal_spm": _normalize_date(existing.tgl_sp2d or existing.tanggal_selesai_sp2d),
+                    "jenis_spm": existing.jenis_spm,
+                    "kppn": "",
+                    "supplier": "",
+                    "bank": "",
+                    "rekening": "",
+                    "total_pembayaran": Decimal("0"),
+                    "tanggal_sp2d": None,
+                    "bulan_sp2d": existing.bulan_sp2d,
+                },
+                "sp2d_raw_id": existing.id,
+            }, existing
 
     return None, None
 
@@ -1297,7 +1277,7 @@ def build_transaction_items(drpp, spm=None):
                 **item,
                 "helper": f"{item.get('akun', '')}{no_kw}",
                 "akun": str(item.get("akun") or ""),
-                "bulan_sp2d": spm_meta.get("bulan_sp2d") or getattr(spm_meta.get("tanggal_sp2d") or spm_meta.get("tanggal_spm"), "month", ""),
+                "bulan_sp2d": spm_meta.get("bulan_sp2d") or getattr(spm_meta.get("tanggal_sp2d"), "month", ""),
                 "cara_pembayaran": "UP/TUP" if str(spm_meta.get("jenis_spm") or "").upper() in {"GU", "GUP", "TUP"} else ("LS" if str(spm_meta.get("jenis_spm") or "").upper().startswith("LS") else ""),
                 "nomor_spm": spm_meta.get("nomor_spm") or meta.get("nomor_spm") or "",
                 "tanggal_spm": spm_meta.get("tanggal_spm"),
@@ -1388,8 +1368,6 @@ def parse_drpp_upload_batch(file_path, ocr=True):
     temp_dir = next((item.get("_temp_dir") for item in manifest if item.get("_temp_dir")), "")
     try:
         filename_numbers = {item["drpp_hint"] for item in manifest if item.get("drpp_hint")}
-        if len(filename_numbers) > MAX_DRPP:
-            raise UploadBusinessLimitError(TOO_MANY_DRPP_MESSAGE)
 
         page_index = build_page_index(manifest)
         discover_embedded_drpp_pages(page_index, ocr=ocr)
@@ -1401,8 +1379,6 @@ def parse_drpp_upload_batch(file_path, ocr=True):
             for number in (page.get("drpp_detected"), page.get("drpp_hint"))
             if number
         }
-        if len(detected_numbers) > MAX_DRPP:
-            raise UploadBusinessLimitError(TOO_MANY_DRPP_MESSAGE)
         numbers = sorted(detected_numbers or filename_numbers)
         if not numbers:
             numbers = ["TANPA_DRPP"]

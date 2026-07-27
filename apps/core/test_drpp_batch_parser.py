@@ -7,9 +7,8 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 
-from apps.core.exceptions import UploadTechnicalError, UploadBusinessLimitError
+from apps.core.exceptions import UploadTechnicalError
 from apps.core.drpp_batch_parser import (
-    TOO_MANY_DRPP_MESSAGE,
     _classification,
     _extracted_from_pages,
     _match_coa,
@@ -102,15 +101,71 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
         self.assertEqual(extracted["status"], "parsed_ocr")
         self.assertEqual(extracted["combined_text"], "DRPP")
 
-    def test_three_drpp_is_rejected_before_page_index_or_ocr(self):
+    def test_three_drpp_are_processed_in_one_package(self):
         with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
             path = os.path.join(media_root, "three.zip")
             with zipfile.ZipFile(path, "w") as archive:
                 for number in ("00042", "00043", "00044"):
                     archive.writestr(f"DRPP {number}.pdf", b"not-a-real-pdf")
-            with patch("apps.core.drpp_batch_parser.build_page_index", side_effect=AssertionError("heavy page index must not run")):
-                with self.assertRaisesMessage(UploadBusinessLimitError, TOO_MANY_DRPP_MESSAGE):
-                    parse_drpp_upload_batch(path)
+            pages = [
+                {
+                    "file_name": f"DRPP {number}.pdf",
+                    "page_number": 1,
+                    "drpp_hint": number,
+                    "drpp_detected": number,
+                    "is_representative": True,
+                }
+                for number in ("00042", "00043", "00044")
+            ]
+
+            def parsed_drpp(number, _pages):
+                return {
+                    "metadata": {"nomor_drpp": number, "printed_total": Decimal("100")},
+                    "items": [{
+                        "akun": "521111",
+                        "no_bukti": f"{number}/KW/019937/2026",
+                        "jumlah": Decimal("100"),
+                    }],
+                }
+
+            with patch("apps.core.drpp_batch_parser.build_page_index", return_value=pages), patch(
+                "apps.core.drpp_batch_parser.discover_embedded_drpp_pages"
+            ), patch("apps.core.drpp_batch_parser.deduplicate_pages", return_value=pages), patch(
+                "apps.core.drpp_batch_parser.classify_candidate_pages"
+            ), patch("apps.core.drpp_batch_parser.parse_drpp_summary", side_effect=parsed_drpp), patch(
+                "apps.core.drpp_batch_parser.parse_drpp_coa", return_value=[]
+            ), patch("apps.core.drpp_batch_parser.parse_kw_support"):
+                parsed = parse_drpp_upload_batch(path, ocr=False)
+
+            self.assertEqual([group["no_drpp"] for group in parsed["drpp_groups"]], ["00042", "00043", "00044"])
+            self.assertEqual(len(parsed["kw_items"]), 3)
+
+    def test_labeled_spm_number_is_not_overwritten_by_member_filename(self):
+        from apps.core.drpp_batch_parser import resolve_spm_parent
+
+        page = {
+            "file_name": "batch/SPM NOMOR 00999T.pdf",
+            "page_number": 1,
+            "document_type": "SPM",
+            "text": "SURAT PERINTAH MEMBAYAR Nomor SPM 00999A",
+            "_path": "unused.pdf",
+        }
+        parsed_spm = {
+            "metadata": {
+                "nomor_spm": "00999A",
+                "tanggal_spm": date(2026, 6, 1),
+                "jenis_spm": "LS",
+            }
+        }
+        with patch("apps.core.drpp_batch_parser._load_page_cache", return_value=None), patch(
+            "apps.core.drpp_batch_parser._save_page_cache"
+        ), patch("apps.core.drpp_batch_parser.parse_spm_pdf", return_value=parsed_spm), patch(
+            "apps.core.drpp_batch_parser._exact_sp2d", return_value=None
+        ):
+            spm, sp2d = resolve_spm_parent([], [page])
+
+        self.assertIsNone(sp2d)
+        self.assertEqual(spm["metadata"]["nomor_spm"], "00999A")
 
     def test_page_ocr_is_only_called_for_selected_representatives(self):
         pages = [

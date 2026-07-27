@@ -125,14 +125,6 @@ def prepare_drpp_rows(zip_path, ocr=False, satker_code="", tahun=None):
         parsed = parse_paket_spm_zip(zip_path, ocr=ocr, drpp_kuitansi_mode=True)
         if not parsed["ok"]:
             return {"ok": False, "warnings": parsed["warnings"], "rows": [], "file_hash": file_hash}
-        if len(parsed.get("drpps", [])) > 2:
-            return {
-                "ok": False,
-                "warnings": ["Maksimal dua nomor DRPP unik per unggahan."],
-                "rows": [],
-                "file_hash": file_hash,
-            }
-
         rows = []
         for drpp_index, drpp in enumerate(parsed.get("drpps", []), start=1):
             metadata = dict(drpp.get("metadata", {}))

@@ -1159,11 +1159,19 @@ def build_package_decision(parsed, original_filename="", forced_sp2d=None, curre
 
 
 def transaction_identity(row):
-    return (
+    base = (
         normalize_key(clean_optional(row.akun)),
         normalize_key(clean_optional(row.no_kuitansi)),
         normalize_key(clean_optional(row.no_drpp)),
         normalize_key(clean_optional(row.pembebanan)),
+    )
+    if base[1]:
+        return base
+    return (
+        *base,
+        normalize_key(clean_optional(row.deskripsi)),
+        money_value(row.nilai_bruto),
+        money_value(row.nilai_netto),
     )
 
 
@@ -1409,8 +1417,7 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
             akun_rows = [{"akun": akun, "jumlah": Decimal("0"), "uraian": spm_meta.get("uraian") or ""} for akun in spm_meta.get("akun_pengeluaran", [])]
 
         items = []
-        for row in akun_rows:
-            is_spm_detail_row = row.get("source_priority") == "DETAIL_SPP_SPM_SP2D"
+        for row_index, row in enumerate(akun_rows, start=1):
             bruto_val = (
                 money_value(row.get("nilai"))
                 or money_value(row.get("bruto"))
@@ -1422,11 +1429,11 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
                 "akun": row.get("akun", ""),
                 "bruto": bruto_val,
                 "jumlah": netto_val,
-                "no_bukti": meta.get("nomor_spm", "") if is_spm_detail_row else (row.get("no_bukti") or meta.get("nomor_spm", "")),
+                "no_bukti": row.get("no_bukti") or "",
                 "keperluan": row.get("keperluan") or row.get("uraian") or spm_meta.get("uraian") or "",
                 "pembebanan": row.get("pembebanan") or (spm_meta.get("pembebanan_list") or [""])[0],
                 "fp": row.get("fp") or spm_meta.get("fp") or "",
-                "source_row_id": row.get("source_row_id") or row.get("no_bukti") or "",
+                "source_row_id": row.get("source_row_id") or row.get("no_bukti") or f"spm-row:{row_index}",
             })
 
     if not items:
@@ -1434,22 +1441,36 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
 
     # Group items by exact identity
     grouped_items = {}
-    for item in items:
+    for item_index, item in enumerate(items, start=1):
         akun = str(item.get("akun", ""))[:32]
-        # Jika item berasal dari KW (punya no_bukti), pakai itu. Jika tidak, pakai nomor SPM.
-        no_kuitansi = short_document_number(item.get("no_bukti", "") or meta.get("nomor_spm", ""))[:100]
+        # Tanpa kuitansi nyata, canonical D_K adalah string kosong. Nomor SPM
+        # hanya boleh dipakai oleh mapping export legacy, bukan disimpan kembali.
+        no_kuitansi = short_document_number(item.get("no_bukti", ""))[:100]
         no_drpp = clean_optional(item.get("no_drpp") or meta.get("nomor_drpp"))[:100]
         pembebanan = str(item.get("pembebanan", ""))
-
-        identity_key = (normalize_key(akun), normalize_key(no_kuitansi), normalize_key(no_drpp), normalize_key(pembebanan))
-        row_identity = normalize_key(item.get("source_row_id", ""))
-        key = (*identity_key, row_identity)
-        if identity_key in existing_keys:
-            continue
 
         bruto_value = item_bruto_value(item)
         netto_value = item_netto_value(item, bruto_value)
         deduction_value = item_deduction_value(item)
+        identity_key = (
+            normalize_key(akun),
+            normalize_key(no_kuitansi),
+            normalize_key(no_drpp),
+            normalize_key(pembebanan),
+        )
+        if not no_kuitansi:
+            identity_key = (
+                *identity_key,
+                normalize_key(clean_optional(item.get("keperluan"))),
+                bruto_value,
+                netto_value,
+            )
+        row_identity = normalize_key(
+            item.get("source_row_id") or (f"row:{item_index}" if not no_kuitansi else "")
+        )
+        key = (*identity_key, row_identity)
+        if identity_key in existing_keys:
+            continue
 
         if key not in grouped_items:
             grouped_items[key] = {
@@ -1463,6 +1484,7 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
                 "keperluan": item.get("keperluan", ""),
                 "fp": str(item.get("fp", "")),
                 "pph21": Decimal("0"),
+                "identity_key": identity_key,
             }
 
         grouped_items[key]["bruto"] += bruto_value
@@ -1494,7 +1516,19 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
 
     rows = []
     for key, g_item in grouped_items.items():
-        identity_key = key[:4]
+        identity_key = (
+            normalize_key(g_item["akun"]),
+            normalize_key(g_item["no_kuitansi"]),
+            normalize_key(g_item["no_drpp"]),
+            normalize_key(g_item["pembebanan"]),
+        )
+        if not g_item["no_kuitansi"]:
+            identity_key = (
+                *identity_key,
+                normalize_key(clean_optional(g_item["keperluan"][:1000])),
+                g_item["bruto"],
+                g_item["netto"],
+            )
         if identity_key in existing_keys:
             continue
 
