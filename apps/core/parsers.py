@@ -1336,7 +1336,10 @@ def parse_spm_pdf(file_path, ocr=False, extracted=None, parse_details=True):
     # TSV tabel biasanya lebih stabil daripada OCR paragraf, terutama pada scan
     # yang diputar. Gunakan field terstruktur sebagai fallback metadata SP2D.
     if position_items:
-        if not text_sp2d:
+        consensus_sp2d = consensus_sp2d_number(position_items)
+        if consensus_sp2d:
+            text_sp2d = consensus_sp2d
+        elif not text_sp2d:
             text_sp2d = next(
                 (normalize_text(item.get("nomor_sp2d")) for item in position_items if re.fullmatch(r"2\d{14}", normalize_text(item.get("nomor_sp2d")))),
                 "",
@@ -2485,6 +2488,59 @@ def best_amount_from_text(value, allow_bare=True):
     return repeated[0] if repeated else parsed[-1]
 
 
+def reconcile_single_missing_detail_amount(rows, expected_total):
+    """Isi satu nominal tabel yang hilang hanya dari persamaan total dokumen.
+
+    Rekonsiliasi sengaja tidak dilakukan bila lebih dari satu baris kehilangan
+    nominal, total tidak tersedia, atau sisa tidak positif. Dengan begitu OCR
+    ambigu tetap REVIEW dan tidak berubah menjadi angka tebakan.
+    """
+    output = [dict(row) for row in rows]
+    expected = parse_decimal(expected_total)
+    missing = [row for row in output if row.get("amount_missing")]
+    if not expected or len(missing) != 1:
+        return output
+    known_total = sum(
+        (parse_decimal(row.get("jumlah")) for row in output if not row.get("amount_missing")),
+        Decimal("0"),
+    )
+    remainder = expected - known_total
+    if remainder <= 0:
+        return output
+
+    row = missing[0]
+    row.update({
+        "jumlah": remainder,
+        "bruto": remainder,
+        "netto": remainder,
+        "amount_missing": False,
+        "amount_reconciled_from_total": True,
+    })
+    row.setdefault("field_provenance", {})["bruto"] = {
+        "page": row.get("source_page"),
+        "bbox": row.get("source_bbox") or [],
+        "method": "document_total_balance",
+        "confidence": None,
+        "inputs": ["expected_document_total", "other_structured_detail_rows"],
+    }
+    return output
+
+
+def consensus_sp2d_number(items):
+    """Ambil nomor SP2D modal unik dari baris tabel terstruktur."""
+    counts = {}
+    for item in items or []:
+        value = normalize_text(item.get("nomor_sp2d"))
+        if not re.fullmatch(r"2\d{14}", value):
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    if not counts:
+        return ""
+    highest = max(counts.values())
+    winners = [value for value, count in counts.items() if count == highest]
+    return winners[0] if highest >= 2 and len(winners) == 1 else ""
+
+
 def extract_lampiran_descriptions(best_by_page):
     desc_by_item = {}
     item_desc_re = re.compile(r"\b(\d{3}\.\d{3}\.[0-9A-Z]{2}\.\d{3,6})\s*[-–]\s*([^|]{3,180})", re.IGNORECASE)
@@ -2685,10 +2741,11 @@ def parse_detail_sp2d_rows_by_grid(image, pytesseract, page_number, rotation, so
         amount_counts = {candidate: amounts.count(candidate) for candidate in amounts}
         repeated_amounts = [candidate for candidate, count in amount_counts.items() if count > 1]
         amount = repeated_amounts[0] if repeated_amounts else (max(amounts) if amounts else Decimal("0"))
+        amount_missing = not bool(amount)
         akun = akun_match.group(1)
         item_code = ".".join(part.upper() for part in item_match.groups())
         pembebanan = pembebanan_from_full_coa(f"{coa_text}.{item_code}", akun)
-        if not (amount and pembebanan and is_valid_pembebanan(pembebanan, amount)):
+        if not (pembebanan and is_valid_pembebanan(pembebanan, None if amount_missing else amount)):
             continue
 
         # Jumlah garis tepi kiri berbeda antar hasil scan/driver, sehingga
@@ -2723,6 +2780,7 @@ def parse_detail_sp2d_rows_by_grid(image, pytesseract, page_number, rotation, so
             "nomor_sp2d": no_sp2d_match.group(1) if no_sp2d_match else "",
             "tanggal_sp2d": parse_date(tanggal_sp2d_match.group(1)) if tanggal_sp2d_match else None,
             "grid_row": row_index,
+            "amount_missing": amount_missing,
         })
     return dedupe_detail_items(rows), {"grid_rows": len(row_bands), "grid_columns": len(column_bands)}
 
@@ -2915,28 +2973,41 @@ def parse_detail_sp2d_rows_from_tsv_lines(file_path, page_number, rotation, line
 
         amount_words = [
             word for word in row.get("words", [])
-            if int(word.get("left", 0)) >= amount_x_min and re.search(r"\d{1,3}(?:[.,]\d{3})+", str(word.get("text", "")))
+            if int(word.get("left", 0)) >= amount_x_min
         ]
-        amounts = []
-        if amount_words:
-            for word in amount_words:
-                amount = best_amount_from_text(str(word.get("text", "")))
-                if not amount:
-                    image = image or render_ocr_page_image(file_path, page_number, rotation)
-                    amount = ocr_amount_word_crop(image, word)
-                if amount:
-                    amounts.append(amount)
-        if not amounts:
-            amounts = [best_amount_from_text(row.get("text") or "", allow_bare=False)]
-        amounts = [amount for amount in amounts if amount > 0]
-        if not amounts:
-            continue
+        formatted_amounts = []
+        bare_amounts = []
+        for word in amount_words:
+            word_text = normalize_text(word.get("text"))
+            is_formatted = bool(re.search(r"\d{1,3}(?:[.,]\d{3})+", word_text))
+            is_bare = bool(re.fullmatch(r"\d{1,12}", word_text))
+            if not (is_formatted or is_bare):
+                continue
+            amount = best_amount_from_text(word_text)
+            if is_formatted:
+                image = image or render_ocr_page_image(file_path, page_number, rotation)
+                crop_amount = ocr_amount_word_crop(image, word) if image is not None else Decimal("0")
+                if crop_amount:
+                    amount = crop_amount
+            if amount:
+                (formatted_amounts if is_formatted else bare_amounts).append(amount)
+
+        # Nominal kecil tanpa pemisah ribuan hanya aman bila terbaca sama pada
+        # sedikitnya dua kolom nilai. Angka tunggal lain dapat berupa penanda
+        # status/urutan tabel dan tidak boleh dianggap nominal.
+        counts = {
+            amount: formatted_amounts.count(amount) + bare_amounts.count(amount)
+            for amount in formatted_amounts + bare_amounts
+        }
+        repeated = [amount for amount, count in counts.items() if count > 1]
+        amounts = repeated or formatted_amounts
+        amount_missing = not bool(amounts)
 
         akun = coa_match.group(2)
         item_code = ".".join(part.upper() for part in item_match.groups())
         pembebanan = pembebanan_from_full_coa(row_text, akun)
-        amount = amounts[0]
-        if not (pembebanan and is_valid_pembebanan(pembebanan, amount)):
+        amount = max(amounts) if amounts else Decimal("0")
+        if not (pembebanan and is_valid_pembebanan(pembebanan, None if amount_missing else amount)):
             continue
         description = desc_by_item.get(item_code, "")
         if row_words:
@@ -2970,9 +3041,15 @@ def parse_detail_sp2d_rows_from_tsv_lines(file_path, page_number, rotation, line
             "source_row_id": item_code,
             "ocr_rotation": rotation,
             "source_bbox": source_bbox,
+            "amount_missing": amount_missing,
             "field_provenance": {
                 "akun": {"page": page_number, "bbox": source_bbox, "method": "tsv", "confidence": row.get("confidence", 0)},
-                "bruto": {"page": page_number, "bbox": source_bbox, "method": "tsv", "confidence": row.get("confidence", 0)},
+                "bruto": {
+                    "page": page_number,
+                    "bbox": source_bbox,
+                    "method": "missing_ocr" if amount_missing else "tsv",
+                    "confidence": None if amount_missing else row.get("confidence", 0),
+                },
                 "pembebanan": {"page": page_number, "bbox": source_bbox, "method": "tsv", "confidence": row.get("confidence", 0)},
             },
             "source_priority": "DETAIL_SPP_SPM_SP2D",
@@ -3098,6 +3175,8 @@ def parse_position_detail_items(file_path, page_details, default_description="",
                             {},
                         )
                     rows = structured_rows_by_rotation[rotation_key]
+                if rows and expected_total:
+                    rows = reconcile_single_missing_detail_amount(rows, expected_total)
                 variant_rows_cache[cache_key] = rows
             return variant_rows_cache[cache_key]
 

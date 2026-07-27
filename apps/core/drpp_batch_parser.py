@@ -37,7 +37,7 @@ from apps.core.ocr import (
 from apps.core.parsers import parse_drpp_pdf, parse_spm_pdf
 
 
-PARSER_VERSION = "drpp-batch-v4"
+PARSER_VERSION = "drpp-batch-v5"
 
 PAGE_TYPES = (
     "DRPP_SUMMARY",
@@ -273,6 +273,9 @@ def build_page_index(manifest, dpi=48):
                     page["native_text"] = _native_page_text(file_item["_path"], page_number)
                     image = _render_page(page, dpi)
                 page["page_hash"] = _difference_hash(image)
+                page["page_content_hash"] = (
+                    hashlib.sha256(image.tobytes()).hexdigest() if image is not None else ""
+                )
                 page["_image"] = image
                 pages.append(page)
         finally:
@@ -287,20 +290,19 @@ def _hash_distance(left, right):
     return (int(left, 16) ^ int(right, 16)).bit_count()
 
 
-def deduplicate_pages(page_index, max_distance=3):
+def deduplicate_pages(page_index):
     representatives = []
     for page in page_index:
-        # DO NOT protect DRPP_SUMMARY from deduplication across files! 
-        # But we do protect SPM.
-        protected = page.get("force_probe") or (
-            page.get("type_hint") in {"SPM"} and page.get("page_number", 0) <= 4
-        )
-        max_distance = 0 if protected else 10
+        # dHash is only a visual-similarity hint. Financial forms with different
+        # rows can have a tiny dHash distance, so deduplication requires exact
+        # rendered content (or exact legacy page_hash in synthetic callers).
+        exact_hash = page.get("page_content_hash") or page.get("page_hash")
         duplicate = next(
             (
                 candidate
                 for candidate in representatives
-                if _hash_distance(page.get("page_hash"), candidate.get("page_hash")) <= max_distance
+                if exact_hash
+                and exact_hash == (candidate.get("page_content_hash") or candidate.get("page_hash"))
                 and candidate.get("type_hint") == page.get("type_hint")
             ),
             None,
@@ -396,7 +398,11 @@ def _candidate_for_probe(page):
         return True
     if page.get("native_text", "").strip():
         return True
-    if page.get("type_hint") in {"DRPP_SUMMARY", "SPM"}:
+    if page.get("type_hint") == "SPM":
+        return page["page_number"] <= int(
+            getattr(settings, "DRPP_BATCH_SPM_IDENTITY_SCAN_PAGES", 12)
+        )
+    if page.get("type_hint") == "DRPP_SUMMARY":
         return page["page_number"] <= 4
     return page.get("primary_for_drpp", True) and page["page_number"] <= 2
 
@@ -1168,10 +1174,14 @@ def resolve_spm_parent(drpps, page_index):
         if candidate.get("document_type") == "SPM":
             spm = _load_page_cache(candidate, "spm-detail")
             if not spm:
-                extracted = {
-                    "pages": [candidate["text"]], 
-                    "page_details": [{"text": candidate["text"], "page_number": candidate["page_number"]}]
-                }
+                identity_pages = [
+                    page
+                    for page in page_index
+                    if page.get("is_representative", True)
+                    and page.get("file_name") == candidate.get("file_name")
+                    and page.get("document_type") in {"SPM", "SPP"}
+                ]
+                extracted = _extracted_from_pages(identity_pages or [candidate])
                 spm = parse_spm_pdf(
                     file_path=candidate.get("_path") or candidate["file_name"], 
                     ocr=False, 
@@ -1355,9 +1365,12 @@ def _public_page(page):
         "confidence": page.get("confidence", 0),
         "evidence": page.get("evidence", []),
         "page_hash": page.get("page_hash", ""),
+        "page_content_hash": page.get("page_content_hash", ""),
         "duplicate_of": page.get("duplicate_of"),
         "ocr_called": page.get("ocr_called", False),
         "cache_hit": page.get("cache_hit", False),
+        "engine": page.get("engine", "native_pdf" if page.get("native_text") else ""),
+        "extraction_method": "native_text" if page.get("native_text") else ("page_ocr" if page.get("ocr_called") else "page_probe"),
     }
 
 

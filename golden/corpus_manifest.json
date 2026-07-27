@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "corpus_policy": {
+    "local_acceptance": "required",
+    "ordinary_ci": "explicit_skip_golden_ocr_when_corpus_absent",
+    "pii_in_reports": "redacted"
+  },
+  "fixtures": [
+    {
+      "id": "package-full-primary",
+      "filename": "SPM NOMOR 00166T NEW.zip",
+      "sha256": "ce98e80409285602a05cc31db4204ff613045ef48d1c90d2c0be5d75e4ce9348",
+      "pipeline": "drpp_batch",
+      "required": true,
+      "archive_entry_count": 35,
+      "expected_document_identity": {
+        "spp": "00166T",
+        "spm": "00166A",
+        "sp2d": null
+      },
+      "expected_drpp": ["00042", "00043", "00044", "00045", "00046", "00047"],
+      "expected_transaction_count": 29,
+      "expected_total": "52249851",
+      "annotation_status": "pending_reviewer_approval"
+    },
+    {
+      "id": "spm-clear-document-a",
+      "filename": "SPM NOMOR 00140T.pdf",
+      "sha256": "41bd05862ee5ede73f8aec8b995acb74a0a5ccf8068b82b8900b4dc3d55fc624",
+      "pipeline": "spm",
+      "required": true,
+      "annotation_status": "pending_reviewer_approval"
+    },
+    {
+      "id": "spm-clear-document-b",
+      "filename": "SPM NOMOR 00182A.pdf",
+      "sha256": "c3e2ef33780107eee59d8286ce59f05a46585ed9ac02a5f684f2b3eed881efb9",
+      "pipeline": "spm",
+      "required": true,
+      "annotation_status": "pending_reviewer_approval"
+    },
+    {
+      "id": "spm-canonical-pending",
+      "filename": "SPM NOMOR 00195A(1).pdf",
+      "sha256": null,
+      "pipeline": "spm",
+      "required": true,
+      "canonical_substitution_allowed": false,
+      "annotation_status": "blocked_missing_canonical_fixture"
+    }
+  ]
+}

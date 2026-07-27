@@ -1388,6 +1388,10 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
         return rows
 
     items = parsed.get("kw_items") or []
+    # Detail tabel pada dokumen SPM/LS bukan kuitansi. Kolom no_bukti di sana
+    # adalah identitas baris/COA dan tidak boleh dimaterialisasi sebagai
+    # No. Kuitansi D_K.
+    spm_only_without_receipt = not bool(items) and bool(parsed.get("spm"))
 
     if not items and parsed.get("spm"):
         detail_source = (spm_meta.get("detail_parse_summary") or {}).get("source")
@@ -1445,7 +1449,7 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
         akun = str(item.get("akun", ""))[:32]
         # Tanpa kuitansi nyata, canonical D_K adalah string kosong. Nomor SPM
         # hanya boleh dipakai oleh mapping export legacy, bukan disimpan kembali.
-        no_kuitansi = short_document_number(item.get("no_bukti", ""))[:100]
+        no_kuitansi = "" if spm_only_without_receipt else short_document_number(item.get("no_bukti", ""))[:100]
         no_drpp = clean_optional(item.get("no_drpp") or meta.get("nomor_drpp"))[:100]
         pembebanan = str(item.get("pembebanan", ""))
 

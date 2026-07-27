@@ -5,6 +5,6 @@ class UploadTechnicalError(Exception):
 
 
 class UploadBusinessLimitError(Exception):
-    """Raised for business constraints that represent a hard limit (e.g., >2 DRPP).
+    """Raised for business constraints that represent a hard limit.
     The upload should be rejected, but the source file may be kept until expiration."""
     pass

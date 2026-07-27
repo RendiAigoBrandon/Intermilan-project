@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageOps, ImageFilter
 
-OCR_CACHE_VERSION = "detail-tsv-v5-document-graph-v2"
+OCR_CACHE_VERSION = "detail-tsv-v6-document-graph-v2"
 
 
 # ─── Klasifikasi halaman dokumen ─────────────────────────────────────────────
@@ -418,7 +418,12 @@ def score_text(text, document_type=None, confidence=0.0):
     number_score = min(len(__import__("re").findall(r"\b\d{3,}[A-Z]?\b", upper)), 10) * 1.5
     money_score = min(len(__import__("re").findall(r"\b\d{1,3}(?:[.,]\d{3})+\b", upper)), 10) * 2
     length_score = min(len(normalized) / 120, 20)
-    return round(length_score + keyword_score + number_score + money_score + (confidence / 10), 2)
+    structure_score = 40 if classify_page_types(upper) != ["UNKNOWN"] else 0
+    return round(
+        length_score + keyword_score + number_score + money_score
+        + structure_score + (confidence / 10),
+        2,
+    )
 
 
 def has_usable_text(result, document_type=None):
@@ -667,7 +672,10 @@ def tesseract_page_text_best_rotation(pytesseract, image, document_type=None):
     best = ("", 0.0, [], [], 0, 0.0)
     warnings = []
     tried_rotations = []
-    for rotation in (0, 90, 180, 270):
+    # Untuk halaman landscape, 90 dan 270 harus dibandingkan. OCR terbalik
+    # sering menghasilkan teks panjang/angka yang tampak kuat dan sebelumnya
+    # menghentikan pencarian sebelum orientasi lawannya dicoba.
+    for rotation in (0, 90, 270, 180):
         rotated = image.rotate(rotation, expand=True) if rotation else image
         text, confidence, page_warnings, tsv_words = tesseract_page_text(pytesseract, rotated)
         tried_rotations.append(rotation)
@@ -675,8 +683,8 @@ def tesseract_page_text_best_rotation(pytesseract, image, document_type=None):
         score = score_text(text, document_type=document_type, confidence=confidence)
         if score > best[5]:
             best = (text, confidence, page_warnings, tsv_words, rotation, score)
-        if rotation_score_is_strong(text, confidence, score):
-            best = (text, confidence, page_warnings, tsv_words, rotation, score)
+        can_stop = rotation in {0, 270, 180}
+        if can_stop and rotation_score_is_strong(text, confidence, score):
             break
     text, confidence, page_warnings, tsv_words, rotation, score = best
     for word in tsv_words:

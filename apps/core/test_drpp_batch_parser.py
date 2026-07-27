@@ -24,6 +24,12 @@ from apps.core.parsers import clean_description
 
 
 class DRPPBatchParserUnitTests(SimpleTestCase):
+    def test_spm_identity_probe_reaches_spp_pages_but_stays_bounded(self):
+        from apps.core.drpp_batch_parser import _candidate_for_probe
+
+        self.assertTrue(_candidate_for_probe({"type_hint": "SPM", "page_number": 8}))
+        self.assertFalse(_candidate_for_probe({"type_hint": "SPM", "page_number": 13}))
+
     def test_spm_kw_bundle_probes_embedded_drpp_prefix(self):
         file_name = "SPM NOMOR 00186A KW 00289.pdf"
         pages = [
@@ -149,6 +155,13 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
             "document_type": "SPM",
             "text": "SURAT PERINTAH MEMBAYAR Nomor SPM 00999A",
             "_path": "unused.pdf",
+            "is_representative": True,
+        }
+        spp_page = {
+            **page,
+            "page_number": 2,
+            "document_type": "SPP",
+            "text": "SURAT PERMINTAAN PEMBAYARAN Nomor SPP 00999T",
         }
         parsed_spm = {
             "metadata": {
@@ -157,12 +170,17 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
                 "jenis_spm": "LS",
             }
         }
+        def parse_spm_with_valid_payload(*args, **kwargs):
+            self.assertIn(kwargs["extracted"]["status"], {"parsed_text", "parsed_ocr"})
+            self.assertEqual(len(kwargs["extracted"]["page_details"]), 2)
+            return parsed_spm
+
         with patch("apps.core.drpp_batch_parser._load_page_cache", return_value=None), patch(
             "apps.core.drpp_batch_parser._save_page_cache"
-        ), patch("apps.core.drpp_batch_parser.parse_spm_pdf", return_value=parsed_spm), patch(
+        ), patch("apps.core.drpp_batch_parser.parse_spm_pdf", side_effect=parse_spm_with_valid_payload), patch(
             "apps.core.drpp_batch_parser._exact_sp2d", return_value=None
         ):
-            spm, sp2d = resolve_spm_parent([], [page])
+            spm, sp2d = resolve_spm_parent([], [page, spp_page])
 
         self.assertIsNone(sp2d)
         self.assertEqual(spm["metadata"]["nomor_spm"], "00999A")
@@ -330,6 +348,16 @@ class DRPPBatchIntegrationTests(TestCase):
         self.assertEqual(len(kept_spms), 1)
         self.assertEqual(len(kept_drpps), 1)
         self.assertEqual(len(kept_kws), 2)
+
+    def test_visually_similar_financial_pages_are_not_deduplicated(self):
+        from apps.core.drpp_batch_parser import deduplicate_pages
+
+        pages = [
+            {"file_name": "DRPP A.pdf", "page_number": 1, "page_hash": "f0", "type_hint": "DRPP_SUMMARY"},
+            {"file_name": "DRPP B.pdf", "page_number": 1, "page_hash": "f1", "type_hint": "DRPP_SUMMARY"},
+        ]
+        result = deduplicate_pages(pages)
+        self.assertTrue(all(page["is_representative"] for page in result))
         
     def test_C_jenis_spm_gup_cara_pembayaran_uptup(self):
         """Test C: Jenis SPM GUP menghasilkan cara_pembayaran UP/TUP."""

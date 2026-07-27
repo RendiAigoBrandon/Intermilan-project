@@ -2080,7 +2080,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(resolved, configured_path)
         self.assertEqual(backend.tesseract_cmd, configured_path)
 
-    def test_ls_rows_prefer_validated_detail_items_over_header_account_fallback(self):
+    def test_ls_rows_prefer_validated_detail_items_without_fabricating_receipt(self):
         parsed = self.parsed_package()
         parsed["spm"]["metadata"].update({
             "jenis_spm": "LS Non Kontraktual",
@@ -2119,7 +2119,7 @@ class PaketSPMRegressionTests(TestCase):
         rows = build_transaction_rows_from_package(parsed, paket, self.user, save=False, skip_existing=False)
 
         self.assertEqual([row.akun for row in rows], ["512211", "512212"])
-        self.assertEqual([row.no_kuitansi for row in rows], ["00074A", "00074A"])
+        self.assertEqual([row.no_kuitansi for row in rows], ["", ""])
         self.assertEqual([row.nilai_bruto for row in rows], [Decimal("30000"), Decimal("53000")])
         self.assertEqual(sum((row.nilai_bruto for row in rows), Decimal("0")), Decimal("83000"))
 

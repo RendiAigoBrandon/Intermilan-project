@@ -80,7 +80,7 @@ def paket_spm_list(request):
         try:
             parsed = parse_drpp_upload_batch(file_path, ocr=use_ocr)
         except UploadBusinessLimitError as exc:
-            # For business limits (like >2 DRPP), reject and clean up the uploaded file as well
+            # Untuk pelanggaran batas bisnis, tolak dan bersihkan file upload.
             cleanup_paket_files(file_path)
             messages.error(request, str(exc))
             return redirect("paket_spm:list")
