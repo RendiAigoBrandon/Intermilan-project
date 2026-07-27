@@ -3856,60 +3856,65 @@ def safe_extract_zip(zip_path):
     temp_dir = tempfile.mkdtemp(prefix="intermilan_paket_")
     extracted = []
     seen_sha = {}
-    with zipfile.ZipFile(zip_path) as archive:
-        members = [member for member in archive.infolist() if not member.is_dir()]
-        if len(members) > settings.MAX_ZIP_FILES:
-            raise ValueError(f"Jumlah file ZIP melebihi batas {settings.MAX_ZIP_FILES} file.")
-        total_uncompressed = sum(member.file_size for member in members)
-        max_uncompressed = settings.MAX_ZIP_TOTAL_UNCOMPRESSED_MB * 1024 * 1024
-        if total_uncompressed > max_uncompressed:
-            raise ValueError(f"Total ukuran ekstraksi ZIP melebihi batas {settings.MAX_ZIP_TOTAL_UNCOMPRESSED_MB} MB.")
-        for member in archive.infolist():
-            name = member.filename
-            if member.is_dir():
-                continue
-            if name.lower().endswith(".zip"):
-                raise ValueError(f"Nested ZIP tidak didukung: {name}")
-            target = Path(temp_dir) / name
-            resolved_target = target.resolve()
-            if not str(resolved_target).startswith(str(Path(temp_dir).resolve())):
-                raise ValueError(f"ZIP tidak aman: {name}")
-            if not name.lower().endswith(".pdf"):
+    try:
+        archive = zipfile.ZipFile(zip_path)
+        with archive:
+            members = [member for member in archive.infolist() if not member.is_dir()]
+            if len(members) > settings.MAX_ZIP_FILES:
+                raise ValueError(f"Jumlah file ZIP melebihi batas {settings.MAX_ZIP_FILES} file.")
+            total_uncompressed = sum(member.file_size for member in members)
+            max_uncompressed = settings.MAX_ZIP_TOTAL_UNCOMPRESSED_MB * 1024 * 1024
+            if total_uncompressed > max_uncompressed:
+                raise ValueError(f"Total ukuran ekstraksi ZIP melebihi batas {settings.MAX_ZIP_TOTAL_UNCOMPRESSED_MB} MB.")
+            for member in archive.infolist():
+                name = member.filename
+                if member.is_dir():
+                    continue
+                if name.lower().endswith(".zip"):
+                    raise ValueError(f"Nested ZIP tidak didukung: {name}")
+                target = Path(temp_dir) / name
+                resolved_target = target.resolve()
+                if not str(resolved_target).startswith(str(Path(temp_dir).resolve())):
+                    raise ValueError(f"ZIP tidak aman: {name}")
+                if not name.lower().endswith(".pdf"):
+                    extracted.append({
+                        "file_name": os.path.basename(name),
+                        "relative_path": name,
+                        "path": "",
+                        "size": member.file_size,
+                        "sha256": "",
+                        "type": "SKIPPED",
+                        "status": "skipped",
+                        "skip_reason": "non_pdf",
+                    })
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256()
+                with archive.open(member) as src, target.open("wb") as dst:
+                    while True:
+                        chunk = src.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        dst.write(chunk)
+                sha256 = digest.hexdigest()
+                duplicate_of = seen_sha.get(sha256, "")
+                if not duplicate_of:
+                    seen_sha[sha256] = name
                 extracted.append({
                     "file_name": os.path.basename(name),
                     "relative_path": name,
-                    "path": "",
+                    "path": str(target),
                     "size": member.file_size,
-                    "sha256": "",
-                    "type": "SKIPPED",
-                    "status": "skipped",
-                    "skip_reason": "non_pdf",
+                    "sha256": sha256,
+                    "type": "",
+                    "status": "duplicate" if duplicate_of else "extracted",
+                    "skip_reason": "",
+                    "duplicate_of": duplicate_of,
                 })
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256()
-            with archive.open(member) as src, target.open("wb") as dst:
-                while True:
-                    chunk = src.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    digest.update(chunk)
-                    dst.write(chunk)
-            sha256 = digest.hexdigest()
-            duplicate_of = seen_sha.get(sha256, "")
-            if not duplicate_of:
-                seen_sha[sha256] = name
-            extracted.append({
-                "file_name": os.path.basename(name),
-                "relative_path": name,
-                "path": str(target),
-                "size": member.file_size,
-                "sha256": sha256,
-                "type": "",
-                "status": "duplicate" if duplicate_of else "extracted",
-                "skip_reason": "",
-                "duplicate_of": duplicate_of,
-            })
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     return temp_dir, extracted
 
 
@@ -3958,7 +3963,12 @@ def parse_paket_spm_zip(zip_path, ocr=False, drpp_kuitansi_mode=False):
             drpp_number = parsed.get("metadata", {}).get("nomor_drpp", "")
             drpp_items = []
             for row in parsed.get("items", []):
-                row = {**row, "no_drpp": drpp_number, "source_file": item["file_name"]}
+                row = {
+                    **row,
+                    "no_drpp": drpp_number,
+                    "source_file": item["file_name"],
+                    "source_member_name": item["relative_path"],
+                }
                 drpp_items.append(row)
             kw_by_drpp.setdefault(drpp_number or f"DRPP-{len(drpp_list)}", []).extend(drpp_items)
             kw_items.extend(drpp_items)
@@ -3974,7 +3984,12 @@ def parse_paket_spm_zip(zip_path, ocr=False, drpp_kuitansi_mode=False):
             new_items = []
             for row in parsed.get("items", []):
                 row_key = normalized_bukti_key(row.get("no_bukti", ""))
-                row = {**row, "no_drpp": drpp_number, "source_file": item["file_name"]}
+                row = {
+                    **row,
+                    "no_drpp": drpp_number,
+                    "source_file": item["file_name"],
+                    "source_member_name": item["relative_path"],
+                }
                 if row_key in existing_keys:
                     for existing in kw_items:
                         if normalized_bukti_key(existing.get("no_bukti", "")) == row_key:
@@ -3982,6 +3997,7 @@ def parse_paket_spm_zip(zip_path, ocr=False, drpp_kuitansi_mode=False):
                                 if row.get(field) not in (None, "", Decimal("0")):
                                     existing[field] = row[field]
                             existing["source_file_detail"] = item["file_name"]
+                            existing["source_member_name_detail"] = item["relative_path"]
                             break
                 else:
                     new_items.append(row)

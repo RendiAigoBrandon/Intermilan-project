@@ -6,7 +6,7 @@
   <div class="card-head">
     <div>
       <h2>Preview DRPP & Kuitansi</h2>
-      <p class="muted">Upload belum masuk database sampai tombol Commit ditekan.</p>
+      <p class="muted">Tinjau sumber hasil parser. Baris ambigu akan disimpan untuk audit tetapi tidak dibuat menjadi D_K.</p>
     </div>
   </div>
   
@@ -30,7 +30,7 @@
         </thead>
         <tbody>
           {% for row in rows %}
-          <tr class="{% if row.status == 'REVIEW' or row.status == 'GAGAL' %}row-danger{% elif row.status == 'KONFLIK_TERKUNCI' or row.status == 'KONFLIK_DIARSIPKAN' %}row-warning{% endif %}">
+          <tr class="{% if 'REVIEW' in row.status or row.status == 'GAGAL' %}row-danger{% elif 'KONFLIK' in row.status %}row-warning{% endif %}">
             <td>
               <span class="badge {% if row.status == 'BARU' %}green{% elif row.status == 'UPDATE' %}blue{% elif row.status == 'SKIP' %}gray{% else %}red{% endif %}">
                 {{ row.status }}
@@ -38,17 +38,20 @@
               <small>{{ row.message }}</small>
             </td>
             <td>{{ row.nomor_drpp|default:"-" }}</td>
-            <td>{{ row.no_kuitansi }}<br><small>{{ row.source_file }}</small></td>
+            <td>
+              {% if row.status == 'REVIEW_IDENTITAS' %}<input type="text" name="kuitansi_{{ row.source_row_key }}" value="{{ row.no_kuitansi }}" placeholder="No. kuitansi" class="form-control form-control-sm">{% else %}{{ row.no_kuitansi|default:"-" }}{% endif %}
+              <br><small>{{ row.source_member_name }}</small>
+            </td>
             <td>{{ row.satker_code }} / {{ row.tahun }}</td>
             <td>
-              {% if row.status == 'REVIEW' and row.message == 'Akun kosong' %}
+              {% if row.status == 'REVIEW_AKUN' %}
               <input type="text" name="akun_{{ row.source_row_key }}" value="{{ row.akun }}" placeholder="Input Akun..." class="form-control form-control-sm">
               {% else %}
               {{ row.akun|default:"-" }}
               {% endif %}
             </td>
-            <td class="col-nominal">{{ row.bruto|id_number }}</td>
-            <td class="col-nominal">{{ row.netto|id_number }}</td>
+            <td class="col-nominal">{% if row.status == 'REVIEW_NOMINAL' %}<input type="number" name="bruto_{{ row.source_row_key }}" value="{{ row.bruto|default:'' }}" min="0" step="0.01" class="form-control form-control-sm">{% else %}{{ row.bruto|id_number }}{% endif %}</td>
+            <td class="col-nominal">{% if row.status == 'REVIEW_NOMINAL' %}<input type="number" name="netto_{{ row.source_row_key }}" value="{{ row.netto|default:'' }}" min="0" step="0.01" class="form-control form-control-sm">{% else %}{{ row.netto|id_number }}{% endif %}</td>
             <td><div style="max-height: 60px; overflow-y: auto;">{{ row.keperluan }}</div></td>
           </tr>
           {% empty %}

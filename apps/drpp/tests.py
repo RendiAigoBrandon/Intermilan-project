@@ -30,12 +30,16 @@ Coverage per checklist poin 7:
 - jumlah tunggal tidak difabrikasi menjadi bruto dan netto
 """
 import io
+import os
+import shutil
+import tempfile
 import zipfile
 import hashlib
+from datetime import date
 from decimal import Decimal
 from unittest import mock
 
-from django.test import TestCase, Client
+from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.db import IntegrityError
 from django.contrib.auth import get_user_model
@@ -43,6 +47,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 
 from apps.accounts.models import Profile
 from apps.core.parsers import normalized_bukti_key
+from apps.documents.models import DocumentDriveLink, DocumentUpload
 from apps.dk.models import MasterAkun, TransactionDetail, TransactionChangeLog
 from apps.drpp.models import DRPPUpload, DRPPItem, DRPPMatch, DRPPImportBatch
 from apps.drpp.services import (
@@ -51,6 +56,7 @@ from apps.drpp.services import (
     prepare_drpp_rows,
     get_drpp_item_hard_identity,
     get_kw_mandiri_hard_identity,
+    get_source_row_key,
 )
 
 User = get_user_model()
@@ -76,12 +82,18 @@ def make_row(**kwargs):
         "akun": "511111",
         "bruto": Decimal("1000"),
         "netto": Decimal("1000"),
+        "jumlah": Decimal("1000"),
         "tanggal_bukti": None,
         "penerima": "Test",
         "keperluan": "Test keperluan",
         "source_file": "test.zip",
+        "source_file_hash": hashlib.sha256(b"file001").hexdigest(),
+        "source_member_name": "folder/test.pdf",
+        "source_row_id": "page:1:y:100",
         "source_row_key": hashlib.sha256(b"test001").hexdigest(),
         "identity_key": get_kw_mandiri_hard_identity("SAT1", "2025", "KW001"),
+        "parser_needs_review": False,
+        "parser_review_fields": [],
     }
     defaults.update(kwargs)
     return defaults
@@ -89,7 +101,7 @@ def make_row(**kwargs):
 
 def mock_prep_rows(rows):
     """Return a mock prepare_drpp_rows result."""
-    return {"ok": True, "warnings": [], "rows": rows}
+    return {"ok": True, "warnings": [], "rows": rows, "file_hash": hashlib.sha256(b"file001").hexdigest()}
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +184,9 @@ class DRPPModelTest(TestCase):
 # ---------------------------------------------------------------------------
 class ClassifyDRPPRowsTest(TestCase):
 
+    def setUp(self):
+        MasterAkun.objects.create(kode="511111", nama_akun="Test", is_active=True)
+
     def test_preview_does_not_write_db(self):
         rows = [make_row()]
         before = TransactionDetail.objects.count()
@@ -183,18 +198,17 @@ class ClassifyDRPPRowsTest(TestCase):
     def test_akun_kosong_is_review(self):
         rows = [make_row(akun="")]
         result = classify_drpp_rows(rows)
-        self.assertEqual(result[0]["status"], "REVIEW")
+        self.assertEqual(result[0]["status"], "REVIEW_AKUN")
         self.assertIn("Akun kosong", result[0]["message"])
 
     def test_inactive_akun_is_review(self):
-        MasterAkun.objects.create(kode="511111", nama_akun="Test", is_active=False)
+        MasterAkun.objects.filter(kode="511111").update(is_active=False)
         rows = [make_row(akun="511111")]
         result = classify_drpp_rows(rows)
-        self.assertEqual(result[0]["status"], "REVIEW")
+        self.assertEqual(result[0]["status"], "REVIEW_AKUN")
         self.assertIn("tidak aktif", result[0]["message"])
 
     def test_active_akun_passes(self):
-        MasterAkun.objects.create(kode="511111", nama_akun="Test", is_active=True)
         rows = [make_row(akun="511111")]
         result = classify_drpp_rows(rows)
         self.assertEqual(result[0]["status"], "BARU")
@@ -204,6 +218,7 @@ class ClassifyDRPPRowsTest(TestCase):
             satker_code="SAT1",
             no_kuitansi="KW001",
             akun="511111",
+            tanggal_spm=date(2025, 1, 1),
             status_detail=TransactionDetail.StatusDetail.FINAL,
         )
         rows = [make_row(no_kuitansi="KW001")]
@@ -215,11 +230,12 @@ class ClassifyDRPPRowsTest(TestCase):
             satker_code="SAT1",
             no_kuitansi="KW001",
             akun="511111",
+            tanggal_spm=date(2025, 1, 1),
             status_detail=TransactionDetail.StatusDetail.DIARSIPKAN,
         )
         rows = [make_row(no_kuitansi="KW001")]
         result = classify_drpp_rows(rows)
-        self.assertEqual(result[0]["status"], "KONFLIK_TERKUNCI")
+        self.assertEqual(result[0]["status"], "KONFLIK_DIARSIPKAN")
 
     def test_different_suffix_not_matched(self):
         """00166T and 00166A must NOT match same TransactionDetail."""
@@ -227,6 +243,7 @@ class ClassifyDRPPRowsTest(TestCase):
             satker_code="SAT1",
             no_kuitansi="00166T",
             akun="511111",
+            tanggal_spm=date(2025, 1, 1),
             status_detail=TransactionDetail.StatusDetail.FINAL,
         )
         # Upload 00166A — should be BARU, not KONFLIK
@@ -245,24 +262,37 @@ class ClassifyDRPPRowsTest(TestCase):
                      identity_key=get_kw_mandiri_hard_identity("SAT1", "2025", "KW2")),
         ]
         result = classify_drpp_rows(rows)
-        self.assertTrue(all(r["status"] == "REVIEW" for r in result))
+        self.assertTrue(all(r["status"] == "REVIEW_AKUN" for r in result))
 
 
 # ---------------------------------------------------------------------------
 # Service-level: commit_drpp_rows
 # ---------------------------------------------------------------------------
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
 class CommitDRPPRowsTest(TestCase):
 
     def setUp(self):
+        self.media_dir = tempfile.mkdtemp(prefix="drpp-tests-")
+        self.media_override = override_settings(MEDIA_ROOT=self.media_dir)
+        self.media_override.enable()
         self.user_sat1 = make_user("op_sat1", "SAT1")
         self.user_sat2 = make_user("op_sat2", "SAT2")
         self.admin = make_user("admin", "", role=Profile.Role.ADMIN_PUSAT)
+        MasterAkun.objects.create(kode="511111", nama_akun="Test", is_active=True)
+
+    def tearDown(self):
+        self.media_override.disable()
+        shutil.rmtree(self.media_dir, ignore_errors=True)
+        super().tearDown()
 
     def _commit(self, rows, satker_code="SAT1", user=None, tahun="2025"):
         user = user or self.user_sat1
+        source_path = os.path.join(self.media_dir, "fake.zip")
+        with open(source_path, "wb") as source:
+            source.write(b"fake zip source")
         with mock.patch("apps.drpp.services.prepare_drpp_rows", return_value=mock_prep_rows(rows)):
             return commit_drpp_rows(
-                "fake.zip", False, satker_code, tahun, user,
+                source_path, False, satker_code, tahun, user,
                 "fake.zip", "fake.zip",
             )
 
@@ -278,6 +308,23 @@ class CommitDRPPRowsTest(TestCase):
                        identity_key=get_kw_mandiri_hard_identity("SAT2", "2025", "KW001"))
         result = self._commit([row], satker_code="SAT2", user=self.admin)
         self.assertTrue(result["ok"])
+
+    def test_batch_satker_overrides_source_and_uploader_profile(self):
+        TransactionDetail.objects.create(
+            satker_code="SAT1",
+            no_kuitansi="KW001",
+            akun="511111",
+            nilai_bruto=Decimal("1000"),
+            nilai_netto=Decimal("1000"),
+            deskripsi="Test keperluan",
+            tanggal_spm=date(2025, 1, 1),
+            status_detail=TransactionDetail.StatusDetail.FINAL,
+        )
+        row = make_row(satker_code="SAT1")
+        result = self._commit([row], satker_code="SAT2", user=self.admin)
+        self.assertEqual(result["batch"].satker_code, "SAT2")
+        self.assertEqual(DRPPItem.objects.get().satker_code, "SAT2")
+        self.assertTrue(TransactionDetail.objects.filter(satker_code="SAT2", no_kuitansi="KW001").exists())
 
     def test_akun_kosong_does_not_create_dk(self):
         result = self._commit([make_row(akun="")])
@@ -308,6 +355,7 @@ class CommitDRPPRowsTest(TestCase):
             akun="511111",
             nilai_bruto=Decimal("5000"),
             nilai_netto=Decimal("5000"),
+            tanggal_spm=date(2025, 1, 1),
         )
         row = make_row(bruto=Decimal("9999"), netto=Decimal("9999"))
         self._commit([row])
@@ -332,11 +380,13 @@ class CommitDRPPRowsTest(TestCase):
 
     def test_konflik_final_not_modified(self):
         """A FINAL D_K must not be modified by DRPP import."""
+        MasterAkun.objects.create(kode="522222", nama_akun="Akun pembanding", is_active=True)
         dk = TransactionDetail.objects.create(
             satker_code="SAT1",
             no_kuitansi="KW001",
             akun="511111",
             nilai_bruto=Decimal("1000"),
+            tanggal_spm=date(2025, 1, 1),
             status_detail=TransactionDetail.StatusDetail.FINAL,
         )
         row = make_row(akun="522222", bruto=Decimal("9999"))
@@ -353,6 +403,7 @@ class CommitDRPPRowsTest(TestCase):
             satker_code="SAT1",
             no_kuitansi="KW001",
             akun="511111",
+            tanggal_spm=date(2025, 1, 1),
             status_detail=TransactionDetail.StatusDetail.DIARSIPKAN,
         )
         row = make_row()
@@ -384,18 +435,234 @@ class CommitDRPPRowsTest(TestCase):
         self.assertEqual(item.nilai_netto, Decimal("0"),
                          "jumlah tunggal must not auto-fabricate nilai_netto")
 
+    def test_single_jumlah_is_persisted_for_review_without_dk(self):
+        row = make_row(jumlah=Decimal("5000"), bruto=None, netto=None)
+        result = self._commit([row])
+        self.assertTrue(result["ok"])
+        item = DRPPItem.objects.get(source_row_key=row["source_row_key"])
+        self.assertEqual(item.jumlah, Decimal("5000"))
+        self.assertIsNone(item.nilai_bruto)
+        self.assertIsNone(item.nilai_netto)
+        self.assertEqual(item.status_verifikasi, DRPPItem.StatusVerifikasi.PERLU_REVIEW)
+        self.assertIn("Bruto dan netto", item.catatan)
+        self.assertEqual(result["batch"].review_rows, 1)
+        self.assertEqual(result["batch"].status, DRPPImportBatch.Status.COMPLETED_WITH_REVIEW)
+        self.assertEqual(TransactionDetail.objects.count(), 0)
+
+    def test_master_akun_empty_is_not_bypassed(self):
+        MasterAkun.objects.all().delete()
+        result = self._commit([make_row()])
+        item = DRPPItem.objects.get()
+        self.assertEqual(item.status_verifikasi, DRPPItem.StatusVerifikasi.PERLU_REVIEW)
+        self.assertIn("MasterAkun", item.catatan)
+        self.assertEqual(result["batch"].review_rows, 1)
+        self.assertEqual(TransactionDetail.objects.count(), 0)
+
+    def test_missing_identity_is_persisted_without_dk(self):
+        row = make_row(
+            source_type=DRPPItem.SourceType.UNRESOLVED,
+            no_kuitansi="",
+            identity_key=None,
+        )
+        result = self._commit([row])
+        item = DRPPItem.objects.get()
+        self.assertIsNone(item.identity_key)
+        self.assertEqual(item.status_verifikasi, DRPPItem.StatusVerifikasi.PERLU_REVIEW)
+        self.assertIn("Identitas", item.catatan)
+        self.assertEqual(result["batch"].review_rows, 1)
+        self.assertEqual(TransactionDetail.objects.count(), 0)
+
+    def test_missing_drpp_number_is_persisted_as_identity_review(self):
+        row = make_row(
+            source_type=DRPPItem.SourceType.UNRESOLVED,
+            nomor_drpp="",
+            identity_key=None,
+        )
+        result = self._commit([row])
+        item = DRPPItem.objects.get()
+        self.assertEqual(item.source_type, DRPPItem.SourceType.UNRESOLVED)
+        self.assertEqual(item.status_verifikasi, DRPPItem.StatusVerifikasi.PERLU_REVIEW)
+        self.assertEqual(result["batch"].review_rows, 1)
+        self.assertEqual(TransactionDetail.objects.count(), 0)
+
+    def test_batch_and_local_document_audit_fields(self):
+        result = self._commit([make_row()])
+        batch = result["batch"]
+        self.assertEqual(batch.total_rows, 1)
+        self.assertEqual(batch.satker_code, "SAT1")
+        self.assertEqual(batch.tahun, 2025)
+        self.assertEqual(len(batch.file_hash), 64)
+        self.assertIsNotNone(batch.document_upload)
+        self.assertTrue(batch.document_upload.file.name)
+        counted = sum(
+            getattr(batch, field)
+            for field in ("created_rows", "updated_rows", "skipped_rows", "conflict_rows", "review_rows", "failed_rows")
+        )
+        self.assertEqual(counted, batch.total_rows)
+        self.assertEqual(batch.status, DRPPImportBatch.Status.COMPLETED)
+
+    def test_parser_failure_is_audited_as_failed_batch(self):
+        source_path = os.path.join(self.media_dir, "broken.zip")
+        with open(source_path, "wb") as source:
+            source.write(b"broken")
+        failed_prep = {
+            "ok": False,
+            "warnings": ["arsip rusak"],
+            "rows": [],
+            "file_hash": hashlib.sha256(b"broken").hexdigest(),
+        }
+        with mock.patch("apps.drpp.services.prepare_drpp_rows", return_value=failed_prep):
+            result = commit_drpp_rows(
+                source_path, False, "SAT1", 2025, self.user_sat1, "broken.zip", "broken.zip"
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["batch"].status, DRPPImportBatch.Status.FAILED)
+        self.assertIsNotNone(result["batch"].document_upload)
+        self.assertIn("arsip rusak", result["batch"].notes)
+
+    def test_same_source_row_dedupes_audit_and_dk(self):
+        row = make_row()
+        first = self._commit([row])
+        second = self._commit([row])
+        self.assertTrue(first["ok"] and second["ok"])
+        self.assertEqual(DRPPItem.objects.count(), 1)
+        self.assertEqual(TransactionDetail.objects.count(), 1)
+        self.assertEqual(second["batch"].skipped_rows, 1)
+
+    def test_manual_description_mismatch_becomes_conflict(self):
+        dk = TransactionDetail.objects.create(
+            satker_code="SAT1",
+            no_kuitansi="KW001",
+            akun="511111",
+            nilai_bruto=Decimal("1000"),
+            nilai_netto=Decimal("1000"),
+            deskripsi="Deskripsi manual",
+            tanggal_spm=date(2025, 1, 1),
+        )
+        result = self._commit([make_row(keperluan="Deskripsi hasil OCR")])
+        dk.refresh_from_db()
+        item = DRPPItem.objects.get()
+        self.assertEqual(dk.deskripsi, "Deskripsi manual")
+        self.assertEqual(item.status_verifikasi, DRPPItem.StatusVerifikasi.TIDAK_SESUAI)
+        self.assertEqual(item.match.status_match, DRPPMatch.StatusMatch.KONFLIK)
+        self.assertIn("deskripsi", item.match.catatan)
+        self.assertEqual(result["batch"].conflict_rows, 1)
+
+    def test_same_receipt_different_document_year_does_not_match(self):
+        TransactionDetail.objects.create(
+            satker_code="SAT1",
+            no_kuitansi="KW001",
+            akun="511111",
+            nilai_bruto=Decimal("1000"),
+            nilai_netto=Decimal("1000"),
+            deskripsi="Test keperluan",
+            tanggal_spm=date(2024, 1, 1),
+        )
+        result = self._commit([make_row()])
+        self.assertEqual(result["batch"].created_rows, 1)
+        self.assertEqual(TransactionDetail.objects.count(), 2)
+
+    def test_ambiguous_exact_match_is_conflict_not_first_row(self):
+        for _ in range(2):
+            TransactionDetail.objects.create(
+                satker_code="SAT1",
+                no_kuitansi="KW001",
+                akun="511111",
+                nilai_bruto=Decimal("1000"),
+                nilai_netto=Decimal("1000"),
+                deskripsi="Test keperluan",
+                tanggal_spm=date(2025, 1, 1),
+            )
+        row = make_row()
+        self.assertEqual(classify_drpp_rows([dict(row)])[0]["status"], "KONFLIK_AMBIGU")
+        result = self._commit([row])
+        self.assertEqual(result["batch"].conflict_rows, 1)
+        self.assertEqual(TransactionDetail.objects.count(), 2)
+        self.assertIsNone(DRPPItem.objects.get().match.transaction_detail)
+
+    def test_drpp_parent_keeps_first_and_last_batch_history(self):
+        row = make_row(
+            source_type=DRPPItem.SourceType.DRPP_ITEM,
+            nomor_drpp="00042",
+            identity_key=get_drpp_item_hard_identity("SAT1", "2025", "00042", "KW001"),
+            tanggal_drpp=date(2025, 6, 1),
+            nomor_spm="00166T",
+            drpp_total=Decimal("1000"),
+            drpp_raw_text="raw drpp",
+        )
+        first = self._commit([row])
+        second = self._commit([row])
+        upload = DRPPUpload.objects.get()
+        self.assertEqual(upload.first_import_batch, first["batch"])
+        self.assertEqual(upload.last_import_batch, second["batch"])
+        self.assertEqual(upload.nomor_drpp_norm, "42")
+        self.assertEqual(upload.total_jumlah, Decimal("1000"))
+        self.assertEqual(upload.match_status, DRPPUpload.MatchStatus.COCOK)
+
+    def test_source_row_race_recovers_with_savepoint(self):
+        row = make_row()
+        self._commit([row])
+        with mock.patch("apps.drpp.services.DRPPItem.objects.get_or_create", side_effect=IntegrityError):
+            result = self._commit([row])
+        self.assertTrue(result["ok"])
+        self.assertEqual(DRPPItem.objects.count(), 1)
+
+    def test_item_identity_race_recovers_when_source_row_changes(self):
+        first_row = make_row()
+        self._commit([first_row])
+        second_row = make_row(
+            source_row_key=hashlib.sha256(b"second-source-row").hexdigest(),
+            source_row_id="page:3:y:500",
+        )
+        result = self._commit([second_row])
+        self.assertTrue(result["ok"])
+        self.assertEqual(DRPPItem.objects.count(), 1)
+        self.assertEqual(DRPPItem.objects.get().source_row_key, second_row["source_row_key"])
+        self.assertEqual(TransactionDetail.objects.count(), 1)
+
+    def test_drpp_parent_race_recovers_with_savepoint(self):
+        row = make_row(
+            source_type=DRPPItem.SourceType.DRPP_ITEM,
+            nomor_drpp="00042",
+            identity_key=get_drpp_item_hard_identity("SAT1", "2025", "00042", "KW001"),
+        )
+        self._commit([row])
+        with mock.patch("apps.drpp.services.DRPPUpload.objects.get_or_create", side_effect=IntegrityError):
+            result = self._commit([row])
+        self.assertTrue(result["ok"])
+        self.assertEqual(DRPPUpload.objects.count(), 1)
+
+    def test_match_race_recovers_with_savepoint(self):
+        row = make_row()
+        self._commit([row])
+        with mock.patch("apps.drpp.services.DRPPMatch.objects.get_or_create", side_effect=IntegrityError):
+            result = self._commit([row])
+        self.assertTrue(result["ok"])
+        self.assertEqual(DRPPMatch.objects.count(), 1)
+
 
 # ---------------------------------------------------------------------------
 # View-level: security tests
 # ---------------------------------------------------------------------------
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
 class DRPPViewSecurityTest(TestCase):
 
     def setUp(self):
+        self.media_dir = tempfile.mkdtemp(prefix="drpp-view-tests-")
+        self.media_override = override_settings(MEDIA_ROOT=self.media_dir)
+        self.media_override.enable()
         self.client = Client()
         self.viewer = make_user("viewer1", "", role=Profile.Role.VIEWER)
         self.operator = make_user("op1", "SAT1")
+        self.other_operator = make_user("op2", "SAT2")
+        self.admin = make_user("admin-view", "", role=Profile.Role.ADMIN_PUSAT)
         self.list_url = reverse("drpp:list")
         self.preview_url = reverse("drpp:preview")
+
+    def tearDown(self):
+        self.media_override.disable()
+        shutil.rmtree(self.media_dir, ignore_errors=True)
+        super().tearDown()
 
     def _make_zip_bytes(self, filenames=None, content=b"PDF content"):
         buf = io.BytesIO()
@@ -468,6 +735,222 @@ class DRPPViewSecurityTest(TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn(reverse("drpp:list"), resp["Location"])
 
+    def test_single_pdf_is_wrapped_as_safe_zip(self):
+        self.client.login(username="op1", password="pass123")
+        pdf = SimpleUploadedFile("single.pdf", b"%PDF-1.4 source", content_type="application/pdf")
+        response = self.client.post(self.list_url, {"document_files": [pdf], "tahun": "2025"})
+        self.assertRedirects(response, self.preview_url, fetch_redirect_response=False)
+        state = self.client.session["drpp_preview"]
+        self.assertTrue(zipfile.is_zipfile(state["file_path"]))
+        with zipfile.ZipFile(state["file_path"]) as archive:
+            self.assertEqual(archive.namelist(), ["single.pdf"])
+        self.client.post(self.preview_url, {"action": "cancel"})
+        self.assertFalse(os.path.exists(state["file_path"]))
+
+    def test_single_zip_is_stored_directly(self):
+        self.client.login(username="op1", password="pass123")
+        zip_bytes = self._make_zip_bytes(["direct.pdf"])
+        uploaded = SimpleUploadedFile("direct.zip", zip_bytes, content_type="application/zip")
+        response = self.client.post(self.list_url, {"document_files": [uploaded], "tahun": "2025"})
+        self.assertRedirects(response, self.preview_url, fetch_redirect_response=False)
+        state = self.client.session["drpp_preview"]
+        with open(state["file_path"], "rb") as stored:
+            self.assertEqual(stored.read(), zip_bytes)
+        self.client.post(self.preview_url, {"action": "cancel"})
+
+    def test_multiple_pdfs_with_same_basename_do_not_overwrite(self):
+        self.client.login(username="op1", password="pass123")
+        first = SimpleUploadedFile("same.pdf", b"first", content_type="application/pdf")
+        second = SimpleUploadedFile("same.pdf", b"second", content_type="application/pdf")
+        response = self.client.post(self.list_url, {"document_files": [first, second], "tahun": "2025"})
+        self.assertEqual(response.status_code, 302)
+        state = self.client.session["drpp_preview"]
+        with zipfile.ZipFile(state["file_path"]) as archive:
+            self.assertEqual(archive.namelist(), ["same.pdf", "same_2.pdf"])
+            self.assertEqual(archive.read("same.pdf"), b"first")
+            self.assertEqual(archive.read("same_2.pdf"), b"second")
+        self.client.post(self.preview_url, {"action": "cancel"})
+
+    def test_mixed_zip_and_pdf_is_rejected(self):
+        self.client.login(username="op1", password="pass123")
+        archive = SimpleUploadedFile("batch.zip", self._make_zip_bytes(), content_type="application/zip")
+        pdf = SimpleUploadedFile("extra.pdf", b"%PDF", content_type="application/pdf")
+        response = self.client.post(
+            self.list_url,
+            {"document_files": [archive, pdf], "tahun": "2025"},
+            follow=True,
+        )
+        self.assertContains(response, "tidak boleh dicampur")
+        self.assertNotIn("drpp_preview", self.client.session)
+
+    def test_nested_zip_is_rejected_and_original_temp_removed(self):
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as archive:
+            archive.writestr("nested.zip", self._make_zip_bytes())
+        self.client.login(username="op1", password="pass123")
+        uploaded = SimpleUploadedFile("outer.zip", outer.getvalue(), content_type="application/zip")
+        self.client.post(self.list_url, {"document_files": [uploaded], "tahun": "2025"})
+        state = dict(self.client.session["drpp_preview"])
+        response = self.client.get(self.preview_url, follow=True)
+        self.assertContains(response, "Nested ZIP tidak didukung")
+        self.assertFalse(os.path.exists(state["file_path"]))
+        self.assertNotIn("drpp_preview", self.client.session)
+
+    def test_operator_satker_is_forced_from_profile(self):
+        self.client.login(username="op1", password="pass123")
+        pdf = SimpleUploadedFile("single.pdf", b"%PDF", content_type="application/pdf")
+        self.client.post(
+            self.list_url,
+            {"document_files": [pdf], "tahun": "2025", "satker_code": "SAT2"},
+        )
+        self.assertEqual(self.client.session["drpp_preview"]["satker_code"], "SAT1")
+        self.client.post(self.preview_url, {"action": "cancel"})
+
+    def test_admin_must_choose_satker(self):
+        self.client.login(username="admin-view", password="pass123")
+        self.assertContains(self.client.get(self.list_url), 'name="satker_code"')
+        pdf = SimpleUploadedFile("single.pdf", b"%PDF", content_type="application/pdf")
+        response = self.client.post(
+            self.list_url,
+            {"document_files": [pdf], "tahun": "2025"},
+            follow=True,
+        )
+        self.assertContains(response, "Satker wajib dipilih")
+        self.assertNotIn("drpp_preview", self.client.session)
+
+    def test_preview_owner_mismatch_is_rejected_and_cleaned(self):
+        self.client.login(username="op1", password="pass123")
+        temp_path = os.path.join(self.media_dir, "owner.zip")
+        with open(temp_path, "wb") as source:
+            source.write(self._make_zip_bytes())
+        session = self.client.session
+        session["drpp_preview"] = {
+            "file_path": temp_path,
+            "original_filename": "owner.zip",
+            "satker_code": "SAT1",
+            "tahun": 2025,
+            "uploaded_by_user_id": self.other_operator.pk,
+        }
+        session.save()
+        response = self.client.get(self.preview_url, follow=True)
+        self.assertContains(response, "bukan milik pengguna aktif")
+        self.assertFalse(os.path.exists(temp_path))
+
+    def test_drive_exception_is_post_commit_and_marked_for_review(self):
+        self.client.login(username="op1", password="pass123")
+        temp_path = os.path.join(self.media_dir, "commit.zip")
+        with open(temp_path, "wb") as source:
+            source.write(self._make_zip_bytes())
+        stored = DocumentUpload.objects.create(
+            document_type="DRPP_BATCH",
+            original_filename="commit.zip",
+            stored_filename="commit.zip",
+            file=SimpleUploadedFile("commit.zip", self._make_zip_bytes()),
+            uploaded_by=self.operator,
+        )
+        batch = DRPPImportBatch.objects.create(
+            uploaded_by=self.operator,
+            filename="commit.zip",
+            original_filename="commit.zip",
+            satker_code="SAT1",
+            tahun=2025,
+            total_rows=0,
+            status=DRPPImportBatch.Status.COMPLETED,
+            document_upload=stored,
+        )
+        session = self.client.session
+        session["drpp_preview"] = {
+            "file_path": temp_path,
+            "original_filename": "commit.zip",
+            "satker_code": "SAT1",
+            "tahun": 2025,
+            "uploaded_by_user_id": self.operator.pk,
+        }
+        session.save()
+        with mock.patch("apps.drpp.views.commit_drpp_rows", return_value={"ok": True, "batch": batch, "document_upload": stored}), mock.patch(
+            "apps.drpp.views.archive_file_link", side_effect=RuntimeError("drive offline")
+        ):
+            response = self.client.post(self.preview_url, {"action": "commit"}, follow=True)
+        self.assertContains(response, "Pengarsipan Drive tertunda")
+        self.assertTrue(DRPPImportBatch.objects.filter(pk=batch.pk).exists())
+        self.assertTrue(DocumentDriveLink.objects.filter(status=DocumentDriveLink.Status.PERLU_DICEK).exists())
+        self.assertFalse(os.path.exists(temp_path))
+
+
+# ---------------------------------------------------------------------------
+# Parser-to-source hardening
+# ---------------------------------------------------------------------------
+class PrepareDRPPRowsHardeningTest(TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="drpp-prepare-")
+        self.source_path = os.path.join(self.temp_dir, "source.zip")
+        with open(self.source_path, "wb") as source:
+            source.write(b"source bytes")
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        super().tearDown()
+
+    def _parsed(self, item):
+        extracted_dir = tempfile.mkdtemp(prefix="drpp-extracted-")
+        return extracted_dir, {
+            "ok": True,
+            "warnings": [],
+            "temp_dir": extracted_dir,
+            "drpps": [{"file_name": "DRPP.pdf", "metadata": {"nomor_drpp": "00042", "total": Decimal("5000")}}],
+            "kw_by_drpp": {"00042": [item]},
+        }
+
+    def test_single_jumlah_is_not_promoted_to_bruto_and_netto(self):
+        extracted_dir, parsed = self._parsed({
+            "no_bukti": "KW/2025",
+            "akun": "511111",
+            "jumlah": Decimal("5000"),
+            "source_file": "DRPP.pdf",
+            "source_member_name": "folder/DRPP.pdf",
+            "source_row_id": "page:2:y:300",
+        })
+        with mock.patch("apps.drpp.services.parse_paket_spm_zip", return_value=parsed):
+            result = prepare_drpp_rows(self.source_path, satker_code="SAT1", tahun=2025)
+        row = result["rows"][0]
+        self.assertEqual(row["jumlah"], Decimal("5000"))
+        self.assertIsNone(row["bruto"])
+        self.assertIsNone(row["netto"])
+        self.assertFalse(os.path.exists(extracted_dir))
+        self.assertEqual(
+            row["source_row_key"],
+            get_source_row_key(result["file_hash"], "folder/DRPP.pdf", "page:2:y:300"),
+        )
+
+    def test_explicit_bruto_and_netto_are_preserved(self):
+        _, parsed = self._parsed({
+            "no_bukti": "KW/2025",
+            "akun": "511111",
+            "jumlah": Decimal("5000"),
+            "bruto": Decimal("5000"),
+            "netto": Decimal("4500"),
+            "source_file": "DRPP.pdf",
+        })
+        with mock.patch("apps.drpp.services.parse_paket_spm_zip", return_value=parsed):
+            row = prepare_drpp_rows(self.source_path, satker_code="SAT1", tahun=2025)["rows"][0]
+        self.assertEqual(row["bruto"], Decimal("5000"))
+        self.assertEqual(row["netto"], Decimal("4500"))
+
+    def test_more_than_two_drpp_is_rejected_and_temp_cleaned(self):
+        extracted_dir = tempfile.mkdtemp(prefix="drpp-extracted-")
+        parsed = {
+            "ok": True,
+            "warnings": [],
+            "temp_dir": extracted_dir,
+            "drpps": [{"metadata": {"nomor_drpp": number}} for number in ("1", "2", "3")],
+            "kw_by_drpp": {},
+        }
+        with mock.patch("apps.drpp.services.parse_paket_spm_zip", return_value=parsed):
+            result = prepare_drpp_rows(self.source_path, satker_code="SAT1", tahun=2025)
+        self.assertFalse(result["ok"])
+        self.assertFalse(os.path.exists(extracted_dir))
+
 
 # ---------------------------------------------------------------------------
 # Parser default flow: drpp_kuitansi_mode=False must not change behavior
@@ -493,6 +976,7 @@ class ParserDefaultFlowTest(TestCase):
             f.write(zip_bytes)
             tmp_path = f.name
 
+        result = {}
         try:
             result = parse_paket_spm_zip(tmp_path, ocr=False)
             # In default mode: KW alone should produce warnings and ok=False
@@ -501,6 +985,8 @@ class ParserDefaultFlowTest(TestCase):
             self.assertFalse(result["ok"],
                              "Default mode must not accept standalone KW without DRPP")
         finally:
+            if result.get("temp_dir"):
+                shutil.rmtree(result["temp_dir"], ignore_errors=True)
             os.unlink(tmp_path)
 
     def test_kw_allowed_in_drpp_kuitansi_mode(self):
@@ -519,6 +1005,7 @@ class ParserDefaultFlowTest(TestCase):
             f.write(zip_bytes)
             tmp_path = f.name
 
+        result = {}
         try:
             result = parse_paket_spm_zip(tmp_path, ocr=False, drpp_kuitansi_mode=True)
             # Should NOT have a fatal error about KW needing DRPP
@@ -529,4 +1016,6 @@ class ParserDefaultFlowTest(TestCase):
             self.assertFalse(kw_warning,
                              "drpp_kuitansi_mode=True must allow standalone KW without fatal error")
         finally:
+            if result.get("temp_dir"):
+                shutil.rmtree(result["temp_dir"], ignore_errors=True)
             os.unlink(tmp_path)

@@ -4,7 +4,9 @@ from django.db import models
 
 class DRPPImportBatch(models.Model):
     class Status(models.TextChoices):
-        PROCESSED = "PROCESSED", "Processed"
+        PROCESSING = "PROCESSING", "Processing"
+        COMPLETED = "COMPLETED", "Completed"
+        COMPLETED_WITH_REVIEW = "COMPLETED_WITH_REVIEW", "Completed with review"
         FAILED = "FAILED", "Failed"
 
     uploaded_by = models.ForeignKey(
@@ -12,6 +14,17 @@ class DRPPImportBatch(models.Model):
     )
     filename = models.CharField(max_length=255)
     original_filename = models.CharField(max_length=255)
+    satker_code = models.CharField(max_length=32, blank=True)
+    tahun = models.PositiveSmallIntegerField(null=True, blank=True)
+    file_hash = models.CharField(max_length=64, blank=True, db_index=True)
+    document_upload = models.ForeignKey(
+        "documents.DocumentUpload",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="drpp_batches",
+    )
+    total_rows = models.PositiveIntegerField(default=0)
     
     created_rows = models.PositiveIntegerField(default=0)
     updated_rows = models.PositiveIntegerField(default=0)
@@ -20,7 +33,8 @@ class DRPPImportBatch(models.Model):
     review_rows = models.PositiveIntegerField(default=0)
     failed_rows = models.PositiveIntegerField(default=0)
     
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PROCESSED)
+    status = models.CharField(max_length=32, choices=Status.choices, default=Status.PROCESSING)
+    notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -39,6 +53,20 @@ class DRPPUpload(models.Model):
 
     import_batch = models.ForeignKey(
         DRPPImportBatch, null=True, blank=True, on_delete=models.SET_NULL, related_name="drpp_uploads"
+    )
+    first_import_batch = models.ForeignKey(
+        DRPPImportBatch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="first_seen_drpp_uploads",
+    )
+    last_import_batch = models.ForeignKey(
+        DRPPImportBatch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="last_seen_drpp_uploads",
     )
     identity_key = models.CharField(max_length=64, unique=True, blank=True, null=True)
 
@@ -94,6 +122,7 @@ class DRPPItem(models.Model):
     class SourceType(models.TextChoices):
         DRPP_ITEM = "DRPP_ITEM", "Item DRPP"
         KUITANSI_MANDIRI = "KUITANSI_MANDIRI", "Kuitansi Mandiri"
+        UNRESOLVED = "UNRESOLVED", "Sumber Belum Teridentifikasi"
         
     class StatusVerifikasi(models.TextChoices):
         BELUM_DICEK = "BELUM_DICEK", "Belum Dicek"
@@ -106,7 +135,10 @@ class DRPPItem(models.Model):
     
     source_type = models.CharField(max_length=30, choices=SourceType.choices, default=SourceType.DRPP_ITEM)
     identity_key = models.CharField(max_length=64, unique=True, blank=True, null=True)
-    source_row_key = models.CharField(max_length=255, blank=True)
+    source_row_key = models.CharField(max_length=64, blank=True)
+    source_file_hash = models.CharField(max_length=64, blank=True)
+    source_member_name = models.CharField(max_length=500, blank=True)
+    source_row_id = models.CharField(max_length=255, blank=True)
     
     satker_code = models.CharField(max_length=32, blank=True)
     tahun = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -145,10 +177,15 @@ class DRPPItem(models.Model):
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(source_type="DRPP_ITEM", drpp_upload__isnull=False) |
-                          models.Q(source_type="KUITANSI_MANDIRI", drpp_upload__isnull=True),
+                          models.Q(source_type__in=["KUITANSI_MANDIRI", "UNRESOLVED"], drpp_upload__isnull=True),
                 name="drpp_item_source_type_constraint",
-                violation_error_message="DRPP_ITEM must have drpp_upload, KUITANSI_MANDIRI must have drpp_upload as NULL"
-            )
+                violation_error_message="DRPP_ITEM requires a parent; standalone/unresolved sources must not have one",
+            ),
+            models.UniqueConstraint(
+                fields=["source_row_key"],
+                condition=~models.Q(source_row_key=""),
+                name="unique_drpp_source_row_key",
+            ),
         ]
 
     def __str__(self):

@@ -11,6 +11,7 @@
     <div class="toolbar-row">
       <div class="filter-grid">
         <div class="filter-field"><label>Upload DRPP PDF/ZIP</label><input class="form-control" type="file" name="document_files" multiple accept=".pdf,.zip"></div>
+        {% if is_role_admin %}<div class="filter-field"><label>Satker</label><input class="form-control" type="text" name="satker_code" required placeholder="Kode satker"></div>{% endif %}
         <div class="filter-field"><label>Tahun</label><input class="form-control" type="number" name="tahun" placeholder="e.g. 2025"></div>
         <label class="checkline"><input type="checkbox" name="use_ocr"> OCR scan</label>
       </div>
@@ -22,7 +23,7 @@
     <tbody>
     {% for row in rows %}
     <tr>
-      <td>#{{ row.pk }}</td><td>{{ row.original_filename|default:row.filename }}</td>
+      <td>#{{ row.pk }}</td><td>{{ row.original_filename|default:row.filename }}<br><small>{{ row.satker_code }} / {{ row.tahun }} · {{ row.total_rows }} sumber</small></td>
       <td>{{ row.uploaded_by.username|default:"-" }}</td><td>{{ row.created_at|date:"d/m/Y H:i" }}</td>
       <td>{{ row.created_rows }}</td><td>{{ row.updated_rows }}</td><td>{{ row.skipped_rows }}</td>
       <td>{{ row.conflict_rows }}</td><td>{{ row.review_rows }}</td><td>{{ row.failed_rows }}</td>

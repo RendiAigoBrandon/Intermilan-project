@@ -1,20 +1,24 @@
 import os
-import json
 import uuid
 import datetime
-from decimal import Decimal
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.files.storage import FileSystemStorage
 from django.core.paginator import Paginator
-from django.db import transaction
 from django.shortcuts import redirect, render
 
-from apps.accounts.access import filter_by_satker, permission_context, can_upload_document, get_user_satker_code
+from apps.accounts.access import (
+    can_upload_document,
+    filter_by_satker,
+    get_user_satker_code,
+    is_admin,
+    permission_context,
+)
 from apps.core.views import build_pagination_window, normalize_page_size
 from apps.documents.services.google_drive import archive_file_link
+from apps.documents.models import DocumentDriveLink
 
 from .models import DRPPItem, DRPPUpload, DRPPImportBatch
 from .services import prepare_drpp_rows, classify_drpp_rows, commit_drpp_rows
@@ -27,31 +31,25 @@ def _validate_drpp_upload(upload_file, upload_files):
     ALLOWED_ZIP_TYPES = {"application/zip", "application/x-zip-compressed", "application/octet-stream", "application/x-zip"}
     ALLOWED_PDF_TYPES = {"application/pdf", "application/octet-stream"}
     
-    total_size = 0
-    total_count = 0
-    if upload_file:
-        if upload_file.size > MAX_SIZE:
-            return "Total ukuran upload melebihi 50MB."
-        total_size += upload_file.size
-        total_count += 1
-        name_lower = upload_file.name.lower()
-        ctype = (upload_file.content_type or "").lower()
+    if upload_file and upload_files:
+        return "Jangan mencampur input ZIP/PDF dari dua pemilih file."
+    files = [upload_file] if upload_file else list(upload_files or [])
+    total_size = sum(item.size for item in files)
+    total_count = len(files)
+    extensions = {os.path.splitext(item.name)[1].lower() for item in files}
+    if ".zip" in extensions and (len(files) != 1 or extensions != {".zip"}):
+        return "ZIP tidak boleh dicampur dengan PDF atau ZIP lain."
+    for item in files:
+        name_lower = item.name.lower()
+        content_type = (item.content_type or "").lower()
         if name_lower.endswith(".zip"):
-            if ctype and ctype not in ALLOWED_ZIP_TYPES:
+            if content_type and content_type not in ALLOWED_ZIP_TYPES:
                 return "MIME zip tidak valid."
         elif name_lower.endswith(".pdf"):
-            if ctype and ctype not in ALLOWED_PDF_TYPES:
-                return "MIME PDF tidak valid."
+            if content_type and content_type not in ALLOWED_PDF_TYPES:
+                return f"MIME PDF tidak valid untuk {item.name}."
         else:
-            return "Hanya ZIP atau PDF yang didukung."
-            
-    if upload_files:
-        for f in upload_files:
-            total_size += f.size
-            total_count += 1
-            name_lower = f.name.lower()
-            if not (name_lower.endswith(".pdf") or name_lower.endswith(".zip")):
-                return f"File {f.name} tidak didukung (harus PDF/ZIP)."
+            return f"File {item.name} tidak didukung (harus PDF/ZIP)."
                 
     if total_count > MAX_FILES:
         return f"Maksimal {MAX_FILES} file per upload."
@@ -64,14 +62,35 @@ def _save_many_files_as_zip(fs, upload_files):
     import zipfile
     from io import BytesIO
     zip_buffer = BytesIO()
+    used_names = set()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in upload_files:
-            # Traversal protection
             safe_name = os.path.basename(f.name)
+            stem, suffix = os.path.splitext(safe_name)
+            candidate = safe_name
+            counter = 2
+            while candidate.casefold() in used_names:
+                candidate = f"{stem}_{counter}{suffix}"
+                counter += 1
+            used_names.add(candidate.casefold())
+            safe_name = candidate
             zf.writestr(safe_name, f.read())
     filename = f"multi_{uuid.uuid4().hex[:8]}.zip"
     fs.save(filename, zip_buffer)
     return filename
+
+
+def _remove_file(file_path):
+    try:
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+    except OSError:
+        pass
+
+
+def _discard_preview(request, preview_state):
+    _remove_file((preview_state or {}).get("file_path"))
+    request.session.pop("drpp_preview", None)
 
 
 @login_required
@@ -96,37 +115,46 @@ def drpp_list(request):
         os.makedirs(tmp_dir, exist_ok=True)
         fs = FileSystemStorage(location=tmp_dir)
         
-        if upload_files:
-            filename = _save_many_files_as_zip(fs, upload_files)
-            original_filename = filename
-            kind = "zip"
+        selected_files = [upload_file] if upload_file else list(upload_files)
+        if len(selected_files) == 1 and selected_files[0].name.lower().endswith(".zip"):
+            selected = selected_files[0]
+            filename = fs.save(os.path.basename(selected.name), selected)
+            original_filename = selected.name
         else:
-            filename = fs.save(upload_file.name, upload_file)
-            original_filename = upload_file.name
-            kind = "zip" if upload_file.name.lower().endswith(".zip") else "pdf"
+            filename = _save_many_files_as_zip(fs, selected_files)
+            original_filename = selected_files[0].name if len(selected_files) == 1 else filename
             
         # Parse satker from request (only for admin, operators are forced to their own satker)
         input_satker = request.POST.get("satker_code", "").strip()
         user_satker = get_user_satker_code(request.user)
-        satker_code = user_satker if user_satker else input_satker
+        satker_code = input_satker if is_admin(request.user) else user_satker
+        if not satker_code:
+            _remove_file(fs.path(filename))
+            messages.error(request, "Satker wajib dipilih sebelum preview.")
+            return redirect("drpp:list")
         
         # Tahun is explicitly required or defaults to current
-        tahun = request.POST.get("tahun") or datetime.datetime.now().year
+        try:
+            tahun = int(request.POST.get("tahun") or datetime.datetime.now().year)
+        except (TypeError, ValueError):
+            _remove_file(fs.path(filename))
+            messages.error(request, "Tahun dokumen tidak valid.")
+            return redirect("drpp:list")
             
         request.session["drpp_preview"] = {
             "file_path": fs.path(filename),
             "original_filename": original_filename,
             "ocr": bool(request.POST.get("use_ocr")),
-            "kind": kind,
             "satker_code": satker_code,
             "tahun": tahun,
+            "uploaded_by_user_id": request.user.pk,
         }
         return redirect("drpp:preview")
 
     rows = filter_by_satker(
         DRPPImportBatch.objects.select_related("uploaded_by"),
         request.user,
-        field_name="uploaded_by__profile__satker_code"
+        field_name="satker_code"
     )
     
     page_size = normalize_page_size(request.GET.get("page_size"))
@@ -163,6 +191,19 @@ def drpp_preview(request):
     if not preview_state:
         messages.error(request, "Sesi preview DRPP tidak ditemukan.")
         return redirect("drpp:list")
+    if not can_upload_document(request.user):
+        _discard_preview(request, preview_state)
+        messages.error(request, "Anda tidak memiliki hak akses untuk mengubah preview DRPP.")
+        return redirect("drpp:list")
+    if preview_state.get("uploaded_by_user_id") != request.user.pk:
+        _discard_preview(request, preview_state)
+        messages.error(request, "Sesi preview ini bukan milik pengguna aktif.")
+        return redirect("drpp:list")
+    user_satker = get_user_satker_code(request.user)
+    if not is_admin(request.user) and preview_state.get("satker_code") != user_satker:
+        _discard_preview(request, preview_state)
+        messages.error(request, "Sesi preview berada di luar ruang lingkup satker Anda.")
+        return redirect("drpp:list")
         
     file_path = preview_state["file_path"]
     if not os.path.exists(file_path):
@@ -180,19 +221,20 @@ def drpp_preview(request):
         action = request.POST.get("action")
         
         if action == "cancel":
-            os.remove(file_path)
-            request.session.pop("drpp_preview", None)
+            _discard_preview(request, preview_state)
             messages.info(request, "Preview DRPP dibatalkan.")
             return redirect("drpp:list")
             
         elif action == "update_corrections":
             # Save the corrections in session
             for key, val in request.POST.items():
-                if key.startswith("akun_"):
-                    row_key = key.replace("akun_", "")
+                for prefix, field in (("akun_", "akun"), ("bruto_", "bruto"), ("netto_", "netto"), ("kuitansi_", "no_kuitansi")):
+                    if not key.startswith(prefix):
+                        continue
+                    row_key = key[len(prefix):]
                     if row_key not in user_corrections:
                         user_corrections[row_key] = {}
-                    user_corrections[row_key]["akun"] = val
+                    user_corrections[row_key][field] = val
             preview_state["user_corrections"] = user_corrections
             request.session["drpp_preview"] = preview_state
             messages.success(request, "Koreksi disimpan, silakan verifikasi tabel di bawah.")
@@ -213,22 +255,34 @@ def drpp_preview(request):
             
             if not result["ok"]:
                 messages.error(request, f"Gagal saat parsing/commit: {', '.join(result.get('error', []))}")
-                return redirect("drpp:preview")
+                _discard_preview(request, preview_state)
+                return redirect("drpp:list")
                 
             batch = result["batch"]
             
             # Archive File
-            drive_result, _ = archive_file_link(
-                file_path,
-                user=request.user,
-                jenis_dokumen="DRPP_BATCH",
-                nama_file=preview_state["original_filename"],
-                catatan_extra=f"Batch={batch.pk}",
-            )
-            
-            # Cleanup
-            os.remove(file_path)
-            request.session.pop("drpp_preview", None)
+            try:
+                drive_result, _ = archive_file_link(
+                    result["document_upload"].file.path,
+                    user=request.user,
+                    jenis_dokumen="DRPP_BATCH",
+                    nama_file=preview_state["original_filename"],
+                    satker_code=batch.satker_code,
+                    catatan_extra=f"Batch={batch.pk}",
+                )
+            except Exception as exc:
+                drive_result = {"status": "failed", "error_message": str(exc)}
+                DocumentDriveLink.objects.create(
+                    satker_code=batch.satker_code,
+                    jenis_dokumen="DRPP_BATCH",
+                    nama_file=preview_state["original_filename"],
+                    google_drive_url="",
+                    status=DocumentDriveLink.Status.PERLU_DICEK,
+                    catatan=f"drive_status=failed; Batch={batch.pk}; {exc}"[:2000],
+                    created_by=request.user,
+                )
+            finally:
+                _discard_preview(request, preview_state)
             
             msg = (f"Berhasil commit. Baru: {batch.created_rows}, "
                    f"Update: {batch.updated_rows}, Skip: {batch.skipped_rows}, "
@@ -243,27 +297,23 @@ def drpp_preview(request):
     # Read-only parse & classify for GET preview
     try:
         prep = prepare_drpp_rows(file_path, ocr=ocr, satker_code=satker_code, tahun=tahun)
-    except (ValueError, Exception) as exc:
+    except Exception as exc:
         import zipfile as _zipfile
         if isinstance(exc, _zipfile.BadZipFile):
             messages.error(request, "File tidak bisa dibuka sebagai ZIP yang valid.")
         else:
             messages.error(request, f"Error saat memproses file: {exc}")
-        request.session.pop("drpp_preview", None)
-        try:
-            os.remove(file_path)
-        except OSError:
-            pass
+        _discard_preview(request, preview_state)
         return redirect("drpp:list")
     
     if not prep["ok"]:
-        context = permission_context(request.user)
-        context.update({"page_title": "Preview Gagal", "errors": prep["warnings"]})
-        return render(request, "drpp/preview.html", context)
+        _discard_preview(request, preview_state)
+        messages.error(request, "; ".join(prep["warnings"]))
+        return redirect("drpp:list")
         
     classified_rows = classify_drpp_rows(prep["rows"], user_corrections)
     
-    can_commit = any(r["status"] in ["BARU", "UPDATE", "SKIP"] for r in classified_rows)
+    can_commit = bool(classified_rows)
 
     context = permission_context(request.user)
     context.update({
