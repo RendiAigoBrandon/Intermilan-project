@@ -1036,20 +1036,14 @@ def parse_spm_pdf(file_path, ocr=False, extracted=None, parse_details=True):
     )
     # No SP2D — coba labeled dulu, lalu bare 15-digit dalam konteks halaman SP2D/detail
     sp2d_labeled = _RE_SP2D_LABELED.search(upper_sp2d)
-    sp2d_bare = None
+    sp2d_bare = ""
     if not sp2d_labeled:
-        # Cari di halaman yang terklasifikasi sebagai sp2d atau di teks full
-        for page in page_details:
-            page_types = set(page.get("page_types") or [])
-            page_text_upper = (page.get("text") or page.get("extracted_text") or "").upper()
-            if {"SP2D", "DETAIL_SPP_SPM_SP2D"}.intersection(page_types):
-                m = _RE_SP2D_BARE.search(page_text_upper)
-                if m:
-                    sp2d_bare = m
-                    break
+        # Detail SP2D mengulang nomor yang sama di setiap baris. Konsensus modal
+        # lebih tahan terhadap satu digit OCR yang keliru daripada match pertama.
+        sp2d_bare = consensus_sp2d_from_pages(page_details)
     text_sp2d = (
         sp2d_labeled.group(1) if sp2d_labeled
-        else (sp2d_bare.group(1) if sp2d_bare else "")
+        else sp2d_bare
     )
     tanggal_sp2d = extract_sp2d_date(sp2d_text, text_sp2d)
 
@@ -2539,6 +2533,23 @@ def consensus_sp2d_number(items):
     highest = max(counts.values())
     winners = [value for value, count in counts.items() if count == highest]
     return winners[0] if highest >= 2 and len(winners) == 1 else ""
+
+
+def consensus_sp2d_from_pages(page_details):
+    """Ambil nomor SP2D modal unik dari halaman SP2D/detail yang terklasifikasi."""
+    counts = {}
+    for page in page_details or []:
+        page_types = set(page.get("page_types") or [])
+        if not {"SP2D", "DETAIL_SPP_SPM_SP2D"}.intersection(page_types):
+            continue
+        text = (page.get("text") or page.get("extracted_text") or "").upper()
+        for value in _RE_SP2D_BARE.findall(text):
+            counts[value] = counts.get(value, 0) + 1
+    if not counts:
+        return ""
+    highest = max(counts.values())
+    winners = [value for value, count in counts.items() if count == highest]
+    return winners[0] if len(winners) == 1 else ""
 
 
 def extract_lampiran_descriptions(best_by_page):

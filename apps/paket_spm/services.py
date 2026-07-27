@@ -1669,11 +1669,7 @@ def _fill_empty_transaction_fields(target, candidate):
         if not getattr(target, field) and getattr(candidate, field):
             setattr(target, field, getattr(candidate, field))
             changed.append(field)
-    status = (
-        TransactionDetail.StatusDetail.LENGKAP
-        if candidate.pembebanan
-        else TransactionDetail.StatusDetail.PERLU_REVIEW
-    )
+    status = candidate.status_detail
     if target.status_detail != status:
         target.status_detail = status
         changed.append("status_detail")
@@ -1683,6 +1679,116 @@ def _fill_empty_transaction_fields(target, candidate):
     if changed:
         target.save(update_fields=list(dict.fromkeys(changed)) + ["updated_at"])
     return target
+
+
+_PREVIEW_REVIEW_ALIASES = {
+    "akun": "akun",
+    "bulan": "bulan_sp2d",
+    "bulan_sp2d": "bulan_sp2d",
+    "cara pembayaran": "cara_pembayaran",
+    "cara_pembayaran": "cara_pembayaran",
+    "nomor spm": "nomor_spm",
+    "nomor_spm": "nomor_spm",
+    "tanggal spm": "tanggal_spm",
+    "tanggal_spm": "tanggal_spm",
+    "jenis spm": "jenis_spm",
+    "jenis_spm": "jenis_spm",
+    "bukti": "no_kuitansi",
+    "no_bukti": "no_kuitansi",
+    "no kuitansi": "no_kuitansi",
+    "nomor kuitansi": "no_kuitansi",
+    "no_kuitansi": "no_kuitansi",
+    "no drpp": "no_drpp",
+    "nomor drpp": "no_drpp",
+    "no_drpp": "no_drpp",
+    "nama": "deskripsi",
+    "uraian": "deskripsi",
+    "keperluan": "deskripsi",
+    "deskripsi": "deskripsi",
+    "jumlah": "nilai_bruto",
+    "bruto": "nilai_bruto",
+    "nilai bruto": "nilai_bruto",
+    "nilai_bruto": "nilai_bruto",
+    "netto": "nilai_netto",
+    "nilai netto": "nilai_netto",
+    "nilai_netto": "nilai_netto",
+    "coa": "pembebanan",
+    "pembebanan": "pembebanan",
+    "fp": "fp",
+    "pph21": "pph21",
+}
+
+
+def preview_item_value(item, field):
+    aliases = {
+        "no_kuitansi": ("no_kuitansi", "no_bukti"),
+        "deskripsi": ("deskripsi", "keperluan"),
+        "nilai_bruto": ("nilai_bruto", "bruto", "jumlah"),
+        "nilai_netto": ("nilai_netto", "netto"),
+    }
+    for key in aliases.get(field, (field,)):
+        if key in item and item.get(key) not in (None, ""):
+            return item.get(key)
+    return ""
+
+
+def preview_review_fields(item):
+    """Petakan sinyal review parser ke nama 15 kolom preview."""
+    if "_preview_review_fields" in item:
+        return sorted(set(item.get("_preview_review_fields") or []))
+
+    fields = set()
+    for raw_field in item.get("review_fields") or []:
+        normalized = clean_optional(raw_field).lower().replace("-", "_")
+        mapped = _PREVIEW_REVIEW_ALIASES.get(normalized)
+        if mapped:
+            fields.add(mapped)
+
+    warning_text = " ".join(str(value) for value in item.get("warnings") or []).lower()
+    warning_markers = {
+        "kuitansi": "no_kuitansi",
+        "akun": "akun",
+        "nilai bruto": "nilai_bruto",
+        "pembebanan": "pembebanan",
+        "detail coa": "pembebanan",
+        "uraian": "deskripsi",
+        "deskripsi": "deskripsi",
+        "tanggal spm": "tanggal_spm",
+        "nomor spm": "nomor_spm",
+    }
+    for marker, field in warning_markers.items():
+        if marker in warning_text:
+            fields.add(field)
+
+    required = {
+        "akun": preview_item_value(item, "akun"),
+        "no_kuitansi": preview_item_value(item, "no_kuitansi"),
+        "nilai_bruto": preview_item_value(item, "nilai_bruto"),
+        "nomor_spm": preview_item_value(item, "nomor_spm"),
+        "tanggal_spm": preview_item_value(item, "tanggal_spm"),
+    }
+    fields.update(field for field, value in required.items() if value in (None, "", 0, Decimal("0")))
+    if not preview_item_value(item, "pembebanan"):
+        fields.add("pembebanan")
+    return sorted(fields)
+
+
+def preview_blank_fields(item):
+    """Bedakan nilai yang tidak tersedia dari angka nol yang benar-benar dibaca."""
+    if "_preview_blank_fields" in item:
+        return sorted(set(item.get("_preview_blank_fields") or []))
+    fields = set()
+    for field in ("bulan_sp2d", "nilai_bruto", "pph21"):
+        if preview_item_value(item, field) in (None, ""):
+            fields.add(field)
+    pph21_provenance = (item.get("field_provenance") or {}).get("pph21")
+    pph21_value = preview_item_value(item, "pph21")
+    pph21_is_unproven_zero = bool(
+        re.fullmatch(r"0+(?:[.,]0+)?", str(pph21_value).strip())
+    )
+    if pph21_is_unproven_zero and not pph21_provenance:
+        fields.add("pph21")
+    return sorted(fields)
 
 
 def build_drpp_batch_rows(parsed, paket, user=None):
@@ -1702,6 +1808,10 @@ def build_drpp_batch_rows(parsed, paket, user=None):
         if not cara_pembayaran:
             cara_pembayaran = "UP/TUP" if is_gup(jenis_spm) or is_tup(jenis_spm) else ("LS" if is_ls(jenis_spm) else "")
         pembebanan = clean_optional(item.get("pembebanan"))
+        review_fields = preview_review_fields(item)
+        blank_fields = preview_blank_fields(item)
+        item_status = clean_optional(item.get("status_detail") or item.get("status")).upper()
+        needs_review = bool(review_fields or item_status in {"PERLU_REVIEW", "GAGAL"})
         row = TransactionDetail(
             satker_code=clean_optional(
                 item.get("satker_code")
@@ -1724,18 +1834,14 @@ def build_drpp_batch_rows(parsed, paket, user=None):
             pembebanan=pembebanan[:255],
             fp=clean_optional(item.get("fp"))[:100],
             pph21=pph21,
-            status_detail=(
-                TransactionDetail.StatusDetail.LENGKAP
-                if pembebanan
-                else TransactionDetail.StatusDetail.PERLU_REVIEW
-            ),
+            status_detail=(TransactionDetail.StatusDetail.PERLU_REVIEW if needs_review else TransactionDetail.StatusDetail.LENGKAP),
             drpp_status=TransactionDetail.DRPPStatus.COCOK if item.get("no_drpp") else TransactionDetail.DRPPStatus.BELUM_ADA,
             created_by=user,
         )
         row.batch_warnings = list(item.get("warnings") or [])
-        row.batch_status = clean_optional(item.get("status_detail") or item.get("status")) or (
-            "LENGKAP" if pembebanan else "PERLU_REVIEW"
-        )
+        row.preview_review_fields = review_fields
+        row.preview_blank_fields = blank_fields
+        row.batch_status = "GAGAL" if item_status == "GAGAL" else ("PERLU_REVIEW" if needs_review else "LENGKAP")
         rows.append(row)
     return rows
 
@@ -1812,9 +1918,9 @@ def upsert_drpp_group(parsed, paket, no_drpp, user=None, sp2d_raw=None, document
             saved.append(_fill_empty_transaction_fields(matches[0], candidate))
             continue
         candidate.status_detail = (
-            TransactionDetail.StatusDetail.LENGKAP
-            if candidate.pembebanan
-            else TransactionDetail.StatusDetail.PERLU_REVIEW
+            TransactionDetail.StatusDetail.PERLU_REVIEW
+            if getattr(candidate, "preview_review_fields", None) or candidate.batch_status != "LENGKAP"
+            else TransactionDetail.StatusDetail.LENGKAP
         )
         candidate.drpp_status = TransactionDetail.DRPPStatus.COCOK
         candidate.save()

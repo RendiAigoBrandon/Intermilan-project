@@ -141,33 +141,32 @@
         {% endif %}
 
         <div class="table-wrap">
-          <table class="data-table data-table-wide">
+          <table class="data-table data-table-wide" data-preview-columns="15">
             <thead>
               <tr>
-                <th>Helper</th><th>Akun</th><th>SP2D Bulan</th><th>Cara Pembayaran</th><th>Nomor SPM</th><th>Tanggal SPM</th><th>Jenis SPM</th><th>No. Kuitansi</th><th>No. DRPP</th><th>Deskripsi</th><th class="col-nominal">Nilai Bruto</th><th class="col-nominal">Nilai Netto</th><th>Pembebanan</th><th>FP</th><th class="col-nominal">PPh21</th><th>Status</th>
+                <th>Helper</th><th>Akun</th><th>Bulan SP2D</th><th>Cara Pembayaran</th><th>Nomor SPM</th><th>Tanggal SPM</th><th>Jenis SPM</th><th>No. Kuitansi</th><th>No. DRPP</th><th>Deskripsi</th><th class="col-nominal">Nilai Bruto</th><th class="col-nominal">Nilai Netto</th><th>Pembebanan</th><th>FP</th><th class="col-nominal">PPh21</th>
               </tr>
             </thead>
             <tbody>
               {% for row in group.rows %}
-              <tr>
-                <td><input class="table-input js-helper" name="rows-{{ row.form_index }}-helper" value="{{ row.helper }}" aria-label="Helper"></td>
-                <td><input class="table-input js-helper-akun" name="rows-{{ row.form_index }}-akun" value="{{ row.akun }}"></td>
-                <td><input class="table-input" name="rows-{{ row.form_index }}-bulan_sp2d" value="{{ row.bulan_sp2d|month_id }}"></td>
-                <td><input class="table-input" name="rows-{{ row.form_index }}-cara_pembayaran" value="{{ row.cara_pembayaran }}"></td>
-                <td><input class="table-input" name="rows-{{ row.form_index }}-nomor_spm" value="{{ row.nomor_spm }}"></td>
-                <td><input class="table-input" type="date" name="rows-{{ row.form_index }}-tanggal_spm" value="{{ row.tanggal_spm|date:'Y-m-d' }}"></td>
-                <td><input class="table-input" name="rows-{{ row.form_index }}-jenis_spm" value="{{ row.jenis_spm }}"></td>
-                <td><input class="table-input js-helper-kw" name="rows-{{ row.form_index }}-no_kuitansi" value="{{ row.no_kuitansi }}"></td>
-                <td><input class="table-input" name="rows-{{ row.form_index }}-no_drpp" value="{{ row.no_drpp }}"></td>
-                <td><textarea class="table-input" name="rows-{{ row.form_index }}-deskripsi" rows="2">{{ row.deskripsi }}</textarea></td>
-                <td><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_bruto" value="{{ row.nilai_bruto|id_number }}"></td>
-                <td><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_netto" value="{{ row.nilai_netto|id_number }}"></td>
-                <td><input class="table-input" name="rows-{{ row.form_index }}-pembebanan" value="{{ row.pembebanan }}"></td>
-                <td><input class="table-input" name="rows-{{ row.form_index }}-fp" value="{{ row.fp }}"></td>
-                <td><input class="table-input col-nominal" name="rows-{{ row.form_index }}-pph21" value="{{ row.pph21|id_number }}"></td>
-                <td><span class="status-pill">{{ row.batch_status }}</span></td>
+              <tr data-row-status="{{ row.batch_status }}">
+                <td class="preview-field" data-field-status="VALID"><output class="table-output js-helper" aria-label="Helper">{{ row.helper }}</output></td>
+                <td class="preview-field{% if 'akun' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'akun' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input js-helper-akun" name="rows-{{ row.form_index }}-akun" value="{{ row.akun }}" aria-label="Akun">{% if 'akun' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'bulan_sp2d' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'bulan_sp2d' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-bulan_sp2d" value="{{ row.bulan_sp2d|preview_month }}" aria-label="Bulan SP2D">{% if 'bulan_sp2d' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'cara_pembayaran' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'cara_pembayaran' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-cara_pembayaran" value="{{ row.cara_pembayaran }}" aria-label="Cara Pembayaran">{% if 'cara_pembayaran' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'nomor_spm' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'nomor_spm' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-nomor_spm" value="{{ row.nomor_spm }}" aria-label="Nomor SPM">{% if 'nomor_spm' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'tanggal_spm' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'tanggal_spm' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" type="date" name="rows-{{ row.form_index }}-tanggal_spm" value="{{ row.tanggal_spm|date:'Y-m-d' }}" aria-label="Tanggal SPM">{% if 'tanggal_spm' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'jenis_spm' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'jenis_spm' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-jenis_spm" value="{{ row.jenis_spm }}" aria-label="Jenis SPM">{% if 'jenis_spm' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'no_kuitansi' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'no_kuitansi' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input js-helper-kw" name="rows-{{ row.form_index }}-no_kuitansi" value="{{ row.no_kuitansi }}" aria-label="No. Kuitansi">{% if 'no_kuitansi' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'no_drpp' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'no_drpp' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-no_drpp" value="{{ row.no_drpp }}" aria-label="No. DRPP">{% if 'no_drpp' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'deskripsi' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'deskripsi' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><textarea class="table-input" name="rows-{{ row.form_index }}-deskripsi" rows="2" aria-label="Deskripsi">{{ row.deskripsi }}</textarea>{% if 'deskripsi' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'nilai_bruto' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'nilai_bruto' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_bruto" value="{% if 'nilai_bruto' not in row.preview_blank_fields %}{{ row.nilai_bruto|preview_number }}{% endif %}" aria-label="Nilai Bruto">{% if 'nilai_bruto' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'nilai_netto' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'nilai_netto' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_netto" value="{{ row.nilai_netto|preview_number }}" aria-label="Nilai Netto">{% if 'nilai_netto' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'pembebanan' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'pembebanan' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-pembebanan" value="{{ row.pembebanan }}" aria-label="Pembebanan">{% if 'pembebanan' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'fp' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'fp' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-fp" value="{{ row.fp }}" aria-label="FP">{% if 'fp' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'pph21' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'pph21' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-pph21" value="{% if 'pph21' not in row.preview_blank_fields %}{{ row.pph21|preview_number }}{% endif %}" aria-label="PPh21">{% if 'pph21' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
               </tr>
-              {% empty %}<tr><td colspan="16" class="empty">Baris DRPP belum terbaca.</td></tr>{% endfor %}
+              {% empty %}<tr><td colspan="15" class="empty">Baris DRPP belum terbaca.</td></tr>{% endfor %}
             </tbody>
           </table>
         </div>
@@ -181,12 +180,12 @@
     {% else %}
     <div class="table-wrap">
       <input type="hidden" name="preview_row_count" value="{{ transaction_rows|length }}">
-      <table class="data-table data-table-wide">
+      <table class="data-table data-table-wide" data-preview-columns="15">
         <thead>
           <tr>
             <th>Helper</th>
             <th>Akun</th>
-            <th>SP2D Bulan</th>
+            <th>Bulan SP2D</th>
             <th>Cara Pembayaran</th>
             <th>Nomor SPM</th>
             <th>Tanggal SPM</th>
@@ -206,7 +205,7 @@
           <tr>
             <td>{{ row.akun }}{{ row.no_kuitansi }}</td>
             <td><input class="table-input" name="rows-{{ forloop.counter0 }}-akun" value="{{ row.akun }}"></td>
-            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-bulan_sp2d" value="{{ row.bulan_sp2d|month_id }}"></td>
+            <td><input class="table-input" name="rows-{{ forloop.counter0 }}-bulan_sp2d" value="{{ row.bulan_sp2d|preview_month }}"></td>
             <td><input class="table-input" name="rows-{{ forloop.counter0 }}-cara_pembayaran" value="{{ row.cara_pembayaran }}"></td>
             <td><input class="table-input" name="rows-{{ forloop.counter0 }}-nomor_spm" value="{{ row.nomor_spm }}"></td>
             <td><input class="table-input" type="date" name="rows-{{ forloop.counter0 }}-tanggal_spm" value="{{ row.tanggal_spm|date:'Y-m-d' }}"></td>
@@ -214,11 +213,11 @@
             <td><input class="table-input" name="rows-{{ forloop.counter0 }}-no_kuitansi" value="{{ row.no_kuitansi }}"></td>
             <td><input class="table-input" name="rows-{{ forloop.counter0 }}-no_drpp" value="{{ row.no_drpp }}"></td>
             <td><textarea class="table-input" name="rows-{{ forloop.counter0 }}-deskripsi" rows="2">{{ row.deskripsi }}</textarea></td>
-            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-nilai_bruto" value="{{ row.nilai_bruto|id_number }}"></td>
-            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-nilai_netto" value="{{ row.nilai_netto|id_number }}"></td>
+            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-nilai_bruto" value="{{ row.nilai_bruto|preview_number }}"></td>
+            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-nilai_netto" value="{{ row.nilai_netto|preview_number }}"></td>
             <td><input class="table-input" name="rows-{{ forloop.counter0 }}-pembebanan" value="{{ row.pembebanan }}"></td>
             <td><input class="table-input" name="rows-{{ forloop.counter0 }}-fp" value="{{ row.fp }}"></td>
-            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-pph21" value="{{ row.pph21|id_number }}"></td>
+            <td class="col-nominal"><input class="table-input col-nominal" name="rows-{{ forloop.counter0 }}-pph21" value="{{ row.pph21|preview_number }}"></td>
           </tr>
           {% empty %}
           <tr>
@@ -523,7 +522,7 @@
     var kuitansi = row.querySelector(".js-helper-kw");
     var helper = row.querySelector(".js-helper");
     if (!akun || !kuitansi || !helper) return;
-    function updateHelper() { helper.value = akun.value.trim() + kuitansi.value.trim(); }
+    function updateHelper() { helper.textContent = akun.value.trim() + kuitansi.value.trim(); }
     akun.addEventListener("input", updateHelper);
     kuitansi.addEventListener("input", updateHelper);
   });

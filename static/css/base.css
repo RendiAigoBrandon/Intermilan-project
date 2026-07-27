@@ -153,6 +153,29 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .drpp-metrics dt { color: var(--muted); font-size: 12px; font-weight: 700; }
 .drpp-metrics dd { margin: 3px 0 0; color: var(--text); font-weight: 800; }
 .drpp-group-actions { margin-top: 14px; }
+.preview-field { vertical-align: top; }
+.preview-field-review {
+    background: rgba(245, 158, 11, 0.08);
+    box-shadow: inset 0 3px 0 #f59e0b;
+}
+.table-output {
+    display: block;
+    min-width: 180px;
+    padding: 11px 12px;
+    overflow-wrap: anywhere;
+    font-weight: 700;
+}
+.field-review-badge {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: #fff3cd;
+    color: #7a4b00;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+}
 .drpp-footer-actions {
     padding: 16px 0 0;
     border-top: 1px solid var(--border);

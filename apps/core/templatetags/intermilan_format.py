@@ -18,6 +18,13 @@ def id_number(value):
 
 
 @register.filter
+def preview_number(value):
+    if value in (None, ""):
+        return ""
+    return id_number(value)
+
+
+@register.filter
 def month_id(value):
     names = {
         1: "Januari",
@@ -37,6 +44,14 @@ def month_id(value):
         return names.get(int(value), "-")
     except (TypeError, ValueError):
         return "-"
+
+
+@register.filter
+def preview_month(value):
+    if value in (None, ""):
+        return ""
+    result = month_id(value)
+    return "" if result == "-" else result
 
 
 @register.filter

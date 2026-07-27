@@ -683,7 +683,13 @@ def tesseract_page_text_best_rotation(pytesseract, image, document_type=None):
         score = score_text(text, document_type=document_type, confidence=confidence)
         if score > best[5]:
             best = (text, confidence, page_warnings, tsv_words, rotation, score)
-        can_stop = rotation in {0, 270, 180}
+        # Pada 0 derajat, early-stop hanya aman jika anchor dokumen nyata sudah
+        # terbaca. Gibberish numerik panjang tanpa struktur tetap dibandingkan
+        # dengan kedua orientasi landscape.
+        upright_has_document_anchor = (
+            rotation == 0 and classify_page_types(text) != ["UNKNOWN"]
+        )
+        can_stop = rotation in {270, 180} or upright_has_document_anchor
         if can_stop and rotation_score_is_strong(text, confidence, score):
             break
     text, confidence, page_warnings, tsv_words, rotation, score = best

@@ -20,7 +20,7 @@ from apps.core.drpp_batch_parser import (
     parse_drpp_summary,
     parse_drpp_upload_batch,
 )
-from apps.core.parsers import clean_description
+from apps.core.parsers import clean_description, consensus_sp2d_from_pages
 
 
 class DRPPBatchParserUnitTests(SimpleTestCase):
@@ -59,6 +59,61 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
         self.assertEqual(probe.call_count, 8)
         self.assertTrue(all(pages[index].get("force_probe") for index in (7, 8, 9)))
         self.assertFalse(pages[10].get("force_probe", False))
+
+    def test_mixed_pdf_selects_identity_prefix_and_drpp_continuation_pages(self):
+        pages = [
+            {
+                "file_name": "mixed.pdf",
+                "page_number": number,
+                "type_hint": "KUITANSI",
+                "drpp_hint": "00123",
+            }
+            for number in range(1, 6)
+        ]
+        texts = {
+            1: "SURAT PERINTAH MEMBAYAR",
+            2: "dokumen pendukung",
+            3: "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN",
+            4: "BUKTI PENGELUARAN 00123/KW/000001/2026",
+            5: "DETAIL COA",
+        }
+        with patch(
+            "apps.core.drpp_batch_parser._probe_page_text",
+            side_effect=lambda page: {"text": texts[page["page_number"]], "cache_hit": False},
+        ):
+            discover_embedded_drpp_pages(pages)
+
+        self.assertTrue(all(page.get("force_probe") for page in pages))
+        self.assertEqual(pages[3]["type_hint"], "DRPP_SUMMARY")
+
+    def test_sp2d_page_has_distinct_document_type(self):
+        document_type, _, _ = _classification("SURAT PERINTAH PENCAIRAN DANA")
+        self.assertEqual(document_type, "SP2D")
+        detail_type, _, _ = _classification(
+            "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D"
+        )
+        self.assertEqual(detail_type, "SP2D")
+
+    def test_sp2d_number_uses_repeated_table_consensus(self):
+        pages = [{
+            "page_types": ["DETAIL_SPP_SPM_SP2D", "SP2D"],
+            "text": " ".join([
+                "260100000036855",
+                "260100000036885",
+                "260100000036855",
+                "260100000036855",
+            ]),
+        }]
+
+        self.assertEqual(consensus_sp2d_from_pages(pages), "260100000036855")
+
+    def test_sp2d_number_does_not_use_unclassified_support_page(self):
+        pages = [{
+            "page_types": ["SUPPORT_DOCUMENT"],
+            "text": "260100000036855 260100000036855",
+        }]
+
+        self.assertEqual(consensus_sp2d_from_pages(pages), "")
 
     def test_clean_description_removes_drpp_footer_and_trailing_ocr_noise(self):
         value = (

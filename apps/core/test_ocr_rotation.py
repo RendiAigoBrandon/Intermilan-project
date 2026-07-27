@@ -35,3 +35,37 @@ class OCRRotationSelectionTests(SimpleTestCase):
         self.assertEqual(result[4], 270)
         self.assertEqual(result[5], [0, 90, 270])
         self.assertIn("DETAIL PENGELUARAN", result[0])
+
+    def test_long_numeric_gibberish_at_zero_does_not_stop_landscape_comparison(self):
+        texts = {
+            0: "000000 111111 222222 3.799.400 1.100.000 " * 30,
+            90: "teks terbalik " * 20,
+            270: (
+                "KEMENTERIAN KEUANGAN REPUBLIK INDONESIA "
+                "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D "
+                "NO SP2D 260100000036855"
+            ),
+            180: "",
+        }
+
+        def fake_page_text(_pytesseract, image):
+            return texts[image.rotation], 80.0, [], []
+
+        with patch("apps.core.ocr.tesseract_page_text", side_effect=fake_page_text):
+            result = tesseract_page_text_best_rotation(object(), _Image())
+
+        self.assertEqual(result[4], 270)
+        self.assertEqual(result[5], [0, 90, 270])
+
+    def test_upright_page_with_document_anchor_stops_without_extra_ocr(self):
+        text = "SURAT PERINTAH MEMBAYAR NOMOR SPM 00203A"
+
+        with patch(
+            "apps.core.ocr.tesseract_page_text",
+            return_value=(text, 80.0, [], []),
+        ) as page_text:
+            result = tesseract_page_text_best_rotation(object(), _Image())
+
+        self.assertEqual(result[4], 0)
+        self.assertEqual(result[5], [0])
+        page_text.assert_called_once()

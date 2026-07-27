@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from decimal import Decimal
 from pathlib import Path
 
@@ -44,6 +44,7 @@ PAGE_TYPES = (
     "DRPP_COA",
     "SPM",
     "SPP",
+    "SP2D",
     "KUITANSI",
     "SURAT_PERNYATAAN_BAYAR",
     "MEMO_PENCAIRAN",
@@ -474,6 +475,8 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
             page["probe_ocr_called"] = not probe.get("cache_hit", False)
             page["probe_cache_hit"] = bool(probe.get("cache_hit"))
             document_type = _classification(probe.get("text", ""))[0]
+            if document_type in {"SPM", "SPP", "SP2D"}:
+                page["force_probe"] = True
             if document_type == "DRPP_SUMMARY":
                 page["force_probe"] = True
                 found_summary = True
@@ -481,8 +484,20 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
             elif found_summary and document_type == "DRPP_COA":
                 page["force_probe"] = True
                 break
-            elif found_summary and page["page_number"] > summary_page + 2:
-                break
+            elif found_summary:
+                page["force_probe"] = True
+                page["type_hint"] = "DRPP_SUMMARY"
+                page["drpp_continuation"] = True
+                if page["page_number"] >= summary_page + 2:
+                    break
+
+        if found_summary:
+            # Dalam PDF campuran, halaman identitas umumnya berada sebelum tabel
+            # DRPP. Probe resolusi rendah hanya memilih kandidat; OCR detail tetap
+            # dijalankan page-level dan berhenti pada batas struktural ringkasan.
+            for candidate in page_index:
+                if candidate["file_name"] == file_name and candidate["page_number"] < summary_page:
+                    candidate["force_probe"] = True
 
     if not numbers:
         bundle_files = {
@@ -544,7 +559,10 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
 
 
 def _ocr_page(page):
-    cached = _load_page_cache(page, "tesseract-ind+eng")
+    # Versi ini membandingkan kedua orientasi landscape sebelum menerima hasil.
+    # Versi cache dipisahkan agar hasil lama yang terbalik tidak digunakan lagi.
+    cache_engine = "tesseract-ind+eng-v3"
+    cached = _load_page_cache(page, cache_engine)
     if cached:
         return cached
     try:
@@ -572,7 +590,7 @@ def _ocr_page(page):
         "cache_hit": False,
         "cache_empty": not bool(text.strip()),
     }
-    _save_page_cache(page, "tesseract-ind+eng", result)
+    _save_page_cache(page, cache_engine, result)
 
     if (len(text.strip()) < 40 or confidence < 35) and parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
         paddle_cache = _load_page_cache(page, "paddleocr")
@@ -605,6 +623,13 @@ def _classification(text):
         ("DRPP_SUMMARY", ("DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "DAFTAR RINCIAN PERINTAAN PEMBAYARAN", "NOMOR DRPP")),
         ("SPM", ("SURAT PERINTAH MEMBAYAR",)),
         ("SPP", ("SURAT PERMINTAAN PEMBAYARAN",)),
+        (
+            "SP2D",
+            (
+                "SURAT PERINTAH PENCAIRAN DANA",
+                "DETAIL PENGELUARAN DAN POTONGAN PADA SPP/SPM/SP2D",
+            ),
+        ),
         ("SURAT_PERNYATAAN_BAYAR", ("SURAT PERNYATAAN BAYAR",)),
         ("MEMO_PENCAIRAN", ("MEMO PENCAIRAN",)),
         ("FAKTUR_PAJAK", ("FAKTUR PAJAK",)),
@@ -658,8 +683,10 @@ def classify_candidate_pages(page_index, ocr=True):
             page.get("is_representative")
             and page.get("type_hint") == "DRPP_SUMMARY"
             and page.get("document_type") in {"UNKNOWN", "SUPPORT_DOCUMENT"}
-            and "BUKTI PENGELUARAN" in text.upper()
-            and re.search(r"\d{3,6}/KW/", text, re.I)
+            and (
+                page.get("drpp_continuation")
+                or ("BUKTI PENGELUARAN" in text.upper() and re.search(r"\d{3,6}/KW/", text, re.I))
+            )
         ):
             page["document_type"] = "DRPP_SUMMARY"
             page["confidence"] = 95
@@ -720,6 +747,115 @@ def _extracted_from_pages(pages):
         "tesseract_text_length": sum(len(page.get("text", "")) for page in pages if page.get("engine") == "tesseract"),
         "tesseract_reason": "OCR selektif per halaman kandidat.",
     }
+
+
+def verify_drpp_rows_high_res(items, pages, printed_total, dpi=360):
+    """Verifikasi ulang baris tabel hanya saat hasil awal tidak balance/review."""
+    if not items or not printed_total:
+        return []
+    try:
+        import pytesseract
+        from PIL import ImageOps
+    except Exception:
+        return []
+    if not configure_tesseract(pytesseract):
+        return []
+
+    pages_by_number = {page.get("page_number"): page for page in pages}
+    images = {}
+    candidates = []
+    for item in items:
+        page = pages_by_number.get(item.get("source_page"))
+        box = item.get("bounding_box") or []
+        if not page or len(box) != 4 or int(page.get("rotation") or 0) != 0:
+            candidates.append({})
+            continue
+        page_number = page.get("page_number")
+        if page_number not in images:
+            low_image = _render_page(page, 220)
+            high_image = _render_page(page, dpi)
+            images[page_number] = (low_image, high_image)
+        low_image, high_image = images[page_number]
+        if low_image is None or high_image is None:
+            candidates.append({})
+            continue
+        scale = high_image.width / max(low_image.width, 1)
+        top = max(0, int((float(box[1]) - 8) * scale))
+        bottom = min(high_image.height, int((float(box[1]) + 52) * scale))
+        row_image = ImageOps.autocontrast(high_image.crop((0, top, high_image.width, bottom)))
+        try:
+            text = pytesseract.image_to_string(row_image, lang="ind+eng", config="--psm 6")
+        except Exception:
+            candidates.append({})
+            continue
+        kw_match = re.search(r"(\d{3,6})\s*/\s*KW\s*/\s*(\d{5,9})\s*/\s*(20\d{2})", text, re.I)
+        akun_match = re.search(r"\b(5\d{5})\b", text)
+        amounts = re.findall(r"\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?\b", text)
+        candidates.append({
+            "text": " ".join(text.split()),
+            "no_bukti": (
+                f"{kw_match.group(1).zfill(5)}/KW/{kw_match.group(2)}/{kw_match.group(3)}"
+                if kw_match else ""
+            ),
+            "akun": akun_match.group(1) if akun_match else "",
+            "jumlah": _money(re.sub(r"\D", "", amounts[-1])) if amounts else Decimal("0"),
+        })
+
+    kw_parts = []
+    for item, candidate in zip(items, candidates):
+        for value in (candidate.get("no_bukti"), item.get("no_bukti")):
+            match = re.fullmatch(r"(\d{5})/KW/(\d{5,9})/(20\d{2})", str(value or ""), re.I)
+            if match:
+                kw_parts.append(match.groups())
+    dominant_satker = Counter(part[1] for part in kw_parts).most_common(1)
+    dominant_year = Counter(part[2] for part in kw_parts).most_common(1)
+    if dominant_satker and dominant_year:
+        satker = dominant_satker[0][0]
+        year = dominant_year[0][0]
+        for candidate in candidates:
+            match = re.fullmatch(r"(\d{5})/KW/(\d{5,9})/(20\d{2})", str(candidate.get("no_bukti") or ""), re.I)
+            if match:
+                candidate["no_bukti"] = f"{match.group(1)}/KW/{satker}/{year}"
+
+    candidate_total = sum(
+        (
+            candidate.get("jumlah") or _money(item.get("jumlah"))
+            for item, candidate in zip(items, candidates)
+        ),
+        Decimal("0"),
+    )
+    amounts_verified = candidate_total == printed_total
+    verification = []
+    for item, candidate in zip(items, candidates):
+        if not candidate:
+            continue
+        changed = []
+        for field in ("no_bukti", "akun"):
+            value = candidate.get(field)
+            if value and value != item.get(field):
+                item[f"{field}_ocr"] = item.get(field)
+                item[field] = value
+                changed.append(field)
+        if amounts_verified and candidate.get("jumlah") and candidate["jumlah"] != _money(item.get("jumlah")):
+            item["jumlah_ocr"] = item.get("jumlah")
+            item["jumlah"] = candidate["jumlah"]
+            item["amount_verified_high_res"] = True
+            changed.append("jumlah")
+        if candidate.get("akun"):
+            item["review_fields"] = [
+                field for field in (item.get("review_fields") or [])
+                if field not in {"akun", "akun_invalid"}
+            ]
+            item["needs_review"] = bool(item["review_fields"])
+            item["status"] = "Perlu Review" if item["needs_review"] else "Terbaca"
+        verification.append({
+            "source_page": item.get("source_page"),
+            "fields": changed,
+            "method": "high_res_row_ocr",
+            "candidate_amount": candidate.get("jumlah"),
+            "amounts_verified": amounts_verified,
+        })
+    return verification
 
 
 def parse_drpp_summary(number, pages):
@@ -799,6 +935,14 @@ def parse_drpp_summary(number, pages):
     items = parsed.get("items", [])
     printed_total = _money(parsed["metadata"].get("printed_total"))
     parsed_total = sum((_money(item.get("jumlah")) for item in items), Decimal("0"))
+    if printed_total > 0 and (
+        parsed_total != printed_total
+        or any(item.get("needs_review") for item in items)
+    ):
+        parsed["row_verification"] = verify_drpp_rows_high_res(items, summaries, printed_total)
+        parsed_total = sum((_money(item.get("jumlah")) for item in items), Decimal("0"))
+        parsed["metadata"]["total"] = parsed_total
+        parsed["metadata"]["total_valid"] = parsed_total == printed_total
     if len(items) == 1 and printed_total > 0 and parsed_total != printed_total:
         items[0]["jumlah_ocr"] = items[0].get("jumlah")
         items[0]["jumlah"] = printed_total
@@ -1172,14 +1316,25 @@ def resolve_spm_parent(drpps, page_index):
     # database fallback, dan nama arsip/member.
     for candidate in page_index:
         if candidate.get("document_type") == "SPM":
-            spm = _load_page_cache(candidate, "spm-detail")
+            identity_cache_engine = "spm-detail-v2"
+            spm = _load_page_cache(candidate, identity_cache_engine)
             if not spm:
+                summary_boundaries = [
+                    page.get("page_number")
+                    for page in page_index
+                    if page.get("file_name") == candidate.get("file_name")
+                    and page.get("document_type") == "DRPP_SUMMARY"
+                ]
+                first_summary_page = min(summary_boundaries) if summary_boundaries else None
                 identity_pages = [
                     page
                     for page in page_index
                     if page.get("is_representative", True)
                     and page.get("file_name") == candidate.get("file_name")
-                    and page.get("document_type") in {"SPM", "SPP"}
+                    and (
+                        page.get("document_type") in {"SPM", "SPP", "SP2D"}
+                        or (first_summary_page and page.get("page_number", 0) < first_summary_page)
+                    )
                 ]
                 extracted = _extracted_from_pages(identity_pages or [candidate])
                 spm = parse_spm_pdf(
@@ -1188,7 +1343,7 @@ def resolve_spm_parent(drpps, page_index):
                     extracted=extracted, 
                     parse_details=False
                 )
-                _save_page_cache(candidate, "spm-detail", spm)
+                _save_page_cache(candidate, identity_cache_engine, spm)
             
             if spm:
                 spm_meta = spm.get("metadata", {})
@@ -1362,6 +1517,9 @@ def _public_page(page):
         "file_name": page["file_name"],
         "page_number": page["page_number"],
         "document_type": page.get("document_type", "UNKNOWN"),
+        "type_hint": page.get("type_hint", "UNKNOWN"),
+        "drpp_hint": page.get("drpp_hint", ""),
+        "drpp_detected": page.get("drpp_detected", ""),
         "confidence": page.get("confidence", 0),
         "evidence": page.get("evidence", []),
         "page_hash": page.get("page_hash", ""),

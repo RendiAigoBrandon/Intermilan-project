@@ -19,7 +19,7 @@ from apps.core.drpp_batch_parser import PARSER_VERSION as DRPP_BATCH_VERSION, pa
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.dk.models import TransactionDetail
-from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, probe_package_identity, upsert_drpp_group
+from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, upsert_drpp_group
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMUpload
@@ -406,6 +406,7 @@ def paket_spm_preview(request):
 
             row_count = int(request.POST.get("preview_row_count") or 0)
             if row_count:
+                source_preview_rows = parsed.get("preview_rows") or parsed.get("kw_items") or []
                 preview_rows = []
                 for index in range(row_count):
                     row = {
@@ -425,6 +426,20 @@ def paket_spm_preview(request):
                         "pph21": clean_text(request.POST.get(f"rows-{index}-pph21")),
                     }
                     if any(row.values()):
+                        source_row = source_preview_rows[index] if index < len(source_preview_rows) else {}
+                        review_fields = set(preview_review_fields(source_row))
+                        blank_fields = set(preview_blank_fields(source_row))
+                        for field in tuple(review_fields):
+                            original = clean_text(preview_item_value(source_row, field))
+                            if row.get(field) and row.get(field) != original:
+                                review_fields.discard(field)
+                        for field in tuple(blank_fields):
+                            if row.get(field):
+                                blank_fields.discard(field)
+                        row["_preview_review_fields"] = sorted(review_fields)
+                        row["_preview_blank_fields"] = sorted(blank_fields)
+                        row["warnings"] = list(source_row.get("warnings") or [])
+                        row["status_detail"] = "PERLU_REVIEW" if review_fields else "LENGKAP"
                         preview_rows.append(row)
                 parsed["preview_rows"] = preview_rows
                 if preview_rows:
@@ -547,7 +562,10 @@ def paket_spm_preview(request):
                         return redirect("paket_spm:preview")
                         
                     if commit_group:
-                        items = commit_group.get("items") or []
+                        items = [
+                            row for row in build_drpp_batch_rows(parsed, paket, user=request.user)
+                            if clean_optional(row.no_drpp) == commit_drpp
+                        ]
                         validation = commit_group.get("validation") or {}
                         errors = []
                         
@@ -557,13 +575,13 @@ def paket_spm_preview(request):
                         if validation.get("status") != "BALANCE":
                             errors.append(validation.get("status_message") or "DRPP tidak balance.")
                         
-                        kw_numbers = [item.get("no_kuitansi") for item in items if item.get("no_kuitansi")]
+                        kw_numbers = [item.no_kuitansi for item in items if item.no_kuitansi]
                         if len(kw_numbers) != len(set(kw_numbers)):
                             errors.append("Terdapat nomor kuitansi duplikat.")
                         
                         for item in items:
-                            pembebanan = str(item.get("pembebanan") or "").strip()
-                            akun = str(item.get("akun") or "").strip()
+                            pembebanan = str(item.pembebanan or "").strip()
+                            akun = str(item.akun or "").strip()
                             if not akun:
                                 errors.append("Terdapat kuitansi dengan Akun kosong.")
                             if not pembebanan:
@@ -1172,7 +1190,7 @@ def build_transaction_groups(parsed, transaction_rows):
             errors.extend(error.capitalize() + "." for error in row_errors)
             if row_errors:
                 row.batch_status = "GAGAL"
-            elif not row.pembebanan:
+            elif getattr(row, "preview_review_fields", None) or row.batch_status == "PERLU_REVIEW" or not row.pembebanan:
                 row.batch_status = "PERLU_REVIEW"
             else:
                 row.batch_status = "LENGKAP"
