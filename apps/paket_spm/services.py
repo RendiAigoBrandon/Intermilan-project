@@ -6,6 +6,7 @@ from decimal import Decimal
 from django.db.models import Q
 from django.utils.dateparse import parse_date as parse_iso_date
 
+from apps.core.drpp_batch_parser import evaluate_drpp_group_commitability
 from apps.core.parsers import classify_document, extract_pdf_text, guess_number_from_filename, parse_spm_number_from_pages
 from apps.dk.services import refresh_transaction_document_status
 from apps.dk.models import TransactionDetail
@@ -1857,48 +1858,13 @@ def upsert_drpp_group(parsed, paket, no_drpp, user=None, sp2d_raw=None, document
     )
     if not group:
         raise ValueError("Kelompok DRPP tidak ditemukan pada preview.")
-    if not candidates:
-        raise ValueError("Kelompok DRPP tidak memiliki baris transaksi.")
-
-    expected_count = len((group.get("drpp") or {}).get("items") or [])
-    expected_total = money_value(
-        ((group.get("drpp") or {}).get("metadata") or {}).get("printed_total")
-        or ((group.get("drpp") or {}).get("metadata") or {}).get("total")
+    validation = evaluate_drpp_group_commitability(
+        group.get("drpp") or {},
+        candidates,
+        parser_validation=group.get("validation") or {},
     )
-    actual_total = sum((row.nilai_bruto for row in candidates), Decimal("0"))
-    if len(candidates) != expected_count:
-        raise ValueError(
-            f"Jumlah baris hasil ({len(candidates)}) tidak sama dengan jumlah baris DRPP ({expected_count})."
-        )
-    if expected_total and actual_total != expected_total:
-        raise ValueError(
-            f"Total baris Rp{actual_total:,.0f} tidak sama dengan total DRPP Rp{expected_total:,.0f}."
-        )
-
-    upload_keys = set()
-    for candidate in candidates:
-        if not candidate.no_drpp:
-            raise ValueError("Nomor DRPP kosong.")
-        if not candidate.no_kuitansi:
-            raise ValueError("Nomor kuitansi kosong.")
-        if not candidate.akun:
-            raise ValueError("Akun kosong.")
-        if candidate.nilai_bruto <= 0:
-            raise ValueError("Nilai bruto nol tanpa bukti.")
-        if not candidate.nomor_spm:
-            raise ValueError("Nomor SPM kosong.")
-        if not candidate.tanggal_spm:
-            raise ValueError("Tanggal SPM kosong.")
-        key = (
-            normalize_key(candidate.satker_code),
-            candidate.tanggal_spm.year,
-            normalize_key(candidate.nomor_spm),
-            normalize_key(candidate.no_kuitansi),
-            normalize_key(candidate.akun),
-        )
-        if key in upload_keys:
-            raise ValueError("Duplikat exact key ditemukan dalam upload yang sama.")
-        upload_keys.add(key)
+    if not validation["can_commit"]:
+        raise ValueError(" ".join(validation["errors"]))
 
     saved = []
     for candidate in candidates:

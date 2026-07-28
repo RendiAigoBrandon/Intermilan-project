@@ -16,9 +16,13 @@ from django.utils import timezone
 
 from apps.core.exceptions import UploadTechnicalError, UploadBusinessLimitError
 from apps.accounts.access import filter_by_satker, permission_context
-from apps.core.drpp_batch_parser import PARSER_VERSION as DRPP_BATCH_VERSION, parse_drpp_upload_batch
+from apps.core.drpp_batch_parser import (
+    PARSER_VERSION as DRPP_BATCH_VERSION,
+    evaluate_drpp_group_commitability,
+    parse_drpp_upload_batch,
+)
 from apps.core.ocr import check_ocr_environment
-from apps.core.parsers import classify_document, extract_pdf_text, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
+from apps.core.parsers import classify_document, extract_pdf_text, parse_date, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.dk.models import TransactionDetail
 from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, upsert_drpp_group
 from apps.sp2d.models import SP2DRaw
@@ -494,6 +498,20 @@ def paket_spm_preview(request):
                         parsed["spm"]["metadata"]["jumlah_potongan"] = max(total_bruto - total_netto, Decimal("0"))
                     paket.nomor_spm = first.get("nomor_spm") or paket.nomor_spm
                     paket.nilai_spm = total_netto
+                    if parsed.get("parser_version") == DRPP_BATCH_VERSION:
+                        for group in parsed.get("drpp_groups") or []:
+                            group_number = clean_optional(group.get("no_drpp"))
+                            edited_items = [
+                                row
+                                for row in preview_rows
+                                if clean_optional(row.get("no_drpp")) == group_number
+                            ]
+                            validation = evaluate_drpp_group_commitability(
+                                group.get("drpp") or {},
+                                edited_items,
+                            )
+                            group["validation"] = validation
+                            group["status"] = validation["status"]
 
             drpp_count = int(request.POST.get("drpp_row_count") or 0)
             if drpp_count:
@@ -593,39 +611,25 @@ def paket_spm_preview(request):
                             row for row in build_drpp_batch_rows(parsed, paket, user=request.user)
                             if clean_optional(row.no_drpp) == commit_drpp
                         ]
-                        validation = commit_group.get("validation") or {}
-                        errors = []
-                        
+                        extra_errors = []
                         if not spm_meta.get("nomor_spm") or not spm_meta.get("tanggal_spm") or not spm_meta.get("jenis_spm") or not spm_meta.get("cara_pembayaran"):
-                            errors.append("Atribut metadata parent (Nomor SPM, Tanggal, Jenis, Cara Pembayaran) belum lengkap.")
-                        
-                        if validation.get("status") != "BALANCE":
-                            errors.append(validation.get("status_message") or "DRPP tidak balance.")
-                        
+                            extra_errors.append("Atribut metadata parent (Nomor SPM, Tanggal, Jenis, Cara Pembayaran) belum lengkap.")
                         kw_numbers = [item.no_kuitansi for item in items if item.no_kuitansi]
                         if len(kw_numbers) != len(set(kw_numbers)):
-                            errors.append("Terdapat nomor kuitansi duplikat.")
-                        
-                        for item in items:
-                            pembebanan = str(item.pembebanan or "").strip()
-                            akun = str(item.akun or "").strip()
-                            if not akun:
-                                errors.append("Terdapat kuitansi dengan Akun kosong.")
-                            if not pembebanan:
-                                errors.append("Terdapat kuitansi dengan Pembebanan kosong.")
-                            if pembebanan and "0000" in pembebanan:
-                                errors.append("Terdapat kuitansi dengan Pembebanan mengandung 0000.")
-                            if pembebanan and akun and not pembebanan.endswith(akun):
-                                errors.append("Akhiran Pembebanan tidak sama dengan Akun.")
-
+                            extra_errors.append("Terdapat nomor kuitansi duplikat.")
                         if not spm_meta.get("nomor_spm"):
-                            errors.append("Parent SPM belum ditentukan.")
+                            extra_errors.append("Parent SPM belum ditentukan.")
                         if not spm_meta.get("satker_code") and not spm_meta.get("satker_app_code") and not spm_meta.get("satker_djpb_code"):
-                            errors.append("Satker belum ditentukan.")
-                        
+                            extra_errors.append("Satker belum ditentukan.")
+                        validation = evaluate_drpp_group_commitability(
+                            commit_group.get("drpp") or {},
+                            items,
+                            parser_validation=commit_group.get("validation") or {},
+                            extra_errors=extra_errors,
+                        )
+                        errors = validation["errors"]
                         if errors:
-                            unique_errors = list(dict.fromkeys(errors))
-                            for error in unique_errors:
+                            for error in errors:
                                 messages.error(request, error)
                             return redirect("paket_spm:preview")
 
@@ -799,7 +803,9 @@ def paket_spm_preview(request):
     sum_bruto = sum(row.nilai_bruto for row in transaction_rows)
     sum_netto = sum(row.nilai_netto for row in transaction_rows)
 
-    spm_meta = (parsed.get("spm") or {}).get("metadata", {})
+    spm_meta = dict((parsed.get("spm") or {}).get("metadata", {}))
+    if spm_meta.get("tanggal_spm"):
+        spm_meta["tanggal_spm"] = parse_date(spm_meta["tanggal_spm"])
     scan_rows = build_scan_rows(parsed, decision)
     drpp_rows = build_drpp_rows(parsed)
     kw_rows = build_kw_rows(parsed)
@@ -1183,56 +1189,36 @@ def build_transaction_groups(parsed, transaction_rows):
     for group in parsed.get("drpp_groups") or []:
         number = clean_optional(group.get("no_drpp"))
         rows = [row for row in transaction_rows if clean_optional(row.no_drpp) == number]
-        errors = []
         drpp = group.get("drpp") or {}
-        if not drpp:
-            errors.append("Halaman DRPP tidak ditemukan.")
-        expected_count = len(drpp.get("items") or [])
-        expected_total = parse_user_decimal(
-            (drpp.get("metadata") or {}).get("printed_total")
-            or (drpp.get("metadata") or {}).get("total")
-        )
-        total = sum((row.nilai_bruto for row in rows), Decimal("0"))
-        if not number:
-            errors.append("Nomor DRPP kosong.")
-        if len(rows) != expected_count:
-            errors.append(f"Jumlah baris hasil ({len(rows)}) tidak sama dengan jumlah baris DRPP ({expected_count}).")
-        if expected_total and total != expected_total:
-            errors.append(f"Total baris Rp{total:,.0f} tidak sama dengan total DRPP Rp{expected_total:,.0f}.")
-        if number in duplicate_groups:
-            errors.append("Duplikat exact key ditemukan dalam upload yang sama.")
-        for index, row in enumerate(rows):
+        for row in rows:
             row.form_index = transaction_rows.index(row)
-            row_errors = []
-            if not row.no_kuitansi:
-                row_errors.append("nomor kuitansi kosong")
-            if not row.akun:
-                row_errors.append("akun kosong")
-            if row.nilai_bruto <= 0:
-                row_errors.append("nilai bruto nol")
-            if not row.nomor_spm:
-                row_errors.append("nomor SPM kosong")
-            if not row.tanggal_spm:
-                row_errors.append("tanggal SPM kosong")
-            errors.extend(error.capitalize() + "." for error in row_errors)
-            if row_errors:
+            if (
+                not row.no_kuitansi
+                or not row.akun
+                or row.nilai_bruto <= 0
+                or not row.nomor_spm
+                or not row.tanggal_spm
+            ):
                 row.batch_status = "GAGAL"
             elif getattr(row, "preview_review_fields", None) or row.batch_status == "PERLU_REVIEW" or not row.pembebanan:
                 row.batch_status = "PERLU_REVIEW"
             else:
                 row.batch_status = "LENGKAP"
-        errors = list(dict.fromkeys(errors))
+        validation = evaluate_drpp_group_commitability(
+            drpp,
+            rows,
+            parser_validation=group.get("validation") or {},
+            extra_errors=(
+                ["Duplikat exact key ditemukan dalam upload yang sama."]
+                if number in duplicate_groups
+                else []
+            ),
+        )
         output.append(
             {
+                **validation,
                 "no_drpp": number,
                 "rows": rows,
-                "row_count": len(rows),
-                "expected_row_count": expected_count,
-                "total_drpp": expected_total,
-                "total_rows": total,
-                "status": "BALANCE" if not errors else "PERLU_REVIEW",
-                "can_commit": not errors,
-                "errors": errors,
                 "committed": number in committed,
                 "ocr_seconds": metrics.get("ocr_seconds", 0),
                 "page_total": metrics.get("page_total", 0),

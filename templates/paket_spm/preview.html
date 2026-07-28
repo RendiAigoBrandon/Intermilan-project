@@ -171,7 +171,7 @@
           </table>
         </div>
         <div class="drpp-group-actions">
-          <button class="btn primary" type="submit" name="action" value="commit" formaction="" {% if not group.can_commit %}disabled{% endif %} onclick="this.form.commit_drpp.value='{{ group.no_drpp }}'">{% if group.committed %}UPSERT ULANG DRPP {{ group.no_drpp }}{% else %}SIMPAN DRPP {{ group.no_drpp }} KE D_K{% endif %}</button>
+          <button class="btn primary" type="submit" name="action" value="commit" formaction="" {% if not group.can_commit %}disabled aria-disabled="true" title="{{ group.errors|join:' ' }}"{% else %}aria-disabled="false"{% endif %} onclick="this.form.commit_drpp.value='{{ group.no_drpp }}'">{% if group.committed %}UPSERT ULANG DRPP {{ group.no_drpp }}{% else %}SIMPAN DRPP {{ group.no_drpp }} KE D_K{% endif %}</button>
           <span class="muted">Exact key: Satker · Tahun · Nomor SPM · Kuitansi · Akun</span>
         </div>
       </section>

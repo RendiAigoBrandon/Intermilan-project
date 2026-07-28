@@ -104,6 +104,12 @@ class DRPPBatchUpsertIntegrationTests(TestCase):
             parsed_data=parsed,
         )
 
+    def open_preview(self, paket):
+        self.client.force_login(self.user)
+        session = self.client.session
+        session["paket_spm_preview_id"] = paket.id
+        session.save()
+
     def test_reupload_upserts_exact_key_without_duplicate_and_keeps_suffix(self):
         parsed = self.parsed_batch()
         paket = self.paket(parsed)
@@ -258,6 +264,72 @@ class DRPPBatchUpsertIntegrationTests(TestCase):
         saved = TransactionDetail.objects.get(no_kuitansi=item["no_kuitansi"])
         self.assertEqual(saved.pembebanan, corrected)
         self.assertEqual(saved.status_detail, TransactionDetail.StatusDetail.LENGKAP)
+
+    def test_empty_reconciliation_is_review_disabled_and_direct_post_is_rejected(self):
+        parsed = self.parsed_batch()
+        drpp = parsed["drpp"]
+        drpp["metadata"].update(
+            {"printed_total": "0", "total": "0", "source_item_count": 0}
+        )
+        drpp["items"] = []
+        parsed["kw_items"] = []
+        parsed["drpp_groups"][0].update(
+            {
+                "items": [],
+                "validation": {
+                    "status": "PERLU_REVIEW",
+                    "can_commit": False,
+                    "errors": [
+                        "Item DRPP valid tidak ditemukan.",
+                        "Jumlah item sumber DRPP tidak tersedia.",
+                        "Total referensi DRPP tidak ditemukan atau bernilai nol.",
+                    ],
+                },
+            }
+        )
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        response = self.client.get(reverse("paket_spm:preview"))
+
+        self.assertEqual(response.status_code, 200)
+        group = response.context["transaction_groups"][0]
+        self.assertEqual(group["status"], "PERLU_REVIEW")
+        self.assertFalse(group["can_commit"])
+        self.assertContains(response, "Item DRPP valid tidak ditemukan.")
+        self.assertContains(response, 'disabled aria-disabled="true"')
+        self.assertContains(response, 'title="Item DRPP valid tidak ditemukan.')
+        self.assertNotContains(response, "tanggal belum diisi")
+
+        committed = self.client.post(
+            reverse("paket_spm:preview"),
+            {"action": "commit", "commit_drpp": "00042", "preview_row_count": "0"},
+        )
+        self.assertRedirects(
+            committed,
+            reverse("paket_spm:preview"),
+            fetch_redirect_response=False,
+        )
+        self.assertFalse(TransactionDetail.objects.exists())
+
+    def test_parser_review_validation_cannot_be_promoted_to_balance_by_view_or_service(self):
+        parsed = self.parsed_batch()
+        parsed["drpp_groups"][0]["validation"] = {
+            "status": "PERLU_REVIEW",
+            "can_commit": False,
+            "errors": ["Validasi parser masih perlu review."],
+        }
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        response = self.client.get(reverse("paket_spm:preview"))
+
+        group = response.context["transaction_groups"][0]
+        self.assertEqual(group["status"], "PERLU_REVIEW")
+        self.assertFalse(group["can_commit"])
+        self.assertContains(response, "Validasi parser masih perlu review.")
+        with self.assertRaisesMessage(ValueError, "Validasi parser masih perlu review"):
+            upsert_drpp_group(parsed, paket, "00042", user=self.user)
 
     def test_pdf_multiple_pdfs_and_zip_all_use_page_level_batch_parser(self):
         parsed = self.parsed_batch()

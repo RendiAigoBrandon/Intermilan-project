@@ -559,13 +559,14 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
     return page_index
 
 
-def _ocr_page(page):
+def _ocr_page(page, use_cache=True):
     # Versi ini membandingkan kedua orientasi landscape sebelum menerima hasil.
     # Versi cache dipisahkan agar hasil lama yang terbalik tidak digunakan lagi.
     cache_engine = "tesseract-ind+eng-v3"
-    cached = _load_page_cache(page, cache_engine)
-    if cached:
-        return cached
+    if use_cache:
+        cached = _load_page_cache(page, cache_engine)
+        if cached:
+            return cached
     try:
         import pytesseract
     except Exception:
@@ -591,10 +592,11 @@ def _ocr_page(page):
         "cache_hit": False,
         "cache_empty": not bool(text.strip()),
     }
-    _save_page_cache(page, cache_engine, result)
+    if use_cache:
+        _save_page_cache(page, cache_engine, result)
 
     if (len(text.strip()) < 40 or confidence < 35) and parse_bool_env("OCR_ENABLE_PADDLEOCR", False):
-        paddle_cache = _load_page_cache(page, "paddleocr")
+        paddle_cache = _load_page_cache(page, "paddleocr") if use_cache else None
         if paddle_cache:
             paddle = paddle_cache
         else:
@@ -611,7 +613,8 @@ def _ocr_page(page):
                 "cache_hit": False,
                 "cache_empty": not bool(getattr(paddle_page, "extracted_text", "").strip()),
             }
-            _save_page_cache(page, "paddleocr", paddle)
+            if use_cache:
+                _save_page_cache(page, "paddleocr", paddle)
         if len(paddle.get("text", "")) > len(result.get("text", "")):
             result = paddle
     return result
@@ -1264,6 +1267,40 @@ def _receipt_description(text):
     return match.group(1).strip(" .,:;|-") if match else ""
 
 
+def _receipt_item_from_page(page):
+    """Bangun kandidat item tanpa menganggap kuitansi sebagai total DRPP."""
+    text = str(page.get("text") or "")
+    no_bukti = _receipt_number(text)
+    bruto = _labeled_money(text, (r"NILAI\s+BRUTO", r"JUMLAH\s+BRUTO"))
+    if not no_bukti or bruto is None or bruto <= 0:
+        return None
+    account_match = re.search(r"\bAKUN\s*[:\-]?\s*(5\d{5})\b", text, re.I)
+    charges = set(re.findall(r"\b\d{4}\.[A-Z]{3}\.\d{3}\.\d{3}\.5\d{5}\b", text.upper()))
+    account = account_match.group(1) if account_match else ""
+    if not account and len(charges) == 1:
+        account = next(iter(charges)).rsplit(".", 1)[-1]
+    netto = _labeled_money(text, (r"NILAI\s+NETTO", r"JUMLAH\s+DIBAYAR"))
+    pph21 = _labeled_money(text, (r"PPH\s*(?:PASAL\s*)?21",)) or Decimal("0")
+    fp = _labeled_money(text, (r"\bFP\b",)) or Decimal("0")
+    return {
+        "no_bukti": no_bukti,
+        "akun": account,
+        "jumlah": bruto,
+        "bruto": bruto,
+        "netto": netto if netto is not None else max(bruto - pph21 - fp, Decimal("0")),
+        "fp": fp,
+        "pph21": pph21,
+        "pembebanan": next((value for value in charges if value.endswith(f".{account}")), ""),
+        "keperluan": _receipt_description(text),
+        "source_page": page.get("page_number"),
+        "method": "receipt_recovery",
+        "needs_review": True,
+        "review_fields": ["drpp_summary_missing"],
+        "warnings": ["Item dibangun dari kuitansi; total referensi DRPP tetap wajib diverifikasi."],
+        "status": "Perlu Review",
+    }
+
+
 def _receipt_page_score(item, page):
     if page.get("document_type") not in KW_PAGE_TYPES:
         return 0
@@ -1299,6 +1336,7 @@ def parse_kw_support(items, pages, year=""):
         text = "\n".join(page.get("text", "") for page in candidates)
         upper = text.upper()
         fp = re.search(r"(?:NOMOR\s+SERI\s+FAKTUR\s+PAJAK|FAKTUR\s+PAJAK)\s*[:\-]?\s*([0-9.\-]{10,25})", upper)
+        fp_amount = _labeled_money(upper, (r"\bFP\b",))
         pph21 = _labeled_money(upper, (r"PPH\s*(?:PASAL\s*)?21",))
         bruto = _labeled_money(upper, (r"NILAI\s+BRUTO", r"JUMLAH\s+BRUTO"))
         netto = _labeled_money(upper, (r"NILAI\s+NETTO", r"JUMLAH\s+DIBAYAR"))
@@ -1306,7 +1344,10 @@ def parse_kw_support(items, pages, year=""):
         receipt_numbers.discard("")
         if len(receipt_numbers) == 1:
             item["no_bukti"] = next(iter(receipt_numbers))
+        charges = set(re.findall(r"\b\d{4}\.[A-Z]{3}\.\d{3}\.\d{3}\.5\d{5}\b", upper))
         account_match = re.search(r"\bAKUN\s*[:\-]?\s*(5\d{5})\b", upper)
+        if not account_match and not item.get("akun") and len(charges) == 1:
+            item["akun"] = next(iter(charges)).rsplit(".", 1)[-1]
         warnings = item.setdefault("warnings", [])
         if account_match and item.get("akun") and account_match.group(1) != str(item.get("akun")):
             warnings.append("Akun kuitansi berbeda dengan akun tabel DRPP.")
@@ -1315,7 +1356,9 @@ def parse_kw_support(items, pages, year=""):
         if bruto is not None and bruto > 0:
             item["jumlah"] = bruto
             item["bruto"] = bruto
-        if fp:
+        if fp_amount is not None:
+            item["fp"] = fp_amount
+        elif fp:
             item["fp"] = fp.group(1)
         if pph21 is not None:
             item["pph21"] = pph21
@@ -1327,7 +1370,6 @@ def parse_kw_support(items, pages, year=""):
         if description:
             item["keperluan"] = description
             item["deskripsi"] = description
-        charges = set(re.findall(r"\b\d{4}\.[A-Z]{3}\.\d{3}\.\d{3}\.5\d{5}\b", upper))
         matching_charges = {value for value in charges if value.endswith(f".{item.get('akun')}")}
         if len(matching_charges) == 1:
             item["pembebanan"] = next(iter(matching_charges))
@@ -1342,14 +1384,37 @@ def parse_kw_support(items, pages, year=""):
     return items
 
 
-def _recover_missing_candidate_pages(drpps, page_index, ocr=True):
+def _recovery_page_key(page):
+    """Identitas halaman stabil selama satu upload, terpisah dari perceptual hash."""
+    return (
+        str(page.get("file_sha256") or page.get("_path") or page.get("file_name") or ""),
+        int(page.get("page_number") or 0),
+        str(page.get("page_content_hash") or ""),
+    )
+
+
+def _recover_missing_candidate_pages(
+    drpps,
+    page_index,
+    ocr=True,
+    processed_page_keys=None,
+    diagnostics=None,
+):
     """OCR kandidat lanjutan hanya ketika bukti sumber belum rekonsiliasi."""
     if not ocr:
         return False
+    processed_page_keys = processed_page_keys if processed_page_keys is not None else set()
+    diagnostics = diagnostics if diagnostics is not None else {}
+    for key in (
+        "recovery_pages_considered",
+        "recovery_pages_ocr",
+        "recovery_pages_skipped_processed",
+    ):
+        diagnostics.setdefault(key, 0)
     structural_page_found = False
     for drpp in drpps:
         meta = drpp.get("metadata", {})
-        items = drpp.get("items") or []
+        items = drpp.setdefault("items", [])
         number = str(meta.get("nomor_drpp") or "")
         target_files = {
             source.get("file_name")
@@ -1362,6 +1427,18 @@ def _recover_missing_candidate_pages(drpps, page_index, ocr=True):
                 if number and number in {page.get("drpp_hint"), page.get("drpp_detected")}
             }
         group_pages = [page for page in page_index if page.get("file_name") in target_files]
+        recover_from_receipts = not items
+
+        def cache_identity_collides(page):
+            page_hash = page.get("page_hash")
+            content_hashes = {
+                candidate.get("page_content_hash")
+                for candidate in group_pages
+                if page_hash and candidate.get("page_hash") == page_hash
+            }
+            content_hashes.discard(None)
+            content_hashes.discard("")
+            return len(content_hashes) > 1
 
         def unresolved():
             printed = _money(meta.get("printed_total"))
@@ -1378,13 +1455,32 @@ def _recover_missing_candidate_pages(drpps, page_index, ocr=True):
         if not unresolved():
             continue
         for page in sorted(group_pages, key=lambda item: item.get("page_number", 0)):
-            if (
-                not page.get("is_representative", True)
-                or str(page.get("text") or page.get("native_text") or "").strip()
-            ):
+            if not page.get("is_representative", True):
                 continue
+            page_key = _recovery_page_key(page)
+            if page_key in processed_page_keys:
+                diagnostics["recovery_pages_considered"] += 1
+                diagnostics["recovery_pages_skipped_processed"] += 1
+                continue
+            if str(page.get("text") or page.get("native_text") or "").strip():
+                continue
+            diagnostics["recovery_pages_considered"] += 1
+            processed_page_keys.add(page_key)
+            diagnostics["recovery_pages_ocr"] += 1
             started = time.monotonic()
-            result = _ocr_page(page)
+            # Cache global tetap memakai kontrak lama. Pada recovery saja,
+            # bypass hasil bila satu perceptual hash mewakili konten halaman
+            # yang berbeda agar kuitansi berikutnya tidak memakai teks halaman
+            # sebelumnya.
+            try:
+                result = _ocr_page(page, use_cache=not cache_identity_collides(page))
+            except Exception as exc:
+                page["ocr_duration"] = time.monotonic() - started
+                page["ocr_called"] = True
+                page["cache_hit"] = False
+                page["engine"] = "tesseract"
+                page["ocr_warnings"] = [f"Recovery OCR gagal ({type(exc).__name__})."]
+                continue
             page["ocr_duration"] = time.monotonic() - started
             page["text"] = result.get("text", "")
             page["ocr_called"] = not result.get("cache_hit", False)
@@ -1399,6 +1495,13 @@ def _recover_missing_candidate_pages(drpps, page_index, ocr=True):
                 page["drpp_detected"] = detected
             if page["document_type"] in {"DRPP_SUMMARY", "DRPP_COA"}:
                 structural_page_found = True
+            if recover_from_receipts and page["document_type"] in KW_PAGE_TYPES:
+                recovered_item = _receipt_item_from_page(page)
+                if recovered_item and recovered_item["no_bukti"] not in {
+                    item.get("no_bukti") for item in items
+                }:
+                    items.append(recovered_item)
+                    meta["source_item_count"] = len(items)
             if not unresolved():
                 break
     return structural_page_found
@@ -1660,13 +1763,38 @@ def build_transaction_items(drpp, spm=None):
     return output
 
 
-def validate_drpp_group(drpp, items):
+def _group_item_value(item, *names):
+    for name in names:
+        value = item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def evaluate_drpp_group_commitability(
+    drpp,
+    items,
+    *,
+    parser_validation=None,
+    extra_errors=None,
+):
+    """Satu keputusan rekonsiliasi untuk parser, preview, dan commit server."""
+    drpp = drpp or {}
     metadata = drpp.get("metadata", {})
-    number = str(metadata.get("nomor_drpp") or "")
-    expected_count = int(metadata.get("source_item_count") or len(drpp.get("items") or []))
+    number = str(metadata.get("nomor_drpp") or metadata.get("no_drpp") or "")
+    source_count = metadata.get("source_item_count")
+    expected_count = int(source_count if source_count is not None else len(drpp.get("items") or []))
     expected_total = _money(metadata.get("printed_total"))
-    actual_total = sum((_money(item.get("nilai_bruto") or item.get("bruto") or item.get("jumlah")) for item in items), Decimal("0"))
+    actual_total = sum(
+        (
+            _money(_group_item_value(item, "nilai_bruto", "bruto", "jumlah"))
+            for item in items
+        ),
+        Decimal("0"),
+    )
     errors = []
+    if not drpp:
+        errors.append("Halaman DRPP tidak ditemukan.")
     if not re.fullmatch(r"\d{3,6}", number):
         errors.append("Nomor DRPP tidak valid.")
     if not items:
@@ -1686,28 +1814,64 @@ def validate_drpp_group(drpp, items):
         errors.append("Konflik identitas utama ditemukan.")
     seen = set()
     for item in items:
-        if not item.get("no_kuitansi"):
+        no_kuitansi = _group_item_value(item, "no_kuitansi", "no_bukti")
+        akun = str(_group_item_value(item, "akun") or "")
+        nomor_spm = _group_item_value(item, "nomor_spm")
+        tanggal_spm = _group_item_value(item, "tanggal_spm")
+        pembebanan = str(_group_item_value(item, "pembebanan") or "")
+        status_detail = str(
+            _group_item_value(item, "status_detail", "batch_status", "status") or ""
+        ).upper()
+        if not no_kuitansi:
             errors.append("Nomor kuitansi kosong.")
-        if not item.get("akun"):
+        if not akun:
             errors.append("Akun kosong.")
-        if _money(item.get("nilai_bruto")) <= 0:
+        if _money(_group_item_value(item, "nilai_bruto", "bruto", "jumlah")) <= 0:
             errors.append("Nilai bruto nol tanpa bukti.")
-        if item.get("status_detail") in {"GAGAL", "PERLU_REVIEW"}:
+        if not nomor_spm:
+            errors.append("Nomor SPM kosong.")
+        if not tanggal_spm:
+            errors.append("Tanggal SPM kosong.")
+        if not pembebanan:
+            errors.append("Pembebanan kosong.")
+        elif "0000" in pembebanan:
+            errors.append("Pembebanan mengandung 0000.")
+        elif akun and not pembebanan.endswith(akun):
+            errors.append("Akhiran Pembebanan tidak sama dengan Akun.")
+        if status_detail in {"GAGAL", "PERLU_REVIEW", "PERLU REVIEW"}:
             errors.append("Terdapat field transaksi yang masih perlu review.")
-        key = (item.get("nomor_spm"), item.get("no_kuitansi"), item.get("akun"))
+        key = (nomor_spm, no_kuitansi, akun)
         if key in seen:
             errors.append("Duplikat exact key ditemukan dalam upload yang sama.")
         seen.add(key)
+    if parser_validation and (
+        parser_validation.get("status") != "BALANCE"
+        or parser_validation.get("can_commit") is False
+    ):
+        parser_errors = parser_validation.get("errors") or [
+            parser_validation.get("status_message") or "Validasi parser masih perlu review."
+        ]
+        errors.extend(parser_errors)
+    errors.extend(extra_errors or [])
+    errors = list(dict.fromkeys(errors))
     return {
         "no_drpp": number,
+        "expected_count": expected_count,
+        "parsed_count": len(items),
+        "expected_total": expected_total,
+        "parsed_total": actual_total,
         "row_count": len(items),
         "expected_row_count": expected_count,
         "total_drpp": expected_total,
         "total_rows": actual_total,
         "status": "BALANCE" if not errors else "PERLU_REVIEW",
         "can_commit": not errors,
-        "errors": list(dict.fromkeys(errors)),
+        "errors": errors,
     }
+
+
+def validate_drpp_group(drpp, items):
+    return evaluate_drpp_group_commitability(drpp, items)
 
 
 def _public_manifest(manifest):
@@ -1736,6 +1900,12 @@ def _public_page(page):
 
 def parse_drpp_upload_batch(file_path, ocr=True):
     _local.ocr_cache = {}
+    processed_page_keys = set()
+    recovery_diagnostics = {
+        "recovery_pages_considered": 0,
+        "recovery_pages_ocr": 0,
+        "recovery_pages_skipped_processed": 0,
+    }
     started = time.monotonic()
     manifest = build_manifest(file_path)
     temp_dir = next((item.get("_temp_dir") for item in manifest if item.get("_temp_dir")), "")
@@ -1801,7 +1971,13 @@ def parse_drpp_upload_batch(file_path, ocr=True):
             {"metadata": {"nomor_drpp": number, "printed_total": Decimal("0")}, "items": []}
             for number in missing_numbers
         ]
-        if _recover_missing_candidate_pages(recovery_targets, page_index, ocr=ocr):
+        if _recover_missing_candidate_pages(
+            recovery_targets,
+            page_index,
+            ocr=ocr,
+            processed_page_keys=processed_page_keys,
+            diagnostics=recovery_diagnostics,
+        ):
             drpps, missing_numbers = read_drpps()
         for number in missing_numbers:
             groups.append({"no_drpp": number, "items": [], "validation": {"status": "PERLU_REVIEW", "can_commit": False, "errors": ["Halaman DRPP tidak ditemukan."]}})
@@ -1857,6 +2033,7 @@ def parse_drpp_upload_batch(file_path, ocr=True):
             "ocr_cache_hits": sum(
                 1 for page in page_index if page.get("cache_hit") or page.get("probe_cache_hit")
             ),
+            **recovery_diagnostics,
         }
         warnings = [error for group in groups for error in group.get("validation", {}).get("errors", [])]
         return {

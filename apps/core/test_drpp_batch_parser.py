@@ -1,8 +1,10 @@
+import hashlib
 import os
 import tempfile
 import zipfile
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from unittest import skipUnless
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ from django.test import SimpleTestCase, override_settings
 from apps.core.exceptions import UploadTechnicalError
 from apps.core.drpp_batch_parser import (
     _classification,
+    _money,
     _apply_group_date_consensus,
     _extracted_from_pages,
     _match_coa,
@@ -19,13 +22,18 @@ from apps.core.drpp_batch_parser import (
     build_transaction_items,
     classify_candidate_pages,
     discover_embedded_drpp_pages,
+    evaluate_drpp_group_commitability,
     parse_drpp_coa,
     parse_drpp_summary,
     parse_drpp_upload_batch,
     parse_kw_support,
     validate_drpp_group,
 )
-from apps.core.parsers import clean_description, consensus_sp2d_from_pages
+from apps.core.parsers import (
+    clean_description,
+    consensus_sp2d_from_pages,
+    reconcile_spp_suffix_with_spm,
+)
 
 
 class DRPPBatchParserUnitTests(SimpleTestCase):
@@ -120,6 +128,10 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
 
         self.assertEqual(consensus_sp2d_from_pages(pages), "")
 
+    def test_labeled_spp_numeric_suffix_is_reconciled_with_exact_spm_prefix(self):
+        self.assertEqual(reconcile_spp_suffix_with_spm("010777", "01077A"), "01077T")
+        self.assertEqual(reconcile_spp_suffix_with_spm("01078T", "01077A"), "01078T")
+
     def test_clean_description_removes_drpp_footer_and_trailing_ocr_noise(self):
         value = (
             "Honor Pengelola Sistem Akuntansi Instansi (SAI) di _/ BPS Provinsi "
@@ -208,6 +220,169 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
         self.assertEqual(pages[1]["document_type"], "KUITANSI")
         self.assertEqual(pages[2]["text"], "")
 
+    def test_recovery_reuses_shared_multi_drpp_page_without_second_ocr(self):
+        page = {
+            "file_name": "shared.pdf",
+            "file_sha256": "a" * 64,
+            "page_content_hash": "b" * 64,
+            "page_number": 1,
+            "is_representative": True,
+            "text": "",
+            "native_text": "",
+            "document_type": "UNKNOWN",
+            "_path": "unused.pdf",
+        }
+        drpps = [
+            {
+                "metadata": {"nomor_drpp": number, "printed_total": Decimal("0")},
+                "source_pages": [{"file_name": "shared.pdf", "page_number": 1}],
+                "items": [],
+            }
+            for number in ("00111", "00222")
+        ]
+        text = "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN Nomor DRPP"
+        diagnostics = {}
+
+        with patch(
+            "apps.core.drpp_batch_parser._ocr_page",
+            return_value={
+                "text": text,
+                "words": [],
+                "confidence": 90,
+                "engine": "tesseract",
+                "cache_hit": False,
+            },
+        ) as ocr_page:
+            structural = _recover_missing_candidate_pages(
+                drpps,
+                [page],
+                processed_page_keys=set(),
+                diagnostics=diagnostics,
+            )
+
+        self.assertTrue(structural)
+        self.assertEqual(ocr_page.call_count, 1)
+        self.assertEqual(page["text"], text)
+        self.assertTrue(all(page["text"] == text for _drpp in drpps))
+        self.assertEqual(diagnostics["recovery_pages_ocr"], 1)
+        self.assertEqual(diagnostics["recovery_pages_skipped_processed"], 1)
+
+    def test_empty_recovery_ocr_is_not_retried_for_second_drpp(self):
+        page = {
+            "file_name": "shared.pdf",
+            "file_sha256": "a" * 64,
+            "page_content_hash": "b" * 64,
+            "page_number": 1,
+            "is_representative": True,
+            "text": "",
+            "native_text": "",
+            "document_type": "UNKNOWN",
+            "_path": "unused.pdf",
+        }
+        drpps = [
+            {
+                "metadata": {"nomor_drpp": number, "printed_total": Decimal("0")},
+                "source_pages": [{"file_name": "shared.pdf", "page_number": 1}],
+                "items": [],
+            }
+            for number in ("00111", "00222")
+        ]
+        diagnostics = {}
+
+        with patch(
+            "apps.core.drpp_batch_parser._ocr_page",
+            return_value={"text": "", "words": [], "engine": "tesseract", "cache_hit": False},
+        ) as ocr_page:
+            _recover_missing_candidate_pages(
+                drpps,
+                [page],
+                processed_page_keys=set(),
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual(ocr_page.call_count, 1)
+        self.assertEqual(diagnostics["recovery_pages_ocr"], 1)
+        self.assertEqual(diagnostics["recovery_pages_skipped_processed"], 1)
+
+    def test_recovery_ocr_exception_is_not_retried_for_second_drpp(self):
+        page = {
+            "file_name": "shared.pdf",
+            "file_sha256": "a" * 64,
+            "page_content_hash": "b" * 64,
+            "page_number": 1,
+            "is_representative": True,
+            "text": "",
+            "native_text": "",
+            "document_type": "UNKNOWN",
+            "_path": "unused.pdf",
+        }
+        drpps = [
+            {
+                "metadata": {"nomor_drpp": number, "printed_total": Decimal("0")},
+                "source_pages": [{"file_name": "shared.pdf", "page_number": 1}],
+                "items": [],
+            }
+            for number in ("00111", "00222")
+        ]
+        diagnostics = {}
+
+        with patch(
+            "apps.core.drpp_batch_parser._ocr_page",
+            side_effect=RuntimeError("temporary OCR failure"),
+        ) as ocr_page:
+            _recover_missing_candidate_pages(
+                drpps,
+                [page],
+                processed_page_keys=set(),
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual(ocr_page.call_count, 1)
+        self.assertEqual(diagnostics["recovery_pages_ocr"], 1)
+        self.assertEqual(diagnostics["recovery_pages_skipped_processed"], 1)
+        self.assertIn("RuntimeError", page["ocr_warnings"][0])
+
+    def test_recovery_ocr_count_is_bounded_by_unique_candidate_pages(self):
+        pages = [
+            {
+                "file_name": "shared.pdf",
+                "file_sha256": "a" * 64,
+                "page_hash": "same-perceptual-hash",
+                "page_content_hash": content_hash * 64,
+                "page_number": page_number,
+                "is_representative": True,
+                "text": "",
+                "native_text": "",
+                "document_type": "UNKNOWN",
+                "_path": "unused.pdf",
+            }
+            for page_number, content_hash in ((1, "b"), (2, "c"))
+        ]
+        drpps = [
+            {
+                "metadata": {"nomor_drpp": number, "printed_total": Decimal("0")},
+                "source_pages": [{"file_name": "shared.pdf", "page_number": 1}],
+                "items": [],
+            }
+            for number in ("00111", "00222")
+        ]
+        diagnostics = {}
+
+        with patch(
+            "apps.core.drpp_batch_parser._ocr_page",
+            return_value={"text": "", "words": [], "engine": "tesseract", "cache_hit": False},
+        ) as ocr_page:
+            _recover_missing_candidate_pages(
+                drpps,
+                pages,
+                processed_page_keys=set(),
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual(ocr_page.call_count, len(pages))
+        self.assertLessEqual(diagnostics["recovery_pages_ocr"], len(pages))
+        self.assertEqual(diagnostics["recovery_pages_skipped_processed"], len(pages))
+
     def test_mismatched_total_never_reports_false_balance(self):
         drpp = {
             "metadata": {
@@ -243,6 +418,79 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
                 result = validate_drpp_group(drpp, [base_item])
                 self.assertEqual(result["status"], "PERLU_REVIEW")
                 self.assertFalse(result["can_commit"])
+
+    def test_authoritative_commitability_rejects_empty_reconciliation(self):
+        result = evaluate_drpp_group_commitability(
+            {
+                "metadata": {
+                    "nomor_drpp": "00456",
+                    "printed_total": Decimal("0"),
+                    "source_item_count": 0,
+                },
+                "items": [],
+            },
+            [],
+        )
+
+        self.assertEqual(result["status"], "PERLU_REVIEW")
+        self.assertFalse(result["can_commit"])
+        self.assertEqual(result["expected_count"], 0)
+        self.assertEqual(result["parsed_count"], 0)
+        self.assertIn("Item DRPP valid tidak ditemukan.", result["errors"])
+        self.assertIn("Jumlah item sumber DRPP tidak tersedia.", result["errors"])
+        self.assertIn("Total referensi DRPP tidak ditemukan atau bernilai nol.", result["errors"])
+
+    def test_recovery_builds_review_items_from_receipts_when_summary_items_are_empty(self):
+        pages = [
+            {
+                "file_name": "mixed.pdf",
+                "page_number": 1,
+                "is_representative": True,
+                "text": "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN Nomor DRPP 00456/DRPP/012345/2028",
+                "document_type": "DRPP_SUMMARY",
+            },
+            {
+                "file_name": "mixed.pdf",
+                "page_number": 2,
+                "is_representative": True,
+                "text": "",
+                "native_text": "",
+                "document_type": "UNKNOWN",
+                "_path": "unused.pdf",
+            },
+        ]
+        drpp = {
+            "metadata": {
+                "nomor_drpp": "00456",
+                "printed_total": Decimal("0"),
+                "source_item_count": 0,
+            },
+            "source_pages": [{"file_name": "mixed.pdf", "page_number": 1}],
+            "items": [],
+        }
+        receipt = {
+            "text": (
+                "KUITANSI / BUKTI PEMBAYARAN Nomor: 00789/KW/012345/2028 "
+                "Akun: 521219 Untuk Pembayaran: Belanja operasional kantor "
+                "Nilai Bruto Rp9.750.000 Nilai Netto Rp9.700.000 PPh21 Rp50.000 "
+                "Pembebanan 4001.ABC.010.020.521219"
+            ),
+            "words": [],
+            "confidence": 90,
+            "engine": "tesseract",
+            "cache_hit": False,
+        }
+
+        with patch("apps.core.drpp_batch_parser._ocr_page", return_value=receipt):
+            _recover_missing_candidate_pages([drpp], pages)
+
+        self.assertEqual(len(drpp["items"]), 1)
+        self.assertEqual(drpp["items"][0]["no_bukti"], "00789/KW/012345/2028")
+        self.assertEqual(drpp["items"][0]["akun"], "521219")
+        self.assertTrue(drpp["items"][0]["needs_review"])
+        validation = validate_drpp_group(drpp, build_transaction_items(drpp))
+        self.assertEqual(validation["status"], "PERLU_REVIEW")
+        self.assertFalse(validation["can_commit"])
 
     def test_group_date_uses_consensus_only_when_spm_date_is_missing(self):
         drpps = [{
@@ -549,6 +797,63 @@ class DRPPBatchIntegrationTests(TestCase):
         self.assertEqual([page["document_type"] for page in parsed["page_index"]], [
             "SPM", "DRPP_SUMMARY", "KUITANSI", "KUITANSI", "KUITANSI", "UNKNOWN",
         ])
+
+    @skipUnless(
+        os.getenv("DRPP_DUMMY_SECOND_FIXTURE"),
+        "Set DRPP_DUMMY_SECOND_FIXTURE for the independent layout OCR acceptance.",
+    )
+    def test_second_independent_scan_recovers_four_reconciled_transactions(self):
+        fixture = Path(os.environ["DRPP_DUMMY_SECOND_FIXTURE"])
+        self.assertEqual(fixture.stat().st_size, 1681685)
+        self.assertEqual(
+            hashlib.sha256(fixture.read_bytes()).hexdigest(),
+            "10aaf30bfd9eaf51829aa849891308280d1cc757f33860cafa68f2828a828cd5",
+        )
+        parsed = parse_drpp_upload_batch(str(fixture))
+
+        self.assertTrue(parsed["ok"])
+        self.assertEqual(len(parsed["drpp_groups"]), 1)
+        group = parsed["drpp_groups"][0]
+        self.assertEqual(group["no_drpp"], "00107")
+        self.assertEqual(group["validation"]["status"], "BALANCE")
+        self.assertTrue(group["validation"]["can_commit"])
+        self.assertEqual(len(group["items"]), 4)
+        self.assertEqual(
+            [item["no_kuitansi"] for item in group["items"]],
+            [
+                "01011/KW/019937/2026",
+                "01012/KW/019937/2026",
+                "01013/KW/019937/2026",
+                "01014/KW/019937/2026",
+            ],
+        )
+        spm = parsed["spm"]["metadata"]
+        self.assertEqual(spm["nomor_spm"], "01077A")
+        self.assertEqual(spm["tanggal_spm"], date(2026, 7, 28))
+        self.assertEqual(spm["jenis_spm"], "GUP")
+        self.assertEqual(spm["nomor_spp"], "01077T")
+        self.assertEqual(spm["nomor_sp2d"], "260100000101077")
+        self.assertEqual(spm["cara_pembayaran"], "UP/TUP")
+        self.assertEqual(parsed["drpps"][0]["metadata"]["nomor_drpp"], "00107")
+        self.assertEqual(
+            sum((item["nilai_bruto"] for item in group["items"]), Decimal("0")),
+            Decimal("8425000"),
+        )
+        self.assertEqual(
+            sum((item["nilai_netto"] for item in group["items"]), Decimal("0")),
+            Decimal("8315000"),
+        )
+        self.assertEqual(
+            sum((_money(item.get("fp")) for item in group["items"]), Decimal("0")),
+            Decimal("35000"),
+        )
+        self.assertEqual(
+            sum((item["pph21"] for item in group["items"]), Decimal("0")),
+            Decimal("75000"),
+        )
+        for item in group["items"]:
+            self.assertTrue(item["pembebanan"].endswith(item["akun"]))
+            self.assertNotIn("BUKAN DOKUMEN", item["deskripsi"].upper())
         
     def test_A_preview_post_preserves_metadata(self):
         """Test A: POST preview hanya mengubah sebagian data, metadata parent/index tetap utuh."""

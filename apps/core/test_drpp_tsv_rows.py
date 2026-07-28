@@ -27,6 +27,94 @@ def line_words(text, top):
 
 
 class DRPPTSVRowRecoveryTests(SimpleTestCase):
+    def test_layout_fallback_recovers_split_receipts_and_four_financial_columns(self):
+        def word(text, left, top, width=None):
+            return {
+                "text": text,
+                "left": left,
+                "top": top,
+                "width": width or max(18, len(text) * 7),
+                "height": 16,
+                "confidence": 90,
+            }
+
+        words = [
+            word("00081/KW/", 120, 100), word("521219", 320, 100),
+            word("Belanja", 480, 100), word("alat", 560, 100), word("kantor", 610, 100),
+            word("2.400.000", 900, 100), word("40.000", 1090, 100), word("2.360.000", 1220, 100),
+            word("012345/2028", 120, 124), word("periode", 480, 124), word("Agustus", 550, 124),
+            word("00082/KW/", 120, 180), word("523123", 320, 180),
+            word("Pemeliharaan", 480, 180), word("perangkat", 590, 180),
+            word("3.", 900, 180), word("500.", 925, 180), word("000", 970, 180),
+            word("35.000", 1010, 180), word("75.000", 1090, 180), word("3.390.000", 1220, 180),
+            word("012345/2028", 120, 204), word("layanan", 480, 204), word("publik", 545, 204),
+            word("TOTAL", 120, 260), word("BRUTO", 180, 260),
+            word("TOTAL", 440, 260), word("FP", 500, 260),
+            word("TOTAL", 700, 260), word("PPh2l", 760, 260),
+            word("TOTAL", 960, 260), word("NETO", 1020, 260),
+            word("5.900.000", 120, 285), word("35.000", 440, 285),
+            word("115.000", 700, 285), word("5.750.000", 960, 285),
+        ]
+
+        rows = parse_drpp_financial_table_rows(words, page_number=3)
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["no_bukti"], "00081/KW/012345/2028")
+        self.assertEqual(rows[0]["keperluan"], "Belanja alat kantor periode Agustus")
+        self.assertEqual(rows[0]["bruto"], 2400000)
+        self.assertEqual(rows[0]["fp"], 0)
+        self.assertEqual(rows[0]["pph21"], 40000)
+        self.assertEqual(rows[0]["netto"], 2360000)
+        self.assertEqual(rows[1]["no_bukti"], "00082/KW/012345/2028")
+        self.assertEqual(rows[1]["keperluan"], "Pemeliharaan perangkat layanan publik")
+        self.assertEqual(rows[1]["bruto"], 3500000)
+        self.assertEqual(rows[1]["fp"], 35000)
+        self.assertEqual(rows[1]["pph21"], 75000)
+        self.assertEqual(rows[1]["netto"], 3390000)
+
+    def test_layout_fallback_is_metamorphic_for_shift_width_and_wrapped_description(self):
+        def parse_case(shift, scale, receipt, account, gross, net):
+            def x(value):
+                return shift + int(value * scale)
+
+            def word(text, left, top):
+                return {
+                    "text": text,
+                    "left": x(left),
+                    "top": top,
+                    "width": max(14, int(len(text) * 7 * scale)),
+                    "height": 15,
+                    "confidence": 88,
+                }
+
+            words = [
+                word("No.", 20, 40), word("Kuitansl", 100, 40), word("Akun", 300, 40),
+                word("Uraian", 470, 40), word("Jumlah", 900, 40), word("FP", 1010, 40),
+                word("PPh2l", 1100, 40), word("Neto", 1230, 40),
+                word(receipt.split("/", 2)[0] + "/KW/", 100, 90), word(account, 300, 90),
+                word("Pengadaan", 470, 90), word("sarana", 550, 90), word(gross, 900, 90),
+                word(net, 1230, 90), word("012345/2028", 100, 114),
+                word("pendukung", 470, 114), word("operasional", 560, 114),
+                word("kantor", 470, 136),
+                word("TOTAL", 100, 180), word("BRUTO", 170, 180),
+                word("TOTAL", 430, 180), word("FP", 500, 180),
+                word("TOTAL", 690, 180), word("PPh21", 760, 180),
+                word("TOTAL", 950, 180), word("NETTO", 1020, 180),
+                word(gross, 100, 205), word("0", 430, 205),
+                word("0", 690, 205), word(net, 950, 205),
+            ]
+            return parse_drpp_financial_table_rows(words)[0]
+
+        first = parse_case(0, 1.0, "00456/KW/012345/2028", "521219", "9.750.000", "9.750.000")
+        second = parse_case(135, 1.28, "00888/KW/012345/2028", "524111", "12.345.000", "12.345.000")
+
+        self.assertEqual(first["no_bukti"], "00456/KW/012345/2028")
+        self.assertEqual(first["keperluan"], "Pengadaan sarana pendukung operasional kantor")
+        self.assertEqual(first["jumlah"], 9750000)
+        self.assertEqual(second["no_bukti"], "00888/KW/012345/2028")
+        self.assertEqual(second["akun"], "524111")
+        self.assertEqual(second["jumlah"], 12345000)
+
     def test_recovers_split_financial_line_and_small_amount(self):
         words = []
         words += line_words("17 00265/KW/019937/2026", 100)

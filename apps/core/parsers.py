@@ -1080,6 +1080,7 @@ def parse_spm_pdf(file_path, ocr=False, extracted=None, parse_details=True):
         cand = normalize_doc_number(spp_match_global.group(1))
         if is_valid_doc_number(cand):
             text_spp = cand
+    text_spp = reconcile_spp_suffix_with_spm(text_spp, text_spm)
 
     # ── Field lain ─────────────────────────────────────────────────────
     drpp_match = re.search(r"(?:NOMOR\s+DRPP|DRPP\s+NOMOR|NO\.?\s*DRPP)\s*[:\-]?\s*([0-9A-Z./-]+)", (drpp_text or detail_text).upper())
@@ -2024,6 +2025,309 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
     return items
 
 
+def _drpp_table_label(value):
+    token = re.sub(r"[^A-Z0-9]", "", normalize_text(value).upper())
+    if token.startswith("KUITAN"):
+        return "KUITANSI"
+    if token == "AKUN" or token.startswith("AKVN"):
+        return "AKUN"
+    if token.startswith("DESKR") or token.startswith("URAI"):
+        return "DESKRIPSI"
+    if token.startswith("BRUT") or token.startswith("JUML"):
+        return "BRUTO"
+    if token == "FP":
+        return "FP"
+    if token.startswith("PPH2") or token.startswith("PPH21"):
+        return "PPH21"
+    if token.startswith("NET"):
+        return "NETTO"
+    if token in {"NO", "N0"}:
+        return "NO"
+    return ""
+
+
+def reconcile_spp_suffix_with_spm(nomor_spp, nomor_spm):
+    """Pulihkan suffix T yang terbaca sebagai digit bila basis SPM sama persis."""
+    nomor_spp = normalize_doc_number(nomor_spp)
+    nomor_spm = normalize_doc_number(nomor_spm)
+    if not (nomor_spp and nomor_spm and len(nomor_spp) == len(nomor_spm)):
+        return nomor_spp
+    if (
+        nomor_spp[:-1] == nomor_spm[:-1]
+        and nomor_spp[-1].isdigit()
+        and nomor_spm[-1].isalpha()
+    ):
+        return nomor_spp[:-1] + "T"
+    return nomor_spp
+
+
+def _layout_amount_candidates(line_words, min_x=0):
+    """Kembalikan nominal beserta posisi X, termasuk nominal yang terpecah OCR."""
+    selected = sorted(
+        (word for word in line_words if word["center_x"] >= min_x),
+        key=lambda word: word["left"],
+    )
+    output = []
+    index = 0
+    amount_pattern = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?")
+    fragment_pattern = re.compile(r"^[|\[({-]*\d{1,3}[.,]?$|^\d{3}[.,]?$|^\d{1,3}[.,]\d{3}[.,]?$|^\d{3}$")
+    while index < len(selected):
+        word = selected[index]
+        text = normalize_text(word["text"])
+        direct = amount_pattern.search(text)
+        if direct:
+            output.append(
+                {
+                    "value": parse_decimal(direct.group(0)),
+                    "center_x": word["center_x"],
+                    "left": word["left"],
+                    "right": word["right"],
+                    "words": [word],
+                }
+            )
+            index += 1
+            continue
+        if not fragment_pattern.fullmatch(text):
+            index += 1
+            continue
+        combined = re.sub(r"^[^0-9]+", "", text)
+        grouped = [word]
+        cursor = index + 1
+        matched_group = False
+        while cursor < len(selected) and len(grouped) < 4:
+            following = selected[cursor]
+            following_text = normalize_text(following["text"])
+            gap = following["left"] - grouped[-1]["right"]
+            if gap > max(32, grouped[-1]["height"] * 2) or not fragment_pattern.fullmatch(following_text):
+                break
+            combined += re.sub(r"^[^0-9]+", "", following_text)
+            grouped.append(following)
+            cursor += 1
+            match = amount_pattern.fullmatch(combined)
+            if match:
+                output.append(
+                    {
+                        "value": parse_decimal(match.group(0)),
+                        "center_x": (grouped[0]["left"] + grouped[-1]["right"]) / 2,
+                        "left": grouped[0]["left"],
+                        "right": grouped[-1]["right"],
+                        "words": grouped,
+                    }
+                )
+                index = cursor
+                matched_group = True
+                break
+        if matched_group:
+            continue
+        index += 1
+    return output
+
+
+def _layout_header_anchors(lines):
+    best = {}
+    for line in lines:
+        anchors = {}
+        for word in sorted(line["words"], key=lambda item: item["left"]):
+            label = _drpp_table_label(word["text"])
+            if label:
+                anchors.setdefault(label, word["center_x"])
+        if (
+            "KUITANSI" in anchors
+            and "AKUN" in anchors
+            and "BRUTO" in anchors
+            and len(anchors) > len(best)
+        ):
+            best = anchors
+    return best
+
+
+def _parse_drpp_layout_table_rows(words, lines, page_number=1):
+    """Fallback tabel scan berdasarkan baris Y dan kolom X yang ditemukan dinamis."""
+    kw_prefix = re.compile(r"([0-9OIL]{3,6})\s*/\s*KW\s*/?", re.I)
+    suffix_pattern = re.compile(r"([0-9OIL]{5,9})\s*/\s*(20[0-9OIL]{2})", re.I)
+    starters = []
+    for index, line in enumerate(lines):
+        line_words = sorted(line["words"], key=lambda item: item["left"])
+        line_text = normalize_text(" ".join(word["text"] for word in line_words))
+        prefix = kw_prefix.search(line_text)
+        account_word = next(
+            (
+                word
+                for word in line_words
+                if re.fullmatch(r"5\d{5}", re.sub(r"\D", "", normalize_text(word["text"])))
+            ),
+            None,
+        )
+        if prefix and account_word:
+            starters.append((index, prefix, account_word))
+    if not starters:
+        return []
+
+    chunks = []
+    for position, (start, prefix, account_word) in enumerate(starters):
+        stop = starters[position + 1][0] if position + 1 < len(starters) else len(lines)
+        chunk = []
+        for line in lines[start:stop]:
+            line_text = normalize_text(" ".join(word["text"] for word in line["words"]))
+            if re.search(r"\bTOTAL\b", line_text, re.I):
+                break
+            chunk.append(line)
+        if chunk:
+            chunks.append({"prefix": prefix, "account_word": account_word, "lines": chunk})
+
+    for chunk in chunks:
+        chunk["amounts"] = sorted(
+            (
+                amount
+                for line in chunk["lines"]
+                for amount in _layout_amount_candidates(
+                    line["words"], min_x=chunk["account_word"]["right"]
+                )
+            ),
+            key=lambda amount: amount["center_x"],
+        )
+    usable = [chunk for chunk in chunks if len(chunk["amounts"]) >= 2]
+    if not usable:
+        return []
+
+    header = _layout_header_anchors(lines)
+    gross_x = median(chunk["amounts"][0]["center_x"] for chunk in usable)
+    net_x = median(chunk["amounts"][-1]["center_x"] for chunk in usable)
+    if net_x <= gross_x:
+        return []
+
+    def digits(value):
+        return (
+            str(value)
+            .upper()
+            .replace("O", "0")
+            .replace("I", "1")
+            .replace("L", "1")
+        )
+
+    items = []
+    for chunk in chunks:
+        amounts = chunk["amounts"]
+        if len(amounts) < 2:
+            continue
+        prefix = digits(chunk["prefix"].group(1)).zfill(5)
+        account = re.sub(r"\D", "", normalize_text(chunk["account_word"]["text"]))
+        suffix = next(
+            (
+                suffix_pattern.search(normalize_text(word["text"]))
+                for line in chunk["lines"]
+                for word in line["words"]
+                if word["center_x"] < chunk["account_word"]["center_x"]
+                and suffix_pattern.search(normalize_text(word["text"]))
+            ),
+            None,
+        )
+        no_bukti = (
+            f"{prefix}/KW/{digits(suffix.group(1))}/{digits(suffix.group(2))}"
+            if suffix
+            else prefix
+        )
+
+        financial = {"BRUTO": Decimal("0"), "FP": Decimal("0"), "PPH21": Decimal("0"), "NETTO": Decimal("0")}
+        if all(label in header for label in ("BRUTO", "FP", "PPH21", "NETTO")):
+            for amount in amounts:
+                label = min(
+                    ("BRUTO", "FP", "PPH21", "NETTO"),
+                    key=lambda key: abs(amount["center_x"] - header[key]),
+                )
+                financial[label] = amount["value"]
+        else:
+            financial["BRUTO"] = min(amounts, key=lambda amount: abs(amount["center_x"] - gross_x))["value"]
+            financial["NETTO"] = min(amounts, key=lambda amount: abs(amount["center_x"] - net_x))["value"]
+            for amount in amounts[1:-1]:
+                ratio = (amount["center_x"] - gross_x) / (net_x - gross_x)
+                financial["FP" if ratio < 0.5 else "PPH21"] = amount["value"]
+
+        amount_word_ids = {
+            id(word)
+            for amount in amounts
+            for word in amount["words"]
+        }
+        description_words = [
+            word["text"]
+            for line in chunk["lines"]
+            for word in sorted(line["words"], key=lambda item: item["left"])
+            if word["center_x"] > chunk["account_word"]["right"] + 20
+            and word["center_x"] < gross_x - 10
+            and id(word) not in amount_word_ids
+        ]
+        description = clean_description(" ".join(description_words))[:500]
+        review_fields = []
+        if not suffix:
+            review_fields.append("no_bukti_invalid")
+        if not re.fullmatch(r"5\d{5}", account):
+            review_fields.append("akun_invalid")
+        if financial["BRUTO"] <= 0:
+            review_fields.append("jumlah_invalid")
+        if financial["NETTO"] <= 0:
+            review_fields.append("netto_invalid")
+        if not description:
+            review_fields.append("deskripsi_missing")
+        row_words = [word for line in chunk["lines"] for word in line["words"]]
+        items.append(
+            {
+                "no_urut": len(items) + 1,
+                "no_bukti": no_bukti,
+                "tanggal_bukti": "",
+                "penerima": "",
+                "npwp": "",
+                "akun": account,
+                "jumlah": financial["BRUTO"],
+                "bruto": financial["BRUTO"],
+                "netto": financial["NETTO"],
+                "fp": financial["FP"],
+                "pph21": financial["PPH21"],
+                "pembebanan": "",
+                "keperluan": description,
+                "source_page": page_number,
+                "source_row_id": f"page:{page_number}:y:{int(chunk['lines'][0]['center_y'])}",
+                "method": "tsv_layout_columns",
+                "confidence": round(
+                    sum(word["confidence"] for word in row_words) / len(row_words), 2
+                ),
+                "needs_review": bool(review_fields),
+                "review_fields": review_fields,
+                "status": "Perlu Review" if review_fields else "Terbaca",
+            }
+        )
+    return items
+
+
+def extract_drpp_layout_totals(raw_words):
+    """Ambil total footer tabel dari label dan posisi aktual, bukan koordinat tetap."""
+    words = [word for word in (_to_tsv_word(raw) for raw in (raw_words or [])) if word]
+    lines = _group_tsv_words_by_line(words)
+    for index, line in enumerate(lines[:-1]):
+        ordered = sorted(line["words"], key=lambda item: item["left"])
+        total_words = [word for word in ordered if normalize_text(word["text"]).upper() == "TOTAL"]
+        anchors = {}
+        for word in ordered:
+            label = _drpp_table_label(word["text"])
+            if label not in {"BRUTO", "FP", "PPH21", "NETTO"}:
+                continue
+            preceding = [total for total in total_words if total["center_x"] < word["center_x"]]
+            anchors[label] = preceding[-1]["center_x"] if preceding else word["center_x"]
+        if "BRUTO" not in anchors or len(anchors) < 3:
+            continue
+        for value_line in lines[index + 1 : index + 4]:
+            amounts = _layout_amount_candidates(value_line["words"])
+            if len(amounts) < len(anchors):
+                continue
+            return {
+                label.lower(): min(
+                    amounts,
+                    key=lambda amount: abs(amount["center_x"] - anchor),
+                )["value"]
+                for label, anchor in anchors.items()
+            }
+    return {}
+
+
 def parse_drpp_financial_table_rows(raw_words, page_number=1):
     """Parse tabel DRPP berkolom Kuitansi/Akun/Bruto/Netto/Pembebanan.
 
@@ -2047,7 +2351,7 @@ def parse_drpp_financial_table_rows(raw_words, page_number=1):
             anchors = tokens
             break
     if header_index is None:
-        return []
+        return _parse_drpp_layout_table_rows(words, lines, page_number=page_number)
 
     ordered = [
         anchors["AKUN"],
@@ -2152,7 +2456,7 @@ def parse_drpp_financial_table_rows(raw_words, page_number=1):
             "review_fields": review_fields,
             "status": "Perlu Review" if review_fields else "Terbaca",
         })
-    return items
+    return items or _parse_drpp_layout_table_rows(words, lines, page_number=page_number)
 
 
 def compact_pembebanan_from_coa(coa, akun=""):
@@ -3635,6 +3939,7 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
     amounts = re.findall(r"\b\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?\b", item_text)
     ocr_trace = []
     items = []
+    layout_totals = {}
     for page in item_pages:
         page_words = page.get("tsv_words") or page.get("words") or page.get("ocr_words") or []
         page_number = page.get("page_number") or page.get("page") or 1
@@ -3651,6 +3956,9 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
             page_words,
             page_number=page_number,
         ) if page_words else []
+        page_layout_totals = extract_drpp_layout_totals(page_words) if page_words else {}
+        if page_layout_totals.get("bruto", Decimal("0")) > layout_totals.get("bruto", Decimal("0")):
+            layout_totals = page_layout_totals
         page_items = max(
             (cell_items, anchor_items, financial_items),
             key=lambda rows: (
@@ -3737,7 +4045,7 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
     for item in items:
         item["no_drpp"] = drpp_parts["nomor_drpp"]
     total = sum((item["jumlah"] for item in items), Decimal("0"))
-    printed_total = extract_drpp_printed_total(item_text)
+    printed_total = extract_drpp_printed_total(item_text) or layout_totals.get("bruto", Decimal("0"))
     status = parser_status(extracted)
     warnings = list(extracted["warnings"])
     if tsv_review_warning:
@@ -3775,6 +4083,9 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
             "nomor_spm": spm_match.group(1) if spm_match else "",
             "total": total,
             "printed_total": printed_total,
+            "printed_fp": layout_totals.get("fp", Decimal("0")),
+            "printed_pph21": layout_totals.get("pph21", Decimal("0")),
+            "printed_netto": layout_totals.get("netto", Decimal("0")),
             "source_item_count": len(items),
             "total_valid": not printed_total or abs(printed_total - total) <= Decimal("1"),
         },
