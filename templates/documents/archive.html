@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Daftar Arsip Google Drive</h2>
+      <p class="muted">Tautan dokumen yang sudah diimpor dari sheet UPLOAD pada KK_1300.</p>
+    </div>
+  </div>
+
+  <div class="toolbar-panel">
+    <div class="toolbar-row">
+      <form class="filter-panel" method="get">
+        <div class="filter-grid">
+          <div class="filter-field filter-search">
+            <label for="archive-q">Cari</label>
+            <input id="archive-q" name="q" value="{{ filters.q }}" placeholder="Nomor SPM, kuitansi, DRPP, atau nama file">
+          </div>
+          <div class="filter-field">
+            <label for="archive-satker">Satker</label>
+            <select id="archive-satker" name="satker">
+              <option value="">Semua satker</option>
+              {% for code in satker_options %}<option value="{{ code }}" {% if filters.satker == code %}selected{% endif %}>{{ code }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="filter-field">
+            <label for="archive-status">Status</label>
+            <select id="archive-status" name="status">
+              <option value="">Semua status</option>
+              {% for value, label in status_options %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="filter-actions">
+            <button class="btn primary" type="submit">Terapkan Filter</button>
+            <a class="btn ghost" href="{% url 'documents:archive' %}">Reset</a>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="table-wrap wide-table-wrap">
+    <table class="data-table compact">
+      <thead>
+        <tr>
+          <th>No. SPM / Kuitansi</th>
+          <th>URL</th>
+          <th>Satker</th>
+          <th>No. DRPP</th>
+          <th>Jenis Dokumen</th>
+          <th>Nama File</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for link in drive_links %}
+        <tr>
+          <td>{{ link.archive_number|default:"-" }}</td>
+          <td>
+            {% if link.archive_url_valid %}
+            <a href="{{ link.google_drive_url }}" target="_blank" rel="noopener noreferrer">Buka Google Drive</a>
+            {% else %}
+            <span class="muted">{{ link.google_drive_url|default:"URL tidak tersedia" }}</span>
+            {% endif %}
+          </td>
+          <td>{{ link.satker_code|default:"-" }}</td>
+          <td>{{ link.no_drpp|default:"-" }}</td>
+          <td>{{ link.jenis_dokumen|default:"-" }}</td>
+          <td>{{ link.nama_file|default:"-" }}</td>
+          <td><span class="badge {% if link.archive_status == 'AKTIF' %}green{% elif link.archive_status == 'PERLU_DICEK' %}orange{% endif %}">{{ link.archive_status }}</span></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="7" class="empty">Belum ada data arsip yang sesuai. Impor data UPLOAD KK_1300 atau ubah filter pencarian.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pagination-wrap">
+    <div class="pagination-info">Menampilkan {{ page_obj.start_index|default:0 }}-{{ page_obj.end_index|default:0 }} dari {{ paginator.count }} arsip</div>
+    <div class="pagination-controls">
+      {% if page_obj.has_previous %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&amp;{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>{% else %}<span class="page-btn disabled">Previous</span>{% endif %}
+      {% for page_number in pagination_window %}{% if page_number == page_obj.number %}<span class="page-btn active">{{ page_number }}</span>{% else %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&amp;{% endif %}page={{ page_number }}">{{ page_number }}</a>{% endif %}{% endfor %}
+      {% if page_obj.has_next %}<a class="page-btn" href="?{% if base_querystring %}{{ base_querystring }}&amp;{% endif %}page={{ page_obj.next_page_number }}">Next</a>{% else %}<span class="page-btn disabled">Next</span>{% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}

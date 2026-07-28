@@ -46,18 +46,18 @@
       <div class="menu-title"><span>Menu</span></div>
       <a href="{% url 'core:home' %}" class="navlink {% if request.resolver_match.url_name == 'home' %}active{% endif %}">Home</a>
       <a href="{% url 'core:dashboard' %}" class="navlink {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">Dashboard</a>
-      {% if request.user.is_superuser or request.user.profile.is_admin_pusat %}
-      <a href="{% url 'core:audit_data' %}" class="navlink {% if request.resolver_match.url_name == 'audit_data' %}active{% endif %}">Review Data</a>
-      {% endif %}
+      <a href="{% url 'dk:transaction_list' %}" class="navlink {% if request.resolver_match.app_name == 'dk' %}active{% endif %}">D_K</a>
       <a href="{% url 'sp2d:list' %}" class="navlink {% if request.resolver_match.app_name == 'sp2d' %}active{% endif %}">Upload SP2D</a>
-      <a href="{% url 'paket_spm:list' %}" class="navlink {% if request.resolver_match.app_name == 'paket_spm' %}active{% endif %}">Upload DRPP</a>
+      <a href="{% url 'paket_spm:list' %}" class="navlink {% if request.resolver_match.app_name == 'paket_spm' %}active{% endif %}">Upload DRPP dan Kuitansi</a>
+      <a href="{% url 'documents:archive' %}" class="navlink {% if request.resolver_match.url_name == 'archive' %}active{% endif %}">Arsip</a>
+      {% if request.user.is_superuser or request.user.profile.is_admin_pusat %}
+      <a href="{% url 'core:audit_data' %}" class="navlink {% if request.resolver_match.url_name == 'audit_data' %}active{% endif %}">Review</a>
+      {% endif %}
       <a href="{% url 'core:monitoring' %}" class="navlink {% if request.resolver_match.url_name == 'monitoring' %}active{% endif %}">Monitoring</a>
-      <a href="{% url 'dk:transaction_list' %}" class="navlink {% if request.resolver_match.app_name == 'dk' %}active{% endif %}">Detail Keuangan</a>
-      <a href="{% url 'core:akun_index' %}" class="navlink {% if request.resolver_match.url_name == 'akun_index' %}active{% endif %}">Akun Keuangan</a>
       <a href="{% url 'core:master_akun' %}" class="navlink {% if request.resolver_match.url_name == 'master_akun' %}active{% endif %}">Master Akun</a>
       <a href="{% url 'core:peraturan' %}" class="navlink {% if request.resolver_match.url_name == 'peraturan' %}active{% endif %}">Peraturan</a>
       <a href="{% url 'core:template' %}" class="navlink {% if request.resolver_match.url_name == 'template' %}active{% endif %}">Template</a>
-      <a href="{% url 'core:panduan' %}" class="navlink {% if request.resolver_match.url_name == 'panduan' %}active{% endif %}">Panduan Aplikasi</a>
+      <a href="{% url 'core:panduan' %}" class="navlink {% if request.resolver_match.url_name == 'panduan' %}active{% endif %}">Panduan</a>
       <a href="{% url 'reports:index' %}" class="navlink {% if request.resolver_match.app_name == 'reports' %}active{% endif %}">Laporan</a>
       <form method="post" action="{% url 'accounts:logout' %}">
         {% csrf_token %}

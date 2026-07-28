@@ -2,10 +2,12 @@ import mimetypes
 import os
 import shutil
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
+from django.core.paginator import Paginator
 from django.core.files import File
 from django.core.files.storage import FileSystemStorage
 from django.db import transaction as db_transaction
@@ -13,7 +15,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.dateparse import parse_date
 
-from apps.accounts.access import can_upload_document, get_profile, permission_context
+from apps.accounts.access import can_upload_document, filter_by_satker, get_profile, permission_context
 from apps.core.parsers import (
     classify_document,
     extract_pdf_text,
@@ -21,7 +23,7 @@ from apps.core.parsers import (
     parse_paket_spm_zip,
     parse_spm_pdf,
 )
-from apps.core.views import CHECKLIST_ROWS, UPLOAD_COLUMNS
+from apps.core.views import CHECKLIST_ROWS, UPLOAD_COLUMNS, build_pagination_window
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
 from apps.drpp.models import DRPPItem, DRPPUpload
@@ -30,6 +32,79 @@ from apps.documents.services.checklist import mark_checklist_present as mark_che
 from apps.documents.services.google_drive import archive_file_link
 
 from .models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink, DocumentUpload
+
+
+def _is_valid_google_drive_url(value):
+    try:
+        parsed = urlsplit((value or "").strip())
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and hostname in {
+        "drive.google.com",
+        "docs.google.com",
+    }
+
+
+@login_required
+def archive(request):
+    q = request.GET.get("q", "").strip()
+    satker = request.GET.get("satker", "").strip()
+    status = request.GET.get("status", "").strip()
+
+    scoped_links = filter_by_satker(
+        DocumentDriveLink.objects.select_related("created_by"),
+        request.user,
+    )
+    satker_options = list(
+        scoped_links.exclude(satker_code="")
+        .values_list("satker_code", flat=True)
+        .distinct()
+        .order_by("satker_code")
+    )
+    links = scoped_links
+    if q:
+        links = links.filter(
+            Q(nomor_spm__icontains=q)
+            | Q(no_kuitansi__icontains=q)
+            | Q(no_drpp__icontains=q)
+            | Q(nama_file__icontains=q)
+        )
+    if satker:
+        links = links.filter(satker_code=satker)
+    valid_url_query = Q(
+        google_drive_url__iregex=r"^https?://(drive|docs)\.google\.com(?:[/?#]|$)"
+    )
+    if status == DocumentDriveLink.Status.PERLU_DICEK:
+        links = links.filter(Q(status=status) | ~valid_url_query)
+    elif status:
+        links = links.filter(status=status).filter(valid_url_query)
+
+    paginator = Paginator(links.order_by("-created_at", "-id"), 25)
+    page_obj = paginator.get_page(request.GET.get("page"))
+    for link in page_obj.object_list:
+        link.archive_number = link.no_kuitansi or link.nomor_spm
+        link.archive_url_valid = _is_valid_google_drive_url(link.google_drive_url)
+        link.archive_status = link.status if link.archive_url_valid else DocumentDriveLink.Status.PERLU_DICEK
+
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
+    context = permission_context(request.user)
+    context.update(
+        {
+            "page_title": "Arsip",
+            "page_subtitle": "Daftar tautan arsip Google Drive dari data UPLOAD KK_1300.",
+            "drive_links": page_obj,
+            "page_obj": page_obj,
+            "paginator": paginator,
+            "pagination_window": build_pagination_window(page_obj),
+            "base_querystring": query_params.urlencode(),
+            "filters": {"q": q, "satker": satker, "status": status},
+            "satker_options": satker_options,
+            "status_options": DocumentDriveLink.Status.choices,
+        }
+    )
+    return render(request, "documents/archive.html", context)
 
 
 @login_required
