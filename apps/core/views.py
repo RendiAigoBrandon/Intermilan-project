@@ -163,7 +163,6 @@ AUDIT_FINDINGS = {
 
 def common_context(request):
     context = {
-        "user_scope": "Semua Satker",
         "current_time_label": "30/06/2026 12:05",
     }
     context.update(permission_context(request.user))
@@ -296,7 +295,8 @@ def monitoring(request):
         "bulan": request.GET.get("bulan", "").strip(),
         "status": request.GET.get("status", "").strip(),
     }
-    summary_qs = MonitoringSummary.objects.all()
+    scoped_summary_qs = filter_by_satker(MonitoringSummary.objects.all(), request.user)
+    summary_qs = scoped_summary_qs
     if filters["tahun"].isdigit():
         summary_qs = summary_qs.filter(tahun=int(filters["tahun"]))
     if filters["satker"]:
@@ -306,18 +306,24 @@ def monitoring(request):
     if filters["status"]:
         summary_qs = summary_qs.filter(status__iexact=filters["status"])
 
-    summary_available = MonitoringSummary.objects.exists()
+    summary_available = scoped_summary_qs.exists()
     if summary_available:
         rows = build_monitoring_rows_from_summary(summary_qs)
         if filters["q"]:
             rows = filter_monitoring_rows(rows, filters["q"])
         summary = build_monitoring_summary_cards(rows)
-        satker_options = get_monitoring_summary_satker_options()
-        status_options = get_monitoring_summary_status_options()
-        year_options = get_dashboard_year_options()
+        satker_options = get_monitoring_summary_satker_options(scoped_summary_qs)
+        status_options = get_monitoring_summary_status_options(scoped_summary_qs)
+        year_options = [
+            str(year)
+            for year in scoped_summary_qs.values_list("tahun", flat=True)
+            .distinct()
+            .order_by("tahun")
+        ] or ["2026"]
         source_label = "MonitoringSummary"
     else:
-        queryset = TransactionDetail.objects.all()
+        scoped_transactions = filter_by_satker(TransactionDetail.objects.all(), request.user)
+        queryset = scoped_transactions
         if filters["satker"]:
             queryset = queryset.filter(satker_code=filters["satker"])
         if filters["bulan"]:
@@ -331,7 +337,7 @@ def monitoring(request):
         lengkap = ChecklistStatus.objects.filter(transaction_detail__in=queryset, status=ChecklistStatus.Status.ADA).values("transaction_detail").distinct().count()
         persen = f"{(lengkap / total * 100):.1f}%" if total else "0.0%"
         summary = {"hasil": total, "lengkap": lengkap, "belum": max(total - lengkap, 0), "persen": persen}
-        satker_options = get_monitoring_satker_options()
+        satker_options = get_monitoring_satker_options(scoped_transactions)
         status_options = ["In Progress"]
         year_options = ["2026"]
         source_label = "Fallback D_K"
@@ -709,24 +715,27 @@ def build_monitoring_summary_cards(rows):
     }
 
 
-def get_monitoring_satker_options():
-    return build_satker_options(TransactionDetail.objects.exclude(satker_code=""))
+def get_monitoring_satker_options(queryset=None):
+    queryset = queryset if queryset is not None else TransactionDetail.objects.all()
+    return build_satker_options(queryset.exclude(satker_code=""))
 
 
-def get_monitoring_summary_satker_options():
+def get_monitoring_summary_satker_options(queryset=None):
+    queryset = queryset if queryset is not None else MonitoringSummary.objects.all()
     satker_names = get_satker_name_map()
     return [
         {"satker_code": item["satker_code"], "satker_name": satker_names.get(item["satker_code"], item["satker_label"] or "-")}
-        for item in MonitoringSummary.objects.exclude(satker_code="")
+        for item in queryset.exclude(satker_code="")
         .values("satker_code", "satker_label")
         .distinct()
         .order_by("satker_code")
     ]
 
 
-def get_monitoring_summary_status_options():
+def get_monitoring_summary_status_options(queryset=None):
+    queryset = queryset if queryset is not None else MonitoringSummary.objects.all()
     return list(
-        MonitoringSummary.objects.exclude(status="")
+        queryset.exclude(status="")
         .values_list("status", flat=True)
         .distinct()
         .order_by("status")

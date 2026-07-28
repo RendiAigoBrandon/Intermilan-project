@@ -45,6 +45,31 @@ class DKTests(TestCase):
     def test_helper_property(self):
         self.assertEqual(self.transaction.helper, "12345KUIT001")
 
+    def test_dk_renders_business_headers_and_disabled_export_controls(self):
+        response = self.client.get(reverse("dk:transaction_list"))
+        table = response.content.decode("utf-8").split("table-dk", 1)[1].split("</table>", 1)[0]
+        business_headers = (
+            "Helper", "Akun", "Bulan SP2D", "Cara Pembayaran", "Nomor SPM",
+            "Tanggal SPM", "Jenis SPM", "No. Kuitansi", "No. DRPP", "Deskripsi",
+            "Nilai Bruto", "Nilai Netto", "Pembebanan", "FP", "PPh21",
+        )
+
+        for header in business_headers:
+            with self.subTest(header=header):
+                self.assertIn(f">{header}</th>", table)
+        self.assertNotIn(">SP2D Bulan</th>", table)
+        self.assertContains(response, "Fitur ekspor belum tersedia.")
+        self.assertContains(
+            response,
+            'type="button" disabled aria-disabled="true" title="Fitur ekspor belum tersedia.">Export Excel',
+            html=False,
+        )
+        self.assertContains(
+            response,
+            'type="button" disabled aria-disabled="true" title="Fitur ekspor belum tersedia.">Export Excel Per Akun',
+            html=False,
+        )
+
     def test_create_transaction_admin(self):
         url = reverse('dk:transaction_create')
         data = {

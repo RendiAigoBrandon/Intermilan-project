@@ -190,6 +190,78 @@ class CoreAccessTests(TestCase):
         self.assertEqual(search_response.context["rows"][0]["bps"], "bps1301")
         self.assertContains(search_response, "bps1301")
 
+    def test_monitoring_fallback_operator_only_uses_own_satker(self):
+        operator = self.make_user("operator_monitoring_fallback", Profile.Role.SATKER, "1300")
+        TransactionDetail.objects.create(
+            satker_code="1300",
+            akun="522111",
+            nomor_spm="MON-OWN",
+            bulan_sp2d=1,
+            nilai_netto=100,
+        )
+        TransactionDetail.objects.create(
+            satker_code="1301",
+            akun="522111",
+            nomor_spm="MON-OTHER",
+            bulan_sp2d=1,
+            nilai_netto=900,
+        )
+        self.client.force_login(operator)
+
+        response = self.client.get(reverse("core:monitoring"), {"satker": "1301"})
+        unfiltered = self.client.get(reverse("core:monitoring"))
+
+        self.assertEqual(response.context["rows"], [])
+        self.assertEqual([row["bps"] for row in unfiltered.context["rows"]], ["bps1300"])
+        self.assertEqual(unfiltered.context["summary"]["hasil"], 1)
+        self.assertEqual(
+            [item["satker_code"] for item in unfiltered.context["satker_options"]],
+            ["1300"],
+        )
+
+    def test_monitoring_summary_operator_excludes_other_satker_aggregates(self):
+        operator = self.make_user("operator_monitoring_summary", Profile.Role.SATKER, "1300")
+        MonitoringSummary.objects.create(
+            satker_code="1300",
+            satker_label="bps1300",
+            bulan="Januari",
+            bulan_number=1,
+            tahun=2026,
+            percent_completed=100,
+            status="Lengkap",
+        )
+        MonitoringSummary.objects.create(
+            satker_code="1301",
+            satker_label="bps1301",
+            bulan="Januari",
+            bulan_number=1,
+            tahun=2026,
+            percent_completed=0,
+            status="Belum",
+        )
+        self.client.force_login(operator)
+
+        response = self.client.get(reverse("core:monitoring"))
+
+        self.assertEqual([row["bps"] for row in response.context["rows"]], ["bps1300"])
+        self.assertEqual(response.context["summary"]["hasil"], 1)
+        self.assertEqual(response.context["summary"]["lengkap"], 1)
+        self.assertEqual(response.context["summary"]["persen"], "100,00%")
+        self.assertEqual(
+            [item["satker_code"] for item in response.context["satker_options"]],
+            ["1300"],
+        )
+
+    def test_header_shows_operator_scope_code_and_name(self):
+        operator = self.make_user("operator_scope_label", Profile.Role.SATKER, "1300")
+        operator.profile.satker_name = "BPS Provinsi Sumatera Barat"
+        operator.profile.save(update_fields=["satker_name"])
+        self.client.force_login(operator)
+
+        response = self.client.get(reverse("core:home"))
+
+        self.assertContains(response, "Satker 1300 - BPS Provinsi Sumatera Barat")
+
     @override_settings(DEBUG=True)
     def test_create_dev_users_all_satker_uses_active_satkers(self):
         MonitoringSummary.objects.create(satker_code="1300", satker_label="bps1300", bulan="Januari", bulan_number=1, tahun=2026)

@@ -3,8 +3,9 @@ from django.test import TestCase
 from django.urls import reverse
 
 from apps.accounts.models import Profile
+from apps.dk.models import TransactionDetail
 
-from .models import DocumentDriveLink
+from .models import DocumentDriveLink, DocumentUpload
 
 
 User = get_user_model()
@@ -213,3 +214,71 @@ class DocumentArchiveTests(TestCase):
         self.client.force_login(self.admin)
         response = self.client.get(reverse("documents:archive"))
         self.assertContains(response, "Belum ada data arsip yang sesuai")
+
+    def test_checklist_list_scopes_links_uploads_and_filter_choices(self):
+        own_transaction = TransactionDetail.objects.create(satker_code="1300", akun="521111")
+        other_transaction = TransactionDetail.objects.create(satker_code="1301", akun="521111")
+        own_link = self.create_link(transaction_detail=own_transaction, nama_file="own-link.pdf", jenis_dokumen="OWN")
+        other_link = self.create_link(
+            transaction_detail=other_transaction,
+            satker_code="1301",
+            nama_file="other-link.pdf",
+            jenis_dokumen="OTHER",
+        )
+        own_upload = DocumentUpload.objects.create(
+            transaction_detail=own_transaction,
+            document_type="KW",
+            original_filename="own-upload.pdf",
+            stored_filename="own-upload.pdf",
+        )
+        other_upload = DocumentUpload.objects.create(
+            transaction_detail=other_transaction,
+            document_type="KW",
+            original_filename="other-upload.pdf",
+            stored_filename="other-upload.pdf",
+        )
+        self.client.force_login(self.operator)
+
+        response = self.client.get(reverse("documents:checklist"))
+        manipulated = self.client.get(reverse("documents:checklist"), {"satker": "1301"})
+
+        self.assertEqual(list(response.context["drive_links"]), [own_link])
+        self.assertEqual(list(response.context["uploads"]), [own_upload])
+        self.assertEqual(list(response.context["jenis_options"]), ["OWN"])
+        self.assertNotIn(other_link, response.context["drive_links"])
+        self.assertNotIn(other_upload, response.context["uploads"])
+        self.assertEqual(list(manipulated.context["drive_links"]), [])
+
+    def test_checklist_detail_rejects_another_satker_direct_url(self):
+        own_transaction = TransactionDetail.objects.create(satker_code="1300", akun="521111")
+        other_transaction = TransactionDetail.objects.create(satker_code="1301", akun="521111")
+        self.client.force_login(self.operator)
+
+        own_response = self.client.get(reverse("documents:checklist_detail", args=[own_transaction.pk]))
+        other_response = self.client.get(reverse("documents:checklist_detail", args=[other_transaction.pk]))
+
+        self.assertEqual(own_response.status_code, 200)
+        self.assertEqual(other_response.status_code, 404)
+
+    def test_admin_sees_all_checklist_links_and_uploads(self):
+        transaction_1300 = TransactionDetail.objects.create(satker_code="1300", akun="521111")
+        transaction_1301 = TransactionDetail.objects.create(satker_code="1301", akun="521111")
+        links = [
+            self.create_link(transaction_detail=transaction_1300, nama_file="admin-1300.pdf"),
+            self.create_link(transaction_detail=transaction_1301, satker_code="1301", nama_file="admin-1301.pdf"),
+        ]
+        uploads = [
+            DocumentUpload.objects.create(
+                transaction_detail=transaction,
+                document_type="KW",
+                original_filename=f"admin-{transaction.satker_code}.pdf",
+                stored_filename=f"admin-{transaction.satker_code}.pdf",
+            )
+            for transaction in (transaction_1300, transaction_1301)
+        ]
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("documents:checklist"))
+
+        self.assertEqual(set(response.context["drive_links"]), set(links))
+        self.assertEqual(set(response.context["uploads"]), set(uploads))

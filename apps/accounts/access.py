@@ -38,6 +38,20 @@ def get_user_satker_code(user):
     return profile.satker_code if profile else ""
 
 
+def get_user_scope_label(user):
+    profile = get_profile(user)
+    if not profile:
+        return ""
+    if is_admin(user):
+        return "Semua Satker"
+    if profile.is_satker:
+        label = f"Satker {profile.satker_code}" if profile.satker_code else "Satker"
+        return f"{label} - {profile.satker_name}" if profile.satker_name else label
+    if profile.is_viewer:
+        return "Semua Satker (Read Only)"
+    return ""
+
+
 def can_view_all_satker(user):
     return is_admin(user) or is_viewer(user)
 
@@ -108,6 +122,7 @@ def permission_context(user):
         "is_role_operator": is_operator_satker(user),
         "is_role_viewer": is_viewer(user),
         "user_satker_code": get_user_satker_code(user),
+        "user_scope": get_user_scope_label(user),
         "can_view_all_satker": can_view_all_satker(user),
         "can_upload_document": can_upload_document(user),
         "can_access_audit_data": can_access_audit_data(user),

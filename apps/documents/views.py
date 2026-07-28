@@ -15,7 +15,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.dateparse import parse_date
 
-from apps.accounts.access import can_upload_document, filter_by_satker, get_profile, permission_context
+from apps.accounts.access import can_upload_document, filter_by_satker, permission_context
 from apps.core.parsers import (
     classify_document,
     extract_pdf_text,
@@ -112,7 +112,11 @@ def checklist_list(request):
     q = request.GET.get("q", "").strip()
     jenis = request.GET.get("jenis", "").strip()
     satker = request.GET.get("satker", "").strip()
-    links = DocumentDriveLink.objects.select_related("created_by").order_by("-created_at")
+    scoped_links = filter_by_satker(
+        DocumentDriveLink.objects.select_related("created_by"),
+        request.user,
+    )
+    links = scoped_links.order_by("-created_at")
     if q:
         links = links.filter(
             Q(nama_file__icontains=q)
@@ -128,9 +132,13 @@ def checklist_list(request):
     if satker:
         links = links.filter(satker_code=satker)
     links = links[:100]
-    uploads = DocumentUpload.objects.select_related("uploaded_by").order_by("-uploaded_at")[:50]
+    uploads = filter_by_satker(
+        DocumentUpload.objects.select_related("uploaded_by", "transaction_detail"),
+        request.user,
+        field_name="transaction_detail__satker_code",
+    ).order_by("-uploaded_at")[:50]
     jenis_options = (
-        DocumentDriveLink.objects.exclude(jenis_dokumen="")
+        scoped_links.exclude(jenis_dokumen="")
         .values_list("jenis_dokumen", flat=True)
         .distinct()
         .order_by("jenis_dokumen")[:50]
@@ -152,12 +160,12 @@ def checklist_list(request):
 
 @login_required
 def checklist_detail(request, transaction_id):
-    transaction = get_object_or_404(TransactionDetail.objects.select_related("sp2d_raw"), pk=transaction_id)
-    profile = get_profile(request.user)
-    if profile and profile.is_satker and transaction.satker_code != profile.satker_code:
-        context_can_upload = False
-    else:
-        context_can_upload = can_upload_document(request.user, transaction)
+    transactions = filter_by_satker(
+        TransactionDetail.objects.select_related("sp2d_raw"),
+        request.user,
+    )
+    transaction = get_object_or_404(transactions, pk=transaction_id)
+    context_can_upload = can_upload_document(request.user, transaction)
 
     if request.method == "POST":
         if not context_can_upload:

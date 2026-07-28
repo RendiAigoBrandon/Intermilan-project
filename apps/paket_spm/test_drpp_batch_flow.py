@@ -14,6 +14,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from apps.accounts.models import Profile
 from apps.core.drpp_batch_parser import PARSER_VERSION
 from apps.dk.models import TransactionDetail
 from apps.paket_spm.models import PaketSPMUpload
@@ -36,6 +37,10 @@ class DRPPBatchUpsertIntegrationTests(TestCase):
         self.media_settings = override_settings(MEDIA_ROOT=self.media_tmp.name)
         self.media_settings.enable()
         self.user = User.objects.create_user(username="drpp-operator", password="password")
+        Profile.objects.filter(user=self.user).update(
+            role=Profile.Role.SATKER,
+            satker_code="019937",
+        )
 
     def tearDown(self):
         self.media_settings.disable()
@@ -273,6 +278,47 @@ class DRPPBatchUpsertIntegrationTests(TestCase):
 
         self.assertEqual(parser.call_count, 3)
         self.assertEqual(PaketSPMUpload.objects.filter(parsed_data__parser_version=PARSER_VERSION).count(), 3)
+
+    def test_viewer_upload_is_rejected_before_parser_or_draft(self):
+        viewer = User.objects.create_user(username="drpp-viewer", password="password")
+        self.client.force_login(viewer)
+        upload = SimpleUploadedFile("viewer.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch") as parser:
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        self.assertEqual(response.status_code, 403)
+        parser.assert_not_called()
+        self.assertFalse(PaketSPMUpload.objects.exists())
+
+    def test_operator_cannot_create_draft_for_document_from_another_satker(self):
+        parsed = self.parsed_batch()
+        parsed["spm"]["metadata"]["satker_app_code"] = "1301"
+        parsed.update({"ok": True, "files": [], "warnings": [], "temp_dir": "", "metrics": {}})
+        self.client.force_login(self.user)
+        upload = SimpleUploadedFile("other-satker.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "berbeda dengan scope operator")
+        self.assertFalse(PaketSPMUpload.objects.exists())
+
+    def test_operator_posted_satker_cannot_override_profile_scope(self):
+        parsed = self.parsed_batch()
+        parsed.update({"ok": True, "files": [], "warnings": [], "temp_dir": "", "metrics": {}})
+        self.client.force_login(self.user)
+        upload = SimpleUploadedFile("own-satker.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(
+                reverse("paket_spm:list"),
+                {"file_paket": upload, "satker_code": "1301"},
+            )
+
+        self.assertRedirects(response, reverse("paket_spm:preview"), fetch_redirect_response=False)
+        self.assertEqual(PaketSPMUpload.objects.get().satker_code, "019937")
 
 
 @skipUnless(os.getenv("DRPP_REAL_HTTP_FIXTURE"), "Set DRPP_REAL_HTTP_FIXTURE untuk acceptance OCR melalui HTTP.")

@@ -24,9 +24,10 @@
         <a class="btn primary" href="{% url 'dk:transaction_create' %}">Tambah Baris Manual</a>
         {% endif %}
         {% if can_export_data %}
-        <button class="btn ghost" type="button">Export Excel</button>
+        <button class="btn ghost" type="button" disabled aria-disabled="true" title="Fitur ekspor belum tersedia.">Export Excel</button>
         <a class="btn ghost" href="{% url 'core:akun_index' %}">Lihat Per Akun</a>
-        <button class="btn ghost" type="button">Export Excel Per Akun</button>
+        <button class="btn ghost" type="button" disabled aria-disabled="true" title="Fitur ekspor belum tersedia.">Export Excel Per Akun</button>
+        <span class="muted">Fitur ekspor belum tersedia.</span>
         {% else %}
         <span class="badge">Read Only</span>
         {% endif %}
@@ -135,7 +136,7 @@
           <th class="col-sp2d">No SP2D</th>
           <th class="col-status">Helper</th>
           <th class="col-akun">Akun</th>
-          <th class="col-bulan">SP2D Bulan</th>
+          <th class="col-bulan">Bulan SP2D</th>
           <th class="col-cara-bayar">Cara Pembayaran</th>
           <th class="col-spm">Nomor SPM</th>
           <th class="col-tanggal">Tanggal SPM</th>

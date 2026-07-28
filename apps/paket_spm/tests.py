@@ -15,6 +15,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from PIL import Image
 
+from apps.accounts.models import Profile
 from apps.core.ocr import classify_page, configure_tesseract, extract_tesseract, ocr_cache_key
 from apps.core.parsers import (
     DOCUMENT_PARSER_REGISTRY,
@@ -80,6 +81,10 @@ class PaketSPMRegressionTests(TestCase):
         self.media_settings = override_settings(MEDIA_ROOT=self.media_tmp.name, MEDIA_URL="/media/")
         self.media_settings.enable()
         self.user = User.objects.create_user(username="operator", password="password")
+        Profile.objects.filter(user=self.user).update(
+            role=Profile.Role.SATKER,
+            satker_code="1300",
+        )
 
     def tearDown(self):
         self.media_settings.disable()

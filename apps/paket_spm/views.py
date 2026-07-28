@@ -6,6 +6,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
 from django.core.files import File
 from django.core.files.storage import FileSystemStorage
 from django.db import transaction
@@ -27,7 +28,12 @@ from .models import PaketSPMUpload
 
 @login_required
 def paket_spm_list(request):
+    access_context = permission_context(request.user)
     if request.method == "POST":
+        if not access_context["can_upload_document"]:
+            raise PermissionDenied("Akun ini hanya memiliki akses baca.")
+        if access_context["is_role_operator"] and not access_context["user_satker_code"]:
+            raise PermissionDenied("Scope satker operator belum dikonfigurasi.")
         upload_file = request.FILES.get("file_paket")
         upload_files = request.FILES.getlist("document_files")
         if not upload_files:
@@ -72,10 +78,15 @@ def paket_spm_list(request):
         sp2d_context = get_sp2d_context(request.POST.get("sp2d_raw_id"), request.user)
         sp2d_row = sp2d_context.get("row") if sp2d_context else None
         input_tahun = str(request.POST.get("tahun") or getattr(sp2d_row, "tahun", "") or "")
-        input_satker = str(request.POST.get("satker_code") or getattr(sp2d_row, "satker_code", "") or "").split(" - ")[0].strip()
-        access_context = permission_context(request.user)
-        if not input_satker and not access_context.get("can_view_all_satker"):
-            input_satker = access_context.get("user_satker_code") or ""
+        requested_satker = str(
+            request.POST.get("satker_code") or getattr(sp2d_row, "satker_code", "") or ""
+        ).split(" - ")[0].strip()
+        operator_satker = (
+            access_context.get("user_satker_code") or ""
+            if access_context.get("is_role_operator")
+            else ""
+        )
+        input_satker = operator_satker or requested_satker
         identity_probe = {}
         try:
             parsed = parse_drpp_upload_batch(file_path, ocr=use_ocr)
@@ -244,13 +255,20 @@ def paket_spm_list(request):
             or getattr(sp2d_row, "bulan", None)
             or parse_month(str(getattr(sp2d_row, "bulan_nama", "") or ""))
         )
-        satker = str(
+        document_satker = str(
             spm_meta.get("satker_app_code")
             or spm_meta.get("satker_code")
-            or str(request.POST.get("satker_code") or "").split(" - ")[0].strip()
-            or getattr(sp2d_row, "satker_code", "")
             or ""
         )[:32]
+        if operator_satker and document_satker and document_satker != operator_satker:
+            cleanup_paket_files(file_path, parsed.get("temp_dir", ""))
+            messages.error(
+                request,
+                f"Satker dokumen {document_satker} berbeda dengan scope operator {operator_satker}. "
+                "Upload tidak disimpan dan perlu diperiksa.",
+            )
+            return redirect("paket_spm:list")
+        satker = (operator_satker or requested_satker or document_satker)[:32]
         parsed["paket_context"] = {"tahun": tahun, "bulan": bulan, "satker_code": satker}
 
         import json
@@ -299,7 +317,7 @@ def paket_spm_list(request):
 
     rows = filter_by_satker(PaketSPMUpload.objects.select_related("uploaded_by"), request.user)
     sp2d_context = get_sp2d_context(request.GET.get("sp2d_raw_id"), request.user)
-    context = permission_context(request.user)
+    context = access_context
     context.update(
         {
             "page_title": "Upload DRPP",
@@ -336,6 +354,11 @@ def paket_spm_preview(request):
     parsed = paket.parsed_data or {}
 
     if request.method == "POST":
+        access_context = permission_context(request.user)
+        if not access_context["can_upload_document"]:
+            raise PermissionDenied("Akun ini hanya memiliki akses baca.")
+        if access_context["is_role_operator"] and not access_context["user_satker_code"]:
+            raise PermissionDenied("Scope satker operator belum dikonfigurasi.")
         action = request.POST.get("action")
         if action == "cancel":
             zip_path = paket.zip_file.path if paket.zip_file else ""
@@ -358,7 +381,11 @@ def paket_spm_preview(request):
             paket.nomor_sp2d = clean_text(request.POST.get("nomor_sp2d", paket.nomor_sp2d))
             paket.nomor_invoice = clean_text(request.POST.get("nomor_invoice", paket.nomor_invoice))
 
-            raw_satker = clean_text(request.POST.get("satker_code", paket.satker_code))
+            raw_satker = (
+                access_context.get("user_satker_code") or ""
+                if access_context.get("is_role_operator")
+                else clean_text(request.POST.get("satker_code", paket.satker_code))
+            )
             paket.satker_code = raw_satker.split(" - ")[0].strip()[:32]
 
             # We also update the parsed_data so it reflects in decision and UI
