@@ -1,6 +1,10 @@
 from django.test import SimpleTestCase
 
-from apps.core.parsers import parse_drpp_items_from_tsv, parse_drpp_items_from_tsv_rows
+from apps.core.parsers import (
+    parse_drpp_financial_table_rows,
+    parse_drpp_items_from_tsv,
+    parse_drpp_items_from_tsv_rows,
+)
 
 
 def line_words(text, top):
@@ -81,3 +85,72 @@ class DRPPTSVRowRecoveryTests(SimpleTestCase):
         self.assertEqual(str(rows[0]["jumlah"]), "2234500")
         self.assertEqual(rows[1]["keperluan"], "Biaya pengiriman surat dinas dalam rangka layanan perkantoran")
         self.assertEqual(rows[1]["method"], "tsv_row_anchor")
+
+    def test_financial_table_keeps_distinct_gross_net_tax_and_multiline_description(self):
+        def word(text, left, top):
+            return {
+                "text": text,
+                "left": left,
+                "top": top,
+                "width": max(18, len(text) * 7),
+                "height": 14,
+                "confidence": 91,
+            }
+
+        words = [
+            word("No.", 20, 50), word("Kuitansi", 100, 50), word("Akun", 300, 50),
+            word("Deskripsi", 500, 50), word("Bruto", 1000, 50), word("Netto", 1200, 50),
+            word("Pembebanan", 1400, 50), word("PPh21", 1750, 50),
+            word("Pemeliharaan", 440, 85), word("perangkat", 570, 85),
+            word("kantor", 680, 85), word("bulan", 440, 105), word("Agustus", 500, 105),
+            word("00777/KW/045678/2027", 90, 130), word("523123", 300, 130),
+            word("4.500.000", 1000, 130), word("4.425.000", 1200, 130),
+            word("3012.EFG.111.222.523123", 1400, 130), word("75.000", 1750, 130),
+            word("TOTAL", 900, 170), word("DRPP", 970, 170), word("4.500.000", 1050, 170),
+        ]
+
+        rows = parse_drpp_financial_table_rows(words, page_number=2)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["no_bukti"], "00777/KW/045678/2027")
+        self.assertEqual(rows[0]["akun"], "523123")
+        self.assertEqual(rows[0]["keperluan"], "Pemeliharaan perangkat kantor bulan Agustus")
+        self.assertEqual(rows[0]["bruto"], 4500000)
+        self.assertEqual(rows[0]["netto"], 4425000)
+        self.assertEqual(rows[0]["pph21"], 75000)
+        self.assertEqual(rows[0]["pembebanan"], "3012.EFG.111.222.523123")
+
+    def test_financial_table_is_metamorphic_for_identity_and_amount_changes(self):
+        def parse_case(receipt, account, gross, net, tax, charge):
+            positions = {
+                "Kuitansi": 100, "Akun": 300, "Deskripsi": 500, "Bruto": 1000,
+                "Netto": 1200, "Pembebanan": 1400, "PPh21": 1750,
+            }
+
+            def word(text, left, top):
+                return {"text": text, "left": left, "top": top, "width": max(18, len(text) * 7), "height": 14, "confidence": 88}
+
+            words = [word(label, left, 40) for label, left in positions.items()]
+            words += [
+                word("Belanja", 450, 75), word("operasional", 540, 75),
+                word(receipt, 100, 105), word(account, 300, 105),
+                word(gross, 1000, 105), word(net, 1200, 105),
+                word(charge, 1400, 105), word(tax, 1750, 105),
+            ]
+            return parse_drpp_financial_table_rows(words)[0]
+
+        first = parse_case(
+            "00456/KW/012345/2028", "521219", "9.750.000", "9.700.000",
+            "50.000", "4001.ABC.010.020.521219",
+        )
+        second = parse_case(
+            "00888/KW/098765/2029", "524111", "12.345.000", "12.345.000",
+            "0", "5002.XYZ.333.444.524111",
+        )
+
+        self.assertEqual(first["no_bukti"], "00456/KW/012345/2028")
+        self.assertEqual(first["jumlah"], 9750000)
+        self.assertEqual(first["pph21"], 50000)
+        self.assertEqual(second["no_bukti"], "00888/KW/098765/2029")
+        self.assertEqual(second["akun"], "524111")
+        self.assertEqual(second["jumlah"], 12345000)

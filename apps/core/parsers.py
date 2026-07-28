@@ -330,7 +330,9 @@ def classify_page_types(text):
         types.extend(["DETAIL_SPP_SPM_SP2D", "SP2D_DETAIL"])
     if "SURAT PERINTAH MEMBAYAR" in upper:
         types.extend(["SPM_HEADER", "SPM"])
-    if "SURAT PERMINTAAN PEMBAYARAN" in upper or re.search(r"(?:NOMOR|NO\.?)\s+SPP\s*[:\-]", upper):
+    if "SURAT PERMINTAAN PEMBAYARAN" in upper or re.search(
+        r"(?:NOMOR|NO\.?)\s+SPP\s*[:\-]?\s*[0-9]{3,6}[A-Z]?\b", upper
+    ):
         types.append("SPP")
     if not is_ssp and (
         "LAMPIRAN DAFTAR RINCIAN" in upper
@@ -757,7 +759,7 @@ def extract_jenis_spm(text):
         value = re.sub(r"\bGAJI\s*LAINNYA\b", "GAJI LAINNYA", value, flags=re.IGNORECASE)
         return title_with_acronyms(value)
     return parse_first_match(text, [
-        r"(?:JENIS\s+SPM|JENIS\s+SPP)\s*[:\-]?\s*([A-Z0-9 /._-]{2,80})",
+        r"(?:JENIS\s+SPM|JENIS\s+SPP)\s*[:\-]?\s*([A-Z0-9 /._-]{2,80}?)(?=\s+(?:NOMOR\s+(?:SPP|SP2D|DRPP)|CARA\s+PEMBAYARAN|TANGGAL|KODE\s+SATKER)\b|$)",
         r"\b(UP|GUP|TUP|PTUP|LS(?:\s+[A-Z ]{2,40})?)\b",
     ])
 
@@ -2019,6 +2021,137 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
             "status": "Perlu Review" if review_fields else "Terbaca",
         }
         items.append(item)
+    return items
+
+
+def parse_drpp_financial_table_rows(raw_words, page_number=1):
+    """Parse tabel DRPP berkolom Kuitansi/Akun/Bruto/Netto/Pembebanan.
+
+    Uraian boleh berada pada satu atau beberapa baris tepat sebelum baris
+    finansial. Koordinat header menentukan batas kolom; nomor atau nominal
+    tertentu tidak pernah dipakai sebagai petunjuk.
+    """
+    words = [word for word in (_to_tsv_word(raw) for raw in (raw_words or [])) if word]
+    lines = _group_tsv_words_by_line(words)
+    header_index = None
+    anchors = {}
+    required = {"KUITANSI", "AKUN", "DESKRIPSI", "BRUTO"}
+    for index, line in enumerate(lines):
+        line_words = sorted(line["words"], key=lambda item: item["left"])
+        tokens = {
+            normalize_text(word["text"]).upper().strip(".,:"): word["center_x"]
+            for word in line_words
+        }
+        if required.issubset(tokens):
+            header_index = index
+            anchors = tokens
+            break
+    if header_index is None:
+        return []
+
+    ordered = [
+        anchors["AKUN"],
+        anchors["DESKRIPSI"],
+        anchors["BRUTO"],
+        anchors.get("NETTO", anchors["BRUTO"] + 180),
+        anchors.get("PEMBEBANAN", anchors["BRUTO"] + 360),
+        anchors.get("PPH21", anchors["BRUTO"] + 560),
+    ]
+    if any(right <= left for left, right in zip(ordered, ordered[1:])):
+        return []
+    boundaries = [(left + right) / 2 for left, right in zip(ordered, ordered[1:])]
+    # Teks uraian sering mulai sedikit di kiri label DESKRIPSI dan dapat
+    # melewati titik tengah menuju BRUTO. Batas header aktual lebih stabil
+    # daripada midpoint untuk kolom teks bebas ini.
+    description_left = anchors["DESKRIPSI"] - max(80, (anchors["DESKRIPSI"] - anchors["AKUN"]) * 0.75)
+    description_right = anchors["BRUTO"]
+    gross_left, gross_right = boundaries[1], boundaries[2]
+    net_left, net_right = boundaries[2], boundaries[3]
+    charge_left, charge_right = boundaries[3], boundaries[4]
+    tax_left = boundaries[4]
+    kw_pattern = re.compile(
+        r"([0-9OIL]{3,6})\s*/\s*KW\s*/\s*([0-9OIL]{2,9}(?:\s+[0-9OIL]{2,7})?)\s*/\s*(20[0-9OIL]{2})",
+        re.IGNORECASE,
+    )
+    amount_pattern = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?")
+    pending_description = []
+    items = []
+
+    def text_in_band(line_words, left, right=None):
+        selected = [
+            word["text"] for word in line_words
+            if word["center_x"] >= left and (right is None or word["center_x"] < right)
+        ]
+        return normalize_text(" ".join(selected))
+
+    for line in lines[header_index + 1 :]:
+        line_words = sorted(line["words"], key=lambda item: item["left"])
+        line_text = normalize_text(" ".join(word["text"] for word in line_words))
+        upper = line_text.upper()
+        if re.search(r"\bTOTAL\s+(?:DRPP|BRUTO|NETTO)\b", upper):
+            break
+        kw_match = kw_pattern.search(line_text)
+        if not kw_match:
+            description = text_in_band(line_words, description_left, description_right)
+            if description:
+                pending_description.append(description)
+            continue
+
+        kw = "/".join(
+            part.replace("O", "0").replace("I", "1").replace("L", "1")
+            for part in (
+                kw_match.group(1),
+                "KW",
+                re.sub(r"\s+", "", kw_match.group(2)),
+                kw_match.group(3),
+            )
+        )
+        account_match = re.search(r"\b(5\d{5})\b", line_text)
+        gross_match = amount_pattern.search(text_in_band(line_words, gross_left, gross_right))
+        net_match = amount_pattern.search(text_in_band(line_words, net_left, net_right))
+        tax_match = amount_pattern.search(text_in_band(line_words, tax_left))
+        charge_text = text_in_band(line_words, charge_left, charge_right).upper()
+        charge_match = re.search(r"\b\d{4}\.[A-Z]{3}\.\d{3}\.\d{3}\.5\d{5}\b", charge_text)
+        account = account_match.group(1) if account_match else ""
+        charge = charge_match.group(0) if charge_match else ""
+        review_fields = []
+        if not account:
+            review_fields.append("akun_invalid")
+        if not gross_match:
+            review_fields.append("jumlah_invalid")
+        if charge and not charge.endswith(f".{account}"):
+            charge = ""
+            review_fields.append("pembebanan_account_mismatch")
+        bruto = parse_decimal(gross_match.group(0)) if gross_match else Decimal("0")
+        netto = parse_decimal(net_match.group(0)) if net_match else Decimal("0")
+        pph21 = parse_decimal(tax_match.group(0)) if tax_match else Decimal("0")
+        description = clean_description(" ".join(pending_description))[:500]
+        pending_description = []
+        if not description:
+            review_fields.append("deskripsi_missing")
+        items.append({
+            "no_urut": len(items) + 1,
+            "no_bukti": kw,
+            "tanggal_bukti": "",
+            "penerima": "",
+            "npwp": "",
+            "akun": account,
+            "jumlah": bruto,
+            "bruto": bruto,
+            "netto": netto,
+            "pph21": pph21,
+            "pembebanan": charge,
+            "keperluan": description,
+            "source_page": page_number,
+            "source_row_id": f"page:{page_number}:y:{int(line['center_y'])}",
+            "method": "tsv_financial_columns",
+            "confidence": round(
+                sum(word["confidence"] for word in line_words) / len(line_words), 2
+            ),
+            "needs_review": bool(review_fields),
+            "review_fields": review_fields,
+            "status": "Perlu Review" if review_fields else "Terbaca",
+        })
     return items
 
 
@@ -3439,6 +3572,7 @@ def extract_drpp_printed_total(text):
     patterns = [
         r"JUM(?:LAH|IAH)\s+SPP\s+INI\s*[:\-]?\s*(\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)",
         r"JUM(?:LAH|IAH)\s+LAMPIRAN\s*[:\-]?\s*(\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)",
+        r"TOTAL\s+(?:DRPP\s+)?(?:BRUTO\s+)?(?:RP\s*)?(\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)",
         r"TOTAL\s*[:\-]?\s*(\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)",
     ]
     for pattern in patterns:
@@ -3513,8 +3647,12 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
             if page_words
             else []
         )
+        financial_items = parse_drpp_financial_table_rows(
+            page_words,
+            page_number=page_number,
+        ) if page_words else []
         page_items = max(
-            (cell_items, anchor_items),
+            (cell_items, anchor_items, financial_items),
             key=lambda rows: (
                 sum(bool(item.get("no_bukti") and item.get("akun") and item.get("jumlah")) for item in rows),
                 len(rows),
@@ -3637,6 +3775,7 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
             "nomor_spm": spm_match.group(1) if spm_match else "",
             "total": total,
             "printed_total": printed_total,
+            "source_item_count": len(items),
             "total_valid": not printed_total or abs(printed_total - total) <= Decimal("1"),
         },
         "items": items,
