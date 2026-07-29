@@ -15,7 +15,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from apps.accounts.models import Profile
-from apps.core.drpp_batch_parser import PARSER_VERSION
+from apps.core.drpp_batch_parser import PARSER_VERSION, evaluate_kkp_group_commitability
 from apps.dk.models import TransactionDetail
 from apps.paket_spm.models import PaketSPMUpload
 from apps.paket_spm.services import build_drpp_batch_rows, upsert_drpp_group
@@ -391,6 +391,197 @@ class DRPPBatchUpsertIntegrationTests(TestCase):
 
         self.assertRedirects(response, reverse("paket_spm:preview"), fetch_redirect_response=False)
         self.assertEqual(PaketSPMUpload.objects.get().satker_code, "019937")
+
+
+class GUPKKPPreviewIntegrationTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="kkp-operator", password="password")
+        Profile.objects.filter(user=self.user).update(role=Profile.Role.SATKER, satker_code="019937")
+        self.client.force_login(self.user)
+
+    def parsed_batch(self):
+        group_key = "KKP:synthetic:00207A:1"
+        common = {
+            "group_key": group_key,
+            "akun": "524111",
+            "bulan_sp2d": None,
+            "cara_pembayaran": "UP/TUP",
+            "nomor_spm": "00207A",
+            "tanggal_spm": "2026-07-16",
+            "jenis_spm": "GUP-KKP",
+            "no_drpp": "",
+            "pembebanan": "2902.BMA.006.523.524111",
+            "fp": "",
+            "pph21": "0",
+            "status": "LENGKAP",
+            "status_detail": "LENGKAP",
+            "warnings": [],
+        }
+        items = [
+            {
+                **common,
+                "no_bukti": "00095/KW/KKP/019937/2026",
+                "no_kuitansi": "00095/KW/KKP/019937/2026",
+                "deskripsi": "Perjalanan dinas",
+                "keperluan": "Perjalanan dinas",
+                "jumlah": "1076000",
+                "nilai_bruto": "1076000",
+                "nilai_netto": "1076000",
+                "receipt_policy": "source_document",
+                "receipt_not_available_from_source": False,
+            },
+            {
+                **common,
+                "no_bukti": "",
+                "no_kuitansi": "",
+                "deskripsi": "Penginapan KKP",
+                "keperluan": "Penginapan KKP",
+                "jumlah": "5700000",
+                "nilai_bruto": "5700000",
+                "nilai_netto": "5700000",
+                "receipt_policy": "not_available_from_source",
+                "receipt_not_available_from_source": True,
+            },
+        ]
+        reference = {
+            "reference_type": "KKP_PAYMENT_LIST",
+            "metadata": {
+                "nomor_drpp": "",
+                "group_key": group_key,
+                "source_item_count": 2,
+                "total": "6776000",
+                "printed_total": "6776000",
+                "spm_total": "6776000",
+                "parent_is_gup_kkp": True,
+                "nomor_spm": "00207A",
+                "nomor_spp": "00207T",
+            },
+            "items": items,
+        }
+        validation = evaluate_kkp_group_commitability(reference, items)
+        return {
+            "ok": True,
+            "parser_version": PARSER_VERSION,
+            "spm_family": "GUP_KKP",
+            "document_requirement_policy": "KKP_PAYMENT_LIST_REQUIRED",
+            "reference_type": "KKP_PAYMENT_LIST",
+            "spm": {
+                "metadata": {
+                    "nomor_spm": "00207A",
+                    "nomor_spp": "00207T",
+                    "tanggal_spm": "2026-07-16",
+                    "jenis_spm": "GUP-KKP",
+                    "cara_pembayaran": "UP/TUP",
+                    "satker_app_code": "019937",
+                    "jumlah_pengeluaran": "6776000",
+                    "total_pembayaran": "6776000",
+                    "bulan_sp2d": None,
+                }
+            },
+            "drpp": reference,
+            "drpps": [reference],
+            "drpp_groups": [{
+                "group_key": group_key,
+                "no_drpp": "",
+                "reference_type": "KKP_PAYMENT_LIST",
+                "is_kkp": True,
+                "drpp": reference,
+                "items": items,
+                "validation": validation,
+                "status": validation["status"],
+            }],
+            "kw_items": items,
+            "preview_rows": [],
+            "files": [{"file_name": "kkp.pdf", "type": "SPM"}],
+            "metrics": {"ocr_seconds": 0, "page_total": 6, "unique_pages": 6, "ocr_pages": 0},
+        }
+
+    def paket(self, parsed):
+        return PaketSPMUpload.objects.create(
+            original_filename="kkp.pdf",
+            uploaded_by=self.user,
+            status=PaketSPMUpload.Status.PREVIEW,
+            nomor_spm="00207A",
+            satker_code="019937",
+            tahun=2026,
+            tanggal_spm=datetime.date(2026, 7, 16),
+            jenis_spm_asli="GUP-KKP",
+            jenis_spm_label="GUP-KKP",
+            parsed_data=json.loads(json.dumps(parsed, default=str)),
+        )
+
+    def open_preview(self, paket):
+        session = self.client.session
+        session["paket_spm_preview_id"] = paket.id
+        session.save()
+
+    def post_rows(self, parsed):
+        data = {
+            "action": "commit",
+            "commit_drpp": parsed["drpp_groups"][0]["group_key"],
+            "preview_row_count": "2",
+        }
+        for index, item in enumerate(parsed["kw_items"]):
+            for field in (
+                "akun", "bulan_sp2d", "cara_pembayaran", "nomor_spm", "tanggal_spm",
+                "jenis_spm", "no_kuitansi", "no_drpp", "deskripsi", "nilai_bruto",
+                "nilai_netto", "pembebanan", "fp", "pph21",
+            ):
+                data[f"rows-{index}-{field}"] = item.get(field, "") or ""
+        return data
+
+    def test_preview_uses_15_columns_and_kkp_labels_then_commits_idempotently(self):
+        parsed = self.parsed_batch()
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+        response = self.client.get(reverse("paket_spm:preview"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Paket KKP 00207A")
+        self.assertContains(response, "Ringkasan KKP terbaca")
+        self.assertContains(response, "Tidak diwajibkan untuk GUP-KKP")
+        self.assertContains(response, "Total Referensi KKP")
+        self.assertContains(response, "SIMPAN PAKET KKP 00207A KE D_K")
+        table = response.content.decode("utf-8").split('data-preview-columns="15"', 1)[1].split("</table>", 1)[0]
+        self.assertEqual(table.count("</th>"), 15)
+        self.assertIn('value="-" aria-label="No. DRPP"', table)
+
+        with patch("apps.paket_spm.views.link_followup_document"):
+            committed = self.client.post(reverse("paket_spm:preview"), self.post_rows(parsed))
+        self.assertRedirects(committed, reverse("paket_spm:list"), fetch_redirect_response=False)
+        rows = TransactionDetail.objects.filter(nomor_spm="00207A")
+        self.assertEqual(rows.count(), 2)
+        self.assertFalse(rows.exclude(no_drpp="").exists())
+        self.assertEqual(rows.filter(no_kuitansi="").count(), 1)
+        self.assertFalse(rows.exclude(drpp_status=TransactionDetail.DRPPStatus.BELUM_ADA).exists())
+
+        second = upsert_drpp_group(parsed, paket, parsed["drpp_groups"][0]["group_key"], user=self.user)
+        self.assertEqual(len(second), 2)
+        self.assertEqual(rows.count(), 2)
+
+    def test_empty_receipt_without_provenance_and_ambiguous_exact_key_are_blocked(self):
+        parsed = self.parsed_batch()
+        paket = self.paket(parsed)
+        parsed_without_provenance = deepcopy(parsed)
+        parsed_without_provenance["kw_items"][1]["receipt_policy"] = ""
+        parsed_without_provenance["kw_items"][1]["receipt_not_available_from_source"] = False
+        parsed_without_provenance["drpp_groups"][0]["items"] = parsed_without_provenance["kw_items"]
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            upsert_drpp_group(
+                parsed_without_provenance,
+                paket,
+                parsed_without_provenance["drpp_groups"][0]["group_key"],
+                user=self.user,
+            )
+
+        for _index in range(2):
+            TransactionDetail.objects.create(
+                satker_code="019937", akun="524111", nomor_spm="00207A",
+                tanggal_spm=datetime.date(2026, 7, 16), no_kuitansi="", no_drpp="",
+                nilai_bruto=Decimal("5700000"), nilai_netto=Decimal("5700000"),
+                pembebanan="2902.BMA.006.523.524111",
+            )
+        with self.assertRaisesRegex(ValueError, "lebih dari satu baris"):
+            upsert_drpp_group(parsed, paket, parsed["drpp_groups"][0]["group_key"], user=self.user)
 
 
 @skipUnless(os.getenv("DRPP_REAL_HTTP_FIXTURE"), "Set DRPP_REAL_HTTP_FIXTURE untuk acceptance OCR melalui HTTP.")

@@ -6,7 +6,10 @@ from decimal import Decimal
 from django.db.models import Q
 from django.utils.dateparse import parse_date as parse_iso_date
 
-from apps.core.drpp_batch_parser import evaluate_drpp_group_commitability
+from apps.core.drpp_batch_parser import (
+    evaluate_drpp_group_commitability,
+    evaluate_kkp_group_commitability,
+)
 from apps.core.parsers import classify_document, extract_pdf_text, guess_number_from_filename, parse_spm_number_from_pages
 from apps.dk.services import refresh_transaction_document_status
 from apps.dk.models import TransactionDetail
@@ -1674,8 +1677,12 @@ def _fill_empty_transaction_fields(target, candidate):
     if target.status_detail != status:
         target.status_detail = status
         changed.append("status_detail")
-    if target.drpp_status != TransactionDetail.DRPPStatus.COCOK:
-        target.drpp_status = TransactionDetail.DRPPStatus.COCOK
+    desired_drpp_status = (
+        TransactionDetail.DRPPStatus.COCOK
+        if candidate.no_drpp else TransactionDetail.DRPPStatus.BELUM_ADA
+    )
+    if target.drpp_status != desired_drpp_status:
+        target.drpp_status = desired_drpp_status
         changed.append("drpp_status")
     if changed:
         target.save(update_fields=list(dict.fromkeys(changed)) + ["updated_at"])
@@ -1761,13 +1768,18 @@ def preview_review_fields(item):
         if marker in warning_text:
             fields.add(field)
 
+    receipt_is_confirmed_absent = bool(
+        item.get("receipt_policy") == "not_available_from_source"
+        and item.get("receipt_not_available_from_source") is True
+    )
     required = {
         "akun": preview_item_value(item, "akun"),
-        "no_kuitansi": preview_item_value(item, "no_kuitansi"),
         "nilai_bruto": preview_item_value(item, "nilai_bruto"),
         "nomor_spm": preview_item_value(item, "nomor_spm"),
         "tanggal_spm": preview_item_value(item, "tanggal_spm"),
     }
+    if not receipt_is_confirmed_absent:
+        required["no_kuitansi"] = preview_item_value(item, "no_kuitansi")
     fields.update(field for field, value in required.items() if value in (None, "", 0, Decimal("0")))
     if not preview_item_value(item, "pembebanan"):
         fields.add("pembebanan")
@@ -1843,25 +1855,34 @@ def build_drpp_batch_rows(parsed, paket, user=None):
         row.preview_review_fields = review_fields
         row.preview_blank_fields = blank_fields
         row.batch_status = "GAGAL" if item_status == "GAGAL" else ("PERLU_REVIEW" if needs_review else "LENGKAP")
+        row.batch_group_key = clean_optional(item.get("group_key"))
+        row.receipt_policy = clean_optional(item.get("receipt_policy"))
+        row.receipt_not_available_from_source = item.get("receipt_not_available_from_source") is True
+        row.field_provenance = dict(item.get("field_provenance") or {})
         rows.append(row)
     return rows
 
 
 def upsert_drpp_group(parsed, paket, no_drpp, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP):
     """Upsert satu kelompok DRPP memakai exact key yang diwajibkan fitur batch."""
-    no_drpp = normalize_key(no_drpp)
+    group_identifier = normalize_key(no_drpp)
     candidates = build_drpp_batch_rows(parsed, paket, user=user)
-    candidates = [row for row in candidates if normalize_key(row.no_drpp) == no_drpp]
+    candidates = [
+        row for row in candidates
+        if normalize_key(getattr(row, "batch_group_key", "") or row.no_drpp) == group_identifier
+    ]
     group = next(
-        (item for item in parsed.get("drpp_groups") or [] if normalize_key(item.get("no_drpp")) == no_drpp),
+        (
+            item for item in parsed.get("drpp_groups") or []
+            if normalize_key(item.get("group_key") or item.get("no_drpp")) == group_identifier
+        ),
         None,
     )
     if not group:
         raise ValueError("Kelompok DRPP tidak ditemukan pada preview.")
-    validation = evaluate_drpp_group_commitability(
-        group.get("drpp") or {},
-        candidates,
-        parser_validation=group.get("validation") or {},
+    validator = evaluate_kkp_group_commitability if group.get("is_kkp") else evaluate_drpp_group_commitability
+    validation = validator(
+        group.get("drpp") or {}, candidates, parser_validation=group.get("validation") or {}
     )
     if not validation["can_commit"]:
         raise ValueError(" ".join(validation["errors"]))
@@ -1888,7 +1909,10 @@ def upsert_drpp_group(parsed, paket, no_drpp, user=None, sp2d_raw=None, document
             if getattr(candidate, "preview_review_fields", None) or candidate.batch_status != "LENGKAP"
             else TransactionDetail.StatusDetail.LENGKAP
         )
-        candidate.drpp_status = TransactionDetail.DRPPStatus.COCOK
+        candidate.drpp_status = (
+            TransactionDetail.DRPPStatus.COCOK
+            if candidate.no_drpp else TransactionDetail.DRPPStatus.BELUM_ADA
+        )
         candidate.save()
         saved.append(candidate)
     return saved

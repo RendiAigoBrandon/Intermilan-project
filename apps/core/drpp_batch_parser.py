@@ -27,6 +27,12 @@ from django.conf import settings
 from django.db.models import Q
 
 from apps.core.exceptions import UploadTechnicalError
+from apps.core.document_policy import (
+    DocumentRequirement,
+    SPMFamily,
+    document_requirement_policy,
+    normalize_spm_family,
+)
 
 from apps.core.ocr import (
     configure_tesseract,
@@ -35,12 +41,20 @@ from apps.core.ocr import (
     preprocess_image,
     tesseract_page_text_best_rotation,
 )
-from apps.core.parsers import parse_date, parse_drpp_pdf, parse_spm_pdf
+from apps.core.parsers import (
+    compact_pembebanan_from_coa,
+    parse_date,
+    parse_drpp_pdf,
+    parse_spm_pdf,
+)
 
 
 PARSER_VERSION = "drpp-batch-v5"
 
 PAGE_TYPES = (
+    "KKP_PAYMENT_LIST",
+    "KKP_CARD_STATEMENT",
+    "KKP_PAYMENT_ORDER",
     "DRPP_SUMMARY",
     "DRPP_COA",
     "SPM",
@@ -623,6 +637,14 @@ def _ocr_page(page, use_cache=True):
 def _classification(text):
     raw_text = str(text or "")
     upper = " ".join(raw_text.upper().split())
+    if "DAFTAR PEMBAYARAN TAGIHAN KARTU KREDIT PEMERINTAH" in upper:
+        return "KKP_PAYMENT_LIST", 100, ["judul daftar pembayaran KKP"]
+    if re.search(r"LEMBAR\s+PENAGIHAN(?:\s+\w+){0,3}\s+KARTU\s+KREDIT\s+PEMERINTAH", upper):
+        return "KKP_CARD_STATEMENT", 100, ["judul lembar penagihan KKP"]
+    if "PERINTAH BAYAR" in upper and (
+        "KARTU KREDIT PEMERINTAH" in upper or re.search(r"/PB/KKP/", upper)
+    ):
+        return "KKP_PAYMENT_ORDER", 95, ["surat perintah bayar KKP"]
     coa_evidence = [anchor for anchor in ("DETAIL COA", "LAMPIRAN DAFTAR RINCIAN") if anchor in upper]
     if coa_evidence:
         return "DRPP_COA", min(100, 65 + 15 * len(coa_evidence)), coa_evidence
@@ -1763,6 +1785,465 @@ def build_transaction_items(drpp, spm=None):
     return output
 
 
+def _layout_lines(words, tolerance=16):
+    """Kelompokkan word-level OCR berdasarkan posisi baris, bukan urutan teks."""
+    normalized = []
+    for raw in words or []:
+        text = str(raw.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            top = int(float(raw.get("top", 0)))
+            left = int(float(raw.get("left", 0)))
+            width = int(float(raw.get("width", 0)))
+            height = int(float(raw.get("height", 0)))
+        except (TypeError, ValueError):
+            continue
+        normalized.append({**raw, "text": text, "top": top, "left": left, "width": width, "height": height})
+    lines = []
+    for word in sorted(normalized, key=lambda item: (item["top"] + item["height"] // 2, item["left"])):
+        center = word["top"] + word["height"] // 2
+        line = next((candidate for candidate in reversed(lines[-6:]) if abs(candidate["center"] - center) <= tolerance), None)
+        if line is None:
+            line = {"center": center, "words": []}
+            lines.append(line)
+        line["words"].append(word)
+        line["center"] = round(
+            sum(item["top"] + item["height"] // 2 for item in line["words"]) / len(line["words"])
+        )
+    for line in lines:
+        line["words"].sort(key=lambda item: item["left"])
+        line["text"] = " ".join(item["text"] for item in line["words"])
+    return lines
+
+
+_KKP_MONEY_RE = re.compile(
+    r"(?<!\d)([0-9S§][0-9S§IL|]*(?:\.[0-9S§IL|]{3})+(?:,[0-9]{2})?)(?!\d)",
+    re.I,
+)
+
+
+def _kkp_money_tokens(value):
+    output = []
+    for token in _KKP_MONEY_RE.findall(str(value or "")):
+        normalized = token.upper().translate(str.maketrans({"S": "5", "§": "5", "I": "1", "L": "1", "|": "1"}))
+        amount = _money(normalized)
+        if amount > 0:
+            output.append(amount)
+    return output
+
+
+def _page_source(page, method, locator="", inputs=None):
+    return {
+        "source": "OCR" if page.get("engine") and page.get("engine") != "native_pdf" else "PARSER_STRUCTURAL",
+        "engine": page.get("engine") or ("native_pdf" if page.get("native_text") else ""),
+        "extraction_method": method,
+        # page["confidence"] adalah confidence classifier, bukan confidence OCR
+        # per-field yang sah, sehingga provenance tidak boleh mengarang nilainya.
+        "confidence": None,
+        "source_file": page.get("file_name") or "",
+        "source_page": page.get("page_number"),
+        "document_type": page.get("document_type") or "",
+        "locator": locator,
+        "inputs": list(inputs or []),
+    }
+
+
+def _kkp_payment_rows(page):
+    """Baca baris tabel pembayaran KKP dari koordinat TSV."""
+    words = page.get("tsv_words") or []
+    lines = _layout_lines(words)
+    if not lines:
+        return []
+    header_lines = [
+        line for line in lines
+        if "PEMBAYARAN" in line["text"].upper() and (
+            "AKUN" in line["text"].upper() or "KODE" in line["text"].upper()
+        )
+    ]
+    header_y = max((line["center"] for line in header_lines), default=0)
+    right_edge = max((word["left"] + word["width"] for word in words), default=0)
+    ordinal_words = [
+        word for word in words
+        if re.fullmatch(r"\d{1,2}", word["text"])
+        and word["left"] <= right_edge * 0.2
+        and word["top"] + word["height"] // 2 > header_y
+    ]
+    ordinal_words.sort(key=lambda word: word["top"] + word["height"] // 2)
+    rows = []
+    for index, ordinal in enumerate(ordinal_words):
+        center = ordinal["top"] + ordinal["height"] // 2
+        lower = (header_y + center) / 2 if index == 0 else (
+            ordinal_words[index - 1]["top"] + ordinal_words[index - 1]["height"] // 2 + center
+        ) / 2
+        upper = float("inf") if index + 1 == len(ordinal_words) else (
+            center + ordinal_words[index + 1]["top"] + ordinal_words[index + 1]["height"] // 2
+        ) / 2
+        row_words = [
+            word for word in words
+            if lower <= word["top"] + word["height"] // 2 < upper
+        ]
+        row_text = " ".join(word["text"] for word in sorted(row_words, key=lambda item: (item["top"], item["left"])))
+        accounts = re.findall(r"\b5\d{5}\b", row_text)
+        right_amounts = [
+            amount
+            for word in row_words
+            if word["left"] >= right_edge * 0.72
+            for amount in _kkp_money_tokens(word["text"])
+        ]
+        if not accounts or not right_amounts:
+            continue
+        description_words = [
+            word["text"] for word in row_words
+            if right_edge * 0.48 <= word["left"] < right_edge * 0.72
+            and not re.fullmatch(r"(?:5\d{5}|\d{4})", word["text"])
+        ]
+        description = " ".join(description_words).strip(" -|")
+        rows.append(
+            {
+                "ordinal": int(ordinal["text"]),
+                "akun": accounts[-1],
+                "jumlah": right_amounts[-1],
+                "keperluan": description or "Pembayaran tagihan Kartu Kredit Pemerintah",
+                "source_page": page.get("page_number"),
+                "source_file": page.get("file_name"),
+                "source_locator": f"table-row:{ordinal['text']}:y:{center}",
+            }
+        )
+    return rows
+
+
+def _kkp_statement_amounts(page):
+    """Ambil transaksi tagihan dan netralkan baris reversal/pembayaran."""
+    lines = _layout_lines(page.get("tsv_words") or [])
+    if not lines:
+        lines = [{"text": line, "center": index, "words": []} for index, line in enumerate(str(page.get("text") or "").splitlines())]
+    charges = []
+    credits = Counter()
+    for line in lines:
+        upper = line["text"].upper()
+        if "TOTAL" in upper or "TAGIHAN BULAN" in upper or "PEMBAYARAN MINIMUM" in upper:
+            continue
+        amounts = _kkp_money_tokens(line["text"])
+        if not amounts:
+            continue
+        if "PEMBAYARAN" in upper or re.search(r"\bCR\b", upper):
+            credits[amounts[-1]] += 1
+            continue
+        if len(re.findall(r"\b\d{1,2}[-/]\d{1,2}[-/]20\d{2}\b", line["text"])) >= 1:
+            charges.append({"amount": amounts[-1], "line": line})
+    remaining = []
+    for charge in charges:
+        if credits[charge["amount"]] > 0:
+            credits[charge["amount"]] -= 1
+        else:
+            remaining.append(charge)
+    return remaining
+
+
+def _kkp_coa_evidence(pages, account):
+    candidates = []
+    for page in pages:
+        text = str(page.get("text") or "")
+        if account not in text or "COA" not in text.upper():
+            continue
+        compact = compact_pembebanan_from_coa(text, account)
+        if compact:
+            candidates.append((compact, page))
+    distinct = {value for value, _page in candidates}
+    if len(distinct) == 1:
+        value = next(iter(distinct))
+        return value, next(page for candidate, page in candidates if candidate == value)
+    return "", None
+
+
+def _kkp_payment_orders(pages):
+    output = []
+    seen = set()
+    for page in pages:
+        if page.get("document_type") != "KKP_PAYMENT_ORDER":
+            continue
+        text = str(page.get("text") or "")
+        receipt = re.search(r"\b\d{3,6}/KW/KKP/\d{5,9}/20\d{2}\b", text, re.I)
+        account = re.search(
+            r"\b(?:(?:KOD(?:E)?|KD)(?:\s+AKUN)?|AKUN)\.?\s*[:\-]?\s*(5\d{5})\b",
+            text,
+            re.I,
+        )
+        amount = re.search(r"RP\.?\s*([0-9S§][0-9S§IL|.]+(?:,[0-9]{2})?)", text, re.I)
+        if not (receipt and amount):
+            continue
+        description = re.search(r"\bUNTUK\s*:\s*(.*?)(?=\bATAS\s+DASAR\b|$)", text, re.I | re.S)
+        recipient = re.search(r"\bKEPADA\s*[>:]?\s*(.*?)(?=\bUNTUK\s*:|$)", text, re.I | re.S)
+        item = {
+            "no_kuitansi": receipt.group(0).upper(),
+            "akun": account.group(1) if account else "",
+            "jumlah": _money(amount.group(1).translate(str.maketrans({"S": "5", "§": "5"}))),
+            "description": " ".join((description.group(1) if description else "").split()),
+            "recipient": " ".join((recipient.group(1) if recipient else "").split()),
+            "page": page,
+        }
+        key = (item["no_kuitansi"], item["akun"], item["jumlah"])
+        if key not in seen:
+            output.append(item)
+            seen.add(key)
+    return output
+
+
+def _match_kkp_receipts(rows, amounts, orders):
+    """Pasangkan kuitansi hanya bila evidence menghasilkan satu kandidat unik."""
+    matches = {}
+    ambiguous = set()
+    for order in orders:
+        candidates = [
+            index for index, amount in enumerate(amounts)
+            if amount == order.get("jumlah") and index not in matches
+        ]
+        if order.get("akun"):
+            candidates = [index for index in candidates if rows[index].get("akun") == order["akun"]]
+        if len(candidates) > 1:
+            evidence_tokens = _tokens(f"{order.get('description', '')} {order.get('recipient', '')}")
+            scores = {
+                index: len(evidence_tokens & _tokens(rows[index].get("keperluan")))
+                for index in candidates
+            }
+            best_score = max(scores.values(), default=0)
+            best = [index for index, score in scores.items() if score == best_score and score > 0]
+            if len(best) == 1:
+                candidates = best
+        if len(candidates) > 1:
+            distances = {
+                index: abs(
+                    int(order["page"].get("page_number") or 0)
+                    - int(rows[index].get("source_page") or 0)
+                )
+                for index in candidates
+            }
+            nearest = [index for index, distance in distances.items() if distance == min(distances.values())]
+            if len(nearest) == 1:
+                candidates = nearest
+        if len(candidates) == 1:
+            matches[candidates[0]] = order
+        elif candidates:
+            ambiguous.update(candidates)
+    return matches, ambiguous
+
+
+def evaluate_kkp_group_commitability(reference, items, *, parser_validation=None, extra_errors=None):
+    """Validator alternatif KKP; validator DRPP reguler tidak diubah."""
+    reference = reference or {}
+    metadata = reference.get("metadata") or {}
+    expected_count = int(metadata.get("source_item_count") or 0)
+    expected_total = _money(metadata.get("printed_total"))
+    actual_total = sum(
+        (_money(_group_item_value(item, "nilai_bruto", "bruto", "jumlah")) for item in items),
+        Decimal("0"),
+    )
+    errors = []
+    if reference.get("reference_type") != "KKP_PAYMENT_LIST":
+        errors.append("Daftar pembayaran KKP tidak ditemukan.")
+    if not metadata.get("parent_is_gup_kkp"):
+        errors.append("Parent SPM belum terbukti GUP-KKP.")
+    if expected_count <= 0 or not items:
+        errors.append("Item referensi KKP valid tidak ditemukan.")
+    if len(items) != expected_count:
+        errors.append(f"Jumlah baris hasil ({len(items)}) tidak sama dengan daftar pembayaran KKP ({expected_count}).")
+    if expected_total <= 0:
+        errors.append("Total referensi KKP tidak ditemukan atau bernilai nol.")
+    elif actual_total != expected_total:
+        errors.append(f"Total baris Rp{actual_total:,.0f} tidak sama dengan total referensi KKP Rp{expected_total:,.0f}.")
+    spm_total = _money(metadata.get("spm_total"))
+    if spm_total <= 0 or expected_total != spm_total:
+        errors.append("Total referensi KKP tidak sama dengan bruto SPM.")
+    seen = set()
+    for item in items:
+        receipt = str(_group_item_value(item, "no_kuitansi", "no_bukti") or "")
+        account = str(_group_item_value(item, "akun") or "")
+        charge = str(_group_item_value(item, "pembebanan") or "")
+        if not receipt and not (
+            _group_item_value(item, "receipt_policy") == "not_available_from_source"
+            and _group_item_value(item, "receipt_not_available_from_source") is True
+        ):
+            errors.append("Nomor kuitansi kosong tanpa provenance sumber.")
+        if not account:
+            errors.append("Akun kosong.")
+        if not charge:
+            errors.append("Pembebanan kosong.")
+        elif "0000" in charge or (account and not charge.endswith(account)):
+            errors.append("Pembebanan tidak cocok dengan Akun.")
+        if not _group_item_value(item, "nomor_spm"):
+            errors.append("Nomor SPM kosong.")
+        if not _group_item_value(item, "tanggal_spm"):
+            errors.append("Tanggal SPM kosong.")
+        if _money(_group_item_value(item, "nilai_bruto", "bruto", "jumlah")) <= 0:
+            errors.append("Nilai bruto nol tanpa bukti.")
+        key = (_group_item_value(item, "nomor_spm"), receipt, account)
+        if key in seen:
+            errors.append("Duplikat exact key ditemukan dalam upload yang sama.")
+        seen.add(key)
+    if parser_validation and (
+        parser_validation.get("status") != "BALANCE" or parser_validation.get("can_commit") is False
+    ):
+        errors.extend(parser_validation.get("errors") or ["Validasi parser KKP masih perlu review."])
+    errors.extend(extra_errors or [])
+    errors = list(dict.fromkeys(errors))
+    return {
+        "group_key": metadata.get("group_key") or "",
+        "no_drpp": "",
+        "expected_count": expected_count,
+        "parsed_count": len(items),
+        "expected_total": expected_total,
+        "parsed_total": actual_total,
+        "row_count": len(items),
+        "expected_row_count": expected_count,
+        "total_drpp": expected_total,
+        "total_rows": actual_total,
+        "status": "BALANCE" if not errors else "PERLU_REVIEW",
+        "can_commit": not errors,
+        "errors": errors,
+    }
+
+
+def parse_kkp_reference(page_index, spm, file_sha):
+    spm_meta = (spm or {}).get("metadata") or {}
+    raw_jenis_spm = spm_meta.get("jenis_spm") or spm_meta.get("jenis_tagihan") or ""
+    family = normalize_spm_family(raw_jenis_spm)
+    payment_page = next((page for page in page_index if page.get("document_type") == "KKP_PAYMENT_LIST"), None)
+    if family != SPMFamily.GUP_KKP or not payment_page:
+        return None
+    source_rows = _kkp_payment_rows(payment_page)
+    spm_total = _money(spm_meta.get("jumlah_pengeluaran") or spm_meta.get("total_pembayaran"))
+    statement_page = next((page for page in page_index if page.get("document_type") == "KKP_CARD_STATEMENT"), None)
+    statement_rows = _kkp_statement_amounts(statement_page) if statement_page else []
+    statement_amounts = [row["amount"] for row in statement_rows]
+    list_amounts = [row["jumlah"] for row in source_rows]
+    reconciled_amounts = list_amounts
+    amount_page = payment_page
+    if sum(list_amounts, Decimal("0")) != spm_total:
+        if len(statement_amounts) == len(source_rows) and sum(statement_amounts, Decimal("0")) == spm_total:
+            reconciled_amounts = statement_amounts
+            amount_page = statement_page
+        else:
+            reconciled_amounts = []
+
+    orders = _kkp_payment_orders(page_index)
+    order_matches, ambiguous_receipts = _match_kkp_receipts(
+        source_rows, reconciled_amounts, orders
+    )
+    canonical_jenis_spm = "GUP-KKP"
+    spm_meta["jenis_spm_raw"] = raw_jenis_spm
+    spm_meta["jenis_spm"] = canonical_jenis_spm
+    spm_page = next((page for page in page_index if page.get("document_type") == "SPM"), payment_page)
+    group_key = f"KKP:{file_sha}:{spm_meta.get('nomor_spm') or ''}:1"
+    items = []
+    for index, row in enumerate(source_rows):
+        amount = reconciled_amounts[index] if index < len(reconciled_amounts) else Decimal("0")
+        order = order_matches.get(index)
+        charge, charge_page = _kkp_coa_evidence(page_index, row["akun"])
+        receipt = order["no_kuitansi"] if order else ""
+        receipt_ambiguous = index in ambiguous_receipts
+        receipt_absent = not receipt and not receipt_ambiguous
+        field_provenance = {
+            "akun": _page_source(payment_page, "tsv_layout_columns", row["source_locator"]),
+            "bruto": _page_source(
+                amount_page or payment_page,
+                "reconciled_layout_amount",
+                f"transaction-row:{index + 1}",
+                inputs=["payment_list", "spm_total", "card_statement"] if amount_page is statement_page else ["payment_list", "spm_total"],
+            ),
+            "pembebanan": _page_source(charge_page or payment_page, "coa_16_segment", "account-and-coa"),
+            "jenis_spm": _page_source(
+                spm_page,
+                "family_normalization",
+                "jenis-tagihan",
+                inputs=[raw_jenis_spm],
+            ),
+            "no_kuitansi": (
+                _page_source(order["page"], "labeled_receipt", "kuitansi/bukti")
+                if order else {
+                    **_page_source(payment_page, "confirmed_absent", row["source_locator"]),
+                    "source": "PARSER_STRUCTURAL",
+                }
+            ),
+        }
+        items.append(
+            {
+                "group_key": group_key,
+                "akun": row["akun"],
+                "nomor_spm": spm_meta.get("nomor_spm") or "",
+                "tanggal_spm": spm_meta.get("tanggal_spm"),
+                "jenis_spm": canonical_jenis_spm,
+                "cara_pembayaran": "UP/TUP",
+                "bulan_sp2d": spm_meta.get("bulan_sp2d"),
+                "no_bukti": receipt,
+                "no_kuitansi": receipt,
+                "no_drpp": "",
+                "keperluan": row["keperluan"],
+                "deskripsi": row["keperluan"],
+                "jumlah": amount,
+                "bruto": amount,
+                "nilai_bruto": amount,
+                "netto": amount,
+                "nilai_netto": amount,
+                "pembebanan": charge,
+                "fp": "",
+                "pph21": Decimal("0"),
+                "receipt_policy": (
+                    "ambiguous_source" if receipt_ambiguous
+                    else ("not_available_from_source" if receipt_absent else "source_document")
+                ),
+                "receipt_not_available_from_source": receipt_absent,
+                "field_provenance": field_provenance,
+                "source_pages": {
+                    "payment_list": payment_page.get("page_number"),
+                    "amount": (amount_page or payment_page).get("page_number"),
+                    "payment_order": order["page"].get("page_number") if order else None,
+                    "coa": charge_page.get("page_number") if charge_page else None,
+                },
+                "status": "LENGKAP" if amount and charge and not receipt_ambiguous else "PERLU_REVIEW",
+                "status_detail": "LENGKAP" if amount and charge and not receipt_ambiguous else "PERLU_REVIEW",
+                "warnings": (
+                    ["Kuitansi memiliki lebih dari satu kandidat transaksi dengan evidence setara."]
+                    if receipt_ambiguous
+                    else ([] if amount and charge else ["Nominal atau pembebanan KKP belum terbukti unik."])
+                ),
+            }
+        )
+    spp_page = next((page for page in page_index if page.get("document_type") == "SPP"), None)
+    spp_match = re.search(r"\bNOMOR\s*[:\-]?\s*([0-9]{3,6}[A-Z])\b", str((spp_page or {}).get("text") or ""), re.I)
+    metadata = {
+        "nomor_drpp": "",
+        "group_key": group_key,
+        "source_item_count": len(source_rows),
+        "total": spm_total if reconciled_amounts else Decimal("0"),
+        "printed_total": spm_total if reconciled_amounts else Decimal("0"),
+        "spm_total": spm_total,
+        "parent_is_gup_kkp": True,
+        "nomor_spm": spm_meta.get("nomor_spm") or "",
+        "nomor_spp": spp_match.group(1).upper() if spp_match else "",
+        "tanggal_spm": spm_meta.get("tanggal_spm"),
+        "jenis_spm": canonical_jenis_spm,
+        "jenis_spm_raw": raw_jenis_spm,
+        "cara_pembayaran": "UP/TUP",
+        "reference_sources": [
+            _page_source(payment_page, "tsv_layout_columns", "payment-table"),
+            *([_page_source(statement_page, "statement_reconciliation", "transaction-table")] if statement_page else []),
+        ],
+    }
+    reference = {
+        "reference_type": "KKP_PAYMENT_LIST",
+        "metadata": metadata,
+        "items": items,
+        "source_pages": [payment_page.get("page_number")],
+        "status": "parsed_text",
+    }
+    validation = evaluate_kkp_group_commitability(reference, items)
+    for item in items:
+        if not validation["can_commit"] and item["status"] == "LENGKAP":
+            item["status"] = item["status_detail"] = "PERLU_REVIEW"
+    return reference, validation
+
+
 def _group_item_value(item, *names):
     for name in names:
         value = item.get(name) if isinstance(item, dict) else getattr(item, name, None)
@@ -1898,6 +2379,25 @@ def _public_page(page):
     }
 
 
+def _batch_metrics(page_index, started, recovery_diagnostics):
+    return {
+        "ocr_seconds": round(
+            sum(page.get("ocr_duration", 0) + page.get("probe_duration", 0) for page in page_index),
+            3,
+        ),
+        "process_seconds": round(time.monotonic() - started, 3),
+        "page_total": len(page_index),
+        "unique_pages": sum(1 for page in page_index if page.get("is_representative")),
+        "ocr_pages": sum(
+            1 for page in page_index if page.get("ocr_called") or page.get("probe_ocr_called")
+        ),
+        "ocr_cache_hits": sum(
+            1 for page in page_index if page.get("cache_hit") or page.get("probe_cache_hit")
+        ),
+        **recovery_diagnostics,
+    }
+
+
 def parse_drpp_upload_batch(file_path, ocr=True):
     _local.ocr_cache = {}
     processed_page_keys = set()
@@ -1916,6 +2416,67 @@ def parse_drpp_upload_batch(file_path, ocr=True):
         discover_embedded_drpp_pages(page_index, ocr=ocr)
         page_index = deduplicate_pages(page_index)
         classify_candidate_pages(page_index, ocr=ocr)
+        if any(
+            page.get("document_type") in {"KKP_PAYMENT_LIST", "KKP_CARD_STATEMENT", "KKP_PAYMENT_ORDER"}
+            for page in page_index
+        ):
+            kkp_spm, kkp_sp2d_parent = resolve_spm_parent([], page_index)
+            kkp_meta = (kkp_spm or {}).get("metadata") or {}
+            family = normalize_spm_family(kkp_meta.get("jenis_spm") or kkp_meta.get("jenis_tagihan"))
+            policy = document_requirement_policy(family)
+            if family == SPMFamily.GUP_KKP:
+                package_sha = hashlib.sha256(
+                    "|".join(sorted(item["sha256"] for item in manifest)).encode("utf-8")
+                ).hexdigest()
+                parsed_reference = parse_kkp_reference(page_index, kkp_spm, package_sha)
+                if parsed_reference:
+                    reference, validation = parsed_reference
+                    kkp_meta["spm_family"] = family.value
+                    kkp_meta["document_requirement_policy"] = policy.value
+                    kkp_meta["nomor_spp"] = reference["metadata"].get("nomor_spp") or ""
+                    items = reference.get("items") or []
+                    group_key = reference["metadata"]["group_key"]
+                    group = {
+                        "group_key": group_key,
+                        "no_drpp": "",
+                        "reference_type": "KKP_PAYMENT_LIST",
+                        "is_kkp": True,
+                        "drpp": reference,
+                        "items": items,
+                        "validation": validation,
+                        "status": validation["status"],
+                    }
+                    return {
+                        "ok": bool(items),
+                        "parser_version": PARSER_VERSION,
+                        "spm_family": family.value,
+                        "document_requirement_policy": policy.value,
+                        "reference_type": "KKP_PAYMENT_LIST",
+                        "files": [
+                            {
+                                **item,
+                                "type": item.get("type_hint", "UNKNOWN"),
+                                "status": "indexed",
+                                "parse_status": "indexed",
+                                "method": "drpp_batch_manifest",
+                                "warnings": [],
+                            }
+                            for item in _public_manifest(manifest)
+                        ],
+                        "manifest": _public_manifest(manifest),
+                        "page_index": [_public_page(page) for page in page_index],
+                        "spm": kkp_spm,
+                        "sp2d_parent_id": getattr(kkp_sp2d_parent, "id", None),
+                        "drpp": reference,
+                        "drpps": [reference],
+                        "drpp_groups": [group],
+                        "kw_by_drpp": {group_key: items},
+                        "kw_items": items,
+                        "preview_rows": [],
+                        "warnings": list(validation.get("errors") or []),
+                        "metrics": _batch_metrics(page_index, started, recovery_diagnostics),
+                        "temp_dir": temp_dir,
+                    }
         detected_numbers = {
             number
             for page in page_index
@@ -2018,27 +2579,31 @@ def parse_drpp_upload_batch(file_path, ocr=True):
             groups.append(group)
             all_items.extend(items)
 
-        elapsed = round(time.monotonic() - started, 3)
-        metrics = {
-            "ocr_seconds": round(
-                sum(page.get("ocr_duration", 0) + page.get("probe_duration", 0) for page in page_index),
-                3,
-            ),
-            "process_seconds": elapsed,
-            "page_total": len(page_index),
-            "unique_pages": sum(1 for page in page_index if page.get("is_representative")),
-            "ocr_pages": sum(
-                1 for page in page_index if page.get("ocr_called") or page.get("probe_ocr_called")
-            ),
-            "ocr_cache_hits": sum(
-                1 for page in page_index if page.get("cache_hit") or page.get("probe_cache_hit")
-            ),
-            **recovery_diagnostics,
-        }
+        metrics = _batch_metrics(page_index, started, recovery_diagnostics)
+        family = normalize_spm_family(((spm or {}).get("metadata") or {}).get("jenis_spm"))
+        policy = document_requirement_policy(family)
+        if spm:
+            spm.setdefault("metadata", {})["spm_family"] = family.value
+            spm["metadata"]["document_requirement_policy"] = policy.value
+        if not drpps and family != SPMFamily.UNKNOWN and policy != DocumentRequirement.DRPP_REQUIRED:
+            message = (
+                "Daftar pembayaran KKP yang valid belum ditemukan."
+                if family == SPMFamily.GUP_KKP
+                else f"Jenis SPM dikenali sebagai {family.value}, tetapi parser {policy.value} belum diaktifkan."
+            )
+            for group in groups:
+                group["validation"] = {
+                    "status": "PERLU_REVIEW",
+                    "can_commit": False,
+                    "errors": [message],
+                }
+                group["status"] = "PERLU_REVIEW"
         warnings = [error for group in groups for error in group.get("validation", {}).get("errors", [])]
         return {
             "ok": bool(drpps and all_items),
             "parser_version": PARSER_VERSION,
+            "spm_family": family.value,
+            "document_requirement_policy": policy.value,
             "files": [
                 {
                     **item,

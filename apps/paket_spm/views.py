@@ -19,8 +19,10 @@ from apps.accounts.access import filter_by_satker, permission_context
 from apps.core.drpp_batch_parser import (
     PARSER_VERSION as DRPP_BATCH_VERSION,
     evaluate_drpp_group_commitability,
+    evaluate_kkp_group_commitability,
     parse_drpp_upload_batch,
 )
+from apps.core.document_policy import SPMFamily, normalize_spm_family
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_date, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.dk.models import TransactionDetail
@@ -470,6 +472,12 @@ def paket_spm_preview(request):
                         row["_preview_review_fields"] = sorted(review_fields)
                         row["_preview_blank_fields"] = sorted(blank_fields)
                         row["warnings"] = list(source_row.get("warnings") or [])
+                        row["group_key"] = source_row.get("group_key") or ""
+                        row["receipt_policy"] = source_row.get("receipt_policy") or ""
+                        row["receipt_not_available_from_source"] = (
+                            source_row.get("receipt_not_available_from_source") is True
+                        )
+                        row["field_provenance"] = dict(source_row.get("field_provenance") or {})
                         row["status_detail"] = "PERLU_REVIEW" if review_fields else "LENGKAP"
                         preview_rows.append(row)
                 parsed["preview_rows"] = preview_rows
@@ -500,13 +508,17 @@ def paket_spm_preview(request):
                     paket.nilai_spm = total_netto
                     if parsed.get("parser_version") == DRPP_BATCH_VERSION:
                         for group in parsed.get("drpp_groups") or []:
-                            group_number = clean_optional(group.get("no_drpp"))
+                            group_number = clean_optional(group.get("group_key") or group.get("no_drpp"))
                             edited_items = [
                                 row
                                 for row in preview_rows
-                                if clean_optional(row.get("no_drpp")) == group_number
+                                if clean_optional(row.get("group_key") or row.get("no_drpp")) == group_number
                             ]
-                            validation = evaluate_drpp_group_commitability(
+                            validator = (
+                                evaluate_kkp_group_commitability
+                                if group.get("is_kkp") else evaluate_drpp_group_commitability
+                            )
+                            validation = validator(
                                 group.get("drpp") or {},
                                 edited_items,
                             )
@@ -595,12 +607,20 @@ def paket_spm_preview(request):
                 
                 # GUP Reguler Validation
                 spm_meta = parsed.get("spm", {}).get("metadata", {}) if parsed.get("spm") else {}
-                jenis_spm = str(spm_meta.get("jenis_spm") or spm_meta.get("jenis_tagihan") or "").upper()
-                is_gup_reguler = "GUP" in jenis_spm and "KKP" not in jenis_spm and "NIHIL" not in jenis_spm
+                family = normalize_spm_family(
+                    spm_meta.get("jenis_spm") or spm_meta.get("jenis_tagihan")
+                )
+                is_gup_reguler = family == SPMFamily.GUP_REGULAR
                 
                 if is_gup_reguler:
                     groups = parsed.get("drpp_groups") or []
-                    commit_group = next((g for g in groups if g.get("no_drpp") == commit_drpp), None)
+                    commit_group = next(
+                        (
+                            g for g in groups
+                            if clean_optional(g.get("group_key") or g.get("no_drpp")) == commit_drpp
+                        ),
+                        None,
+                    )
                     
                     if commit_drpp == "TANPA_DRPP":
                         messages.error(request, "Dokumen GUP Reguler diwajibkan memiliki DRPP (TANPA_DRPP tidak diizinkan).")
@@ -656,7 +676,10 @@ def paket_spm_preview(request):
                         committed = parsed.setdefault("committed_drpps", [])
                         if commit_drpp not in committed:
                             committed.append(commit_drpp)
-                        all_numbers = [group.get("no_drpp") for group in parsed.get("drpp_groups") or []]
+                        all_numbers = [
+                            group.get("group_key") or group.get("no_drpp")
+                            for group in parsed.get("drpp_groups") or []
+                        ]
                         paket.status = (
                             PaketSPMUpload.Status.COMMITTED
                             if all(number in committed for number in all_numbers)
@@ -668,7 +691,10 @@ def paket_spm_preview(request):
                     messages.error(request, str(exc))
                     return redirect("paket_spm:preview")
 
-                messages.success(request, f"DRPP {commit_drpp} berhasil di-upsert ke D_K tanpa duplikasi.")
+                if family == SPMFamily.GUP_KKP:
+                    messages.success(request, "Paket KKP berhasil di-upsert ke D_K tanpa duplikasi.")
+                else:
+                    messages.success(request, f"DRPP {commit_drpp} berhasil di-upsert ke D_K tanpa duplikasi.")
                 if paket.status == PaketSPMUpload.Status.COMMITTED:
                     request.session.pop("paket_spm_preview_id", None)
                     return redirect("paket_spm:list")
@@ -928,6 +954,7 @@ def build_preview_summary(parsed, decision, preview_state):
     if parsed.get("parser_version") == DRPP_BATCH_VERSION:
         groups = parsed.get("drpp_groups") or []
         balanced = sum(1 for group in groups if (group.get("validation") or {}).get("status") == "BALANCE")
+        is_kkp = parsed.get("spm_family") == SPMFamily.GUP_KKP.value
         return {
             "upload_name": preview_state.get("original_filename", "-"),
             "file_count": len(parsed.get("files", [])),
@@ -936,8 +963,10 @@ def build_preview_summary(parsed, decision, preview_state):
             "kw_count": len(parsed.get("kw_items", [])),
             "total": sum((parse_user_decimal(item.get("nilai_bruto") or item.get("jumlah")) for item in parsed.get("kw_items", [])), Decimal("0")),
             "document_status": "Siap ditinjau" if parsed.get("ok") else "Perlu Review",
-            "reconciliation_status": f"{balanced}/{len(groups)} DRPP balance",
-            "commit_label": "Upsert per DRPP",
+            "reconciliation_status": (
+                "Ringkasan KKP terbaca" if is_kkp and balanced else f"{balanced}/{len(groups)} DRPP balance"
+            ),
+            "commit_label": "Upsert paket KKP" if is_kkp else "Upsert per DRPP",
         }
     if lampiran_warnings(parsed) and document_status in {"-", "Lengkap"}:
         if parsed.get("spm") and (parsed.get("drpps") or parsed.get("drpp")) and parsed.get("kw_items"):
@@ -961,6 +990,14 @@ def build_document_checklist(parsed, decision):
     drpps = parsed.get("drpps") or ([parsed.get("drpp")] if parsed.get("drpp") else [])
     kw_items = parsed.get("kw_items") or []
     if parsed.get("parser_version") == DRPP_BATCH_VERSION:
+        if parsed.get("spm_family") == SPMFamily.GUP_KKP.value:
+            return [
+                {"label": "SPM parent", "status": "Terhubung" if spm else "Perlu diisi pada preview"},
+                {"label": "Referensi KKP", "status": "Ringkasan KKP terbaca" if drpps else "Belum terbaca"},
+                {"label": "DRPP", "status": "Tidak diwajibkan untuk GUP-KKP"},
+                {"label": "Transaksi", "status": f"{len(kw_items)} baris terverifikasi" if kw_items else "Belum terbaca"},
+                {"label": "SP2D pembanding", "status": "Terhubung" if parsed.get("sp2d_parent_id") or decision.get("matched_sp2d") else "Belum terhubung"},
+            ]
         return [
             {"label": "SPM parent", "status": "Terhubung" if spm else "Perlu diisi pada preview"},
             {"label": "DRPP", "status": f"{len(drpps)} kelompok terbaca" if drpps else "Belum terbaca"},
@@ -1173,6 +1210,7 @@ def build_transaction_groups(parsed, transaction_rows):
     seen_keys = {}
     duplicate_groups = set()
     for row in transaction_rows:
+        row_group = clean_optional(getattr(row, "batch_group_key", "") or row.no_drpp)
         key = (
             clean_optional(row.satker_code).upper(),
             getattr(row.tanggal_spm, "year", None),
@@ -1181,19 +1219,29 @@ def build_transaction_groups(parsed, transaction_rows):
             clean_optional(row.akun).upper(),
         )
         if key in seen_keys:
-            duplicate_groups.update((seen_keys[key], row.no_drpp))
+            duplicate_groups.update((seen_keys[key], row_group))
         else:
-            seen_keys[key] = row.no_drpp
+            seen_keys[key] = row_group
 
     output = []
     for group in parsed.get("drpp_groups") or []:
         number = clean_optional(group.get("no_drpp"))
-        rows = [row for row in transaction_rows if clean_optional(row.no_drpp) == number]
+        group_identifier = clean_optional(group.get("group_key") or number)
+        rows = [
+            row for row in transaction_rows
+            if clean_optional(getattr(row, "batch_group_key", "") or row.no_drpp) == group_identifier
+        ]
         drpp = group.get("drpp") or {}
         for row in rows:
             row.form_index = transaction_rows.index(row)
             if (
-                not row.no_kuitansi
+                (
+                    not row.no_kuitansi
+                    and not (
+                        getattr(row, "receipt_policy", "") == "not_available_from_source"
+                        and getattr(row, "receipt_not_available_from_source", False) is True
+                    )
+                )
                 or not row.akun
                 or row.nilai_bruto <= 0
                 or not row.nomor_spm
@@ -1204,13 +1252,17 @@ def build_transaction_groups(parsed, transaction_rows):
                 row.batch_status = "PERLU_REVIEW"
             else:
                 row.batch_status = "LENGKAP"
-        validation = evaluate_drpp_group_commitability(
+        validator = (
+            evaluate_kkp_group_commitability
+            if group.get("is_kkp") else evaluate_drpp_group_commitability
+        )
+        validation = validator(
             drpp,
             rows,
             parser_validation=group.get("validation") or {},
             extra_errors=(
                 ["Duplikat exact key ditemukan dalam upload yang sama."]
-                if number in duplicate_groups
+                if group_identifier in duplicate_groups
                 else []
             ),
         )
@@ -1218,8 +1270,14 @@ def build_transaction_groups(parsed, transaction_rows):
             {
                 **validation,
                 "no_drpp": number,
+                "is_kkp": bool(group.get("is_kkp")),
+                "group_identifier": group_identifier,
+                "display_label": (
+                    f"Paket KKP {rows[0].nomor_spm if rows else ((parsed.get('spm') or {}).get('metadata') or {}).get('nomor_spm', '')}"
+                    if group.get("is_kkp") else f"DRPP {number}"
+                ),
                 "rows": rows,
-                "committed": number in committed,
+                "committed": group_identifier in committed,
                 "ocr_seconds": metrics.get("ocr_seconds", 0),
                 "page_total": metrics.get("page_total", 0),
                 "unique_pages": metrics.get("unique_pages", 0),

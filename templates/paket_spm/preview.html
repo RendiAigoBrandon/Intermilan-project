@@ -117,15 +117,15 @@
       <section class="drpp-review-group" aria-labelledby="drpp-title-{{ forloop.counter }}">
         <div class="drpp-review-head">
           <div>
-            <h3 id="drpp-title-{{ forloop.counter }}">DRPP {{ group.no_drpp }}</h3>
+            <h3 id="drpp-title-{{ forloop.counter }}">{{ group.display_label }}</h3>
             <p class="muted">SPM {{ spm_meta.nomor_spm|default:"belum diisi" }} · {{ spm_meta.tanggal_spm|date:"d M Y"|default:"tanggal belum diisi" }} · {{ spm_meta.jenis_spm|default:"jenis belum diisi" }}</p>
           </div>
           <span class="status-pill {% if group.status == 'BALANCE' %}ok{% else %}warning{% endif %}">{{ group.status }}</span>
         </div>
 
         <dl class="drpp-metrics">
-          <div><dt>Kuitansi</dt><dd>{{ group.row_count }}</dd></div>
-          <div><dt>Total DRPP</dt><dd>Rp{{ group.total_drpp|id_number }}</dd></div>
+          <div><dt>{% if group.is_kkp %}Transaksi{% else %}Kuitansi{% endif %}</dt><dd>{{ group.row_count }}</dd></div>
+          <div><dt>{% if group.is_kkp %}Total Referensi KKP{% else %}Total DRPP{% endif %}</dt><dd>Rp{{ group.total_drpp|id_number }}</dd></div>
           <div><dt>Total baris</dt><dd>Rp{{ group.total_rows|id_number }}</dd></div>
           <div><dt>Waktu OCR</dt><dd>{{ group.ocr_seconds }} dtk</dd></div>
           <div><dt>Halaman</dt><dd>{{ group.page_total }}</dd></div>
@@ -158,7 +158,7 @@
                 <td class="preview-field{% if 'tanggal_spm' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'tanggal_spm' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" type="date" name="rows-{{ row.form_index }}-tanggal_spm" value="{{ row.tanggal_spm|date:'Y-m-d' }}" aria-label="Tanggal SPM">{% if 'tanggal_spm' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'jenis_spm' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'jenis_spm' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-jenis_spm" value="{{ row.jenis_spm }}" aria-label="Jenis SPM">{% if 'jenis_spm' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'no_kuitansi' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'no_kuitansi' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input js-helper-kw" name="rows-{{ row.form_index }}-no_kuitansi" value="{{ row.no_kuitansi }}" aria-label="No. Kuitansi">{% if 'no_kuitansi' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
-                <td class="preview-field{% if 'no_drpp' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'no_drpp' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-no_drpp" value="{{ row.no_drpp }}" aria-label="No. DRPP">{% if 'no_drpp' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'no_drpp' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'no_drpp' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-no_drpp" value="{% if group.is_kkp and not row.no_drpp %}-{% else %}{{ row.no_drpp }}{% endif %}" aria-label="No. DRPP">{% if 'no_drpp' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'deskripsi' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'deskripsi' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><textarea class="table-input" name="rows-{{ row.form_index }}-deskripsi" rows="2" aria-label="Deskripsi">{{ row.deskripsi }}</textarea>{% if 'deskripsi' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'nilai_bruto' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'nilai_bruto' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_bruto" value="{% if 'nilai_bruto' not in row.preview_blank_fields %}{{ row.nilai_bruto|preview_number }}{% endif %}" aria-label="Nilai Bruto">{% if 'nilai_bruto' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'nilai_netto' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'nilai_netto' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_netto" value="{{ row.nilai_netto|preview_number }}" aria-label="Nilai Netto">{% if 'nilai_netto' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
@@ -166,12 +166,12 @@
                 <td class="preview-field{% if 'fp' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'fp' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-fp" value="{{ row.fp }}" aria-label="FP">{% if 'fp' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'pph21' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'pph21' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-pph21" value="{% if 'pph21' not in row.preview_blank_fields %}{{ row.pph21|preview_number }}{% endif %}" aria-label="PPh21">{% if 'pph21' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
               </tr>
-              {% empty %}<tr><td colspan="15" class="empty">Baris DRPP belum terbaca.</td></tr>{% endfor %}
+              {% empty %}<tr><td colspan="15" class="empty">{% if group.is_kkp %}Transaksi KKP belum terbaca.{% else %}Baris DRPP belum terbaca.{% endif %}</td></tr>{% endfor %}
             </tbody>
           </table>
         </div>
         <div class="drpp-group-actions">
-          <button class="btn primary" type="submit" name="action" value="commit" formaction="" {% if not group.can_commit %}disabled aria-disabled="true" title="{{ group.errors|join:' ' }}"{% else %}aria-disabled="false"{% endif %} onclick="this.form.commit_drpp.value='{{ group.no_drpp }}'">{% if group.committed %}UPSERT ULANG DRPP {{ group.no_drpp }}{% else %}SIMPAN DRPP {{ group.no_drpp }} KE D_K{% endif %}</button>
+          <button class="btn primary" type="submit" name="action" value="commit" formaction="" {% if not group.can_commit %}disabled aria-disabled="true" title="{{ group.errors|join:' ' }}"{% else %}aria-disabled="false"{% endif %} onclick="this.form.commit_drpp.value='{{ group.group_identifier }}'">{% if group.is_kkp %}{% if group.committed %}UPSERT ULANG PAKET KKP {{ spm_meta.nomor_spm }}{% else %}SIMPAN PAKET KKP {{ spm_meta.nomor_spm }} KE D_K{% endif %}{% elif group.committed %}UPSERT ULANG DRPP {{ group.no_drpp }}{% else %}SIMPAN DRPP {{ group.no_drpp }} KE D_K{% endif %}</button>
           <span class="muted">Exact key: Satker · Tahun · Nomor SPM · Kuitansi · Akun</span>
         </div>
       </section>
