@@ -395,9 +395,17 @@ class DRPPBatchUpsertIntegrationTests(TestCase):
 
 class GUPKKPPreviewIntegrationTests(TestCase):
     def setUp(self):
+        self.media_tmp = tempfile.TemporaryDirectory()
+        self.media_settings = override_settings(MEDIA_ROOT=self.media_tmp.name)
+        self.media_settings.enable()
         self.user = User.objects.create_user(username="kkp-operator", password="password")
         Profile.objects.filter(user=self.user).update(role=Profile.Role.SATKER, satker_code="019937")
         self.client.force_login(self.user)
+
+    def tearDown(self):
+        self.media_settings.disable()
+        self.media_tmp.cleanup()
+        super().tearDown()
 
     def parsed_batch(self):
         group_key = "KKP:synthetic:00207A:1"
@@ -450,8 +458,16 @@ class GUPKKPPreviewIntegrationTests(TestCase):
                 "group_key": group_key,
                 "source_item_count": 2,
                 "total": "6776000",
+                "payment_list_total": "6776000",
+                "card_statement_total": "6776000",
+                "spm_detail_total": "6776000",
+                "spm_header_total_raw": "677600000",
+                "canonical_total": "6776000",
                 "printed_total": "6776000",
                 "spm_total": "6776000",
+                "total_resolution_status": "CONSENSUS",
+                "total_resolution_sources": ["CARD_STATEMENT", "SPM_DETAIL"],
+                "total_resolution_warnings": ["Nilai header SPM terindikasi outlier OCR."],
                 "parent_is_gup_kkp": True,
                 "nomor_spm": "00207A",
                 "nomor_spp": "00207T",
@@ -538,12 +554,21 @@ class GUPKKPPreviewIntegrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Paket KKP 00207A")
         self.assertContains(response, "Ringkasan KKP terbaca")
+        self.assertContains(response, "Referensi KKP")
         self.assertContains(response, "Tidak diwajibkan untuk GUP-KKP")
         self.assertContains(response, "Total Referensi KKP")
         self.assertContains(response, "SIMPAN PAKET KKP 00207A KE D_K")
         table = response.content.decode("utf-8").split('data-preview-columns="15"', 1)[1].split("</table>", 1)[0]
         self.assertEqual(table.count("</th>"), 15)
         self.assertIn('value="-" aria-label="No. DRPP"', table)
+        summary = response.context["preview_summary"]
+        self.assertEqual(summary["drpp_count"], 0)
+        self.assertEqual(summary["kkp_reference_count"], 1)
+        self.assertEqual(summary["kw_count"], 2)
+        self.assertEqual(summary["total"], Decimal("6776000"))
+        self.assertNotContains(response, "Rp677.600.000")
+        self.assertNotContains(response, "TANPA_DRPP")
+        self.assertNotContains(response, "Halaman DRPP tidak ditemukan")
 
         with patch("apps.paket_spm.views.link_followup_document"):
             committed = self.client.post(reverse("paket_spm:preview"), self.post_rows(parsed))
@@ -557,6 +582,27 @@ class GUPKKPPreviewIntegrationTests(TestCase):
         second = upsert_drpp_group(parsed, paket, parsed["drpp_groups"][0]["group_key"], user=self.user)
         self.assertEqual(len(second), 2)
         self.assertEqual(rows.count(), 2)
+
+    def test_upload_path_persists_resolved_totals_and_renders_fresh_preview(self):
+        parsed = self.parsed_batch()
+        for item in parsed["kw_items"]:
+            for field in ("jumlah", "nilai_bruto", "nilai_netto", "pph21"):
+                item[field] = Decimal(item[field])
+        upload = SimpleUploadedFile("kkp-fresh.pdf", b"%PDF-mock", content_type="application/pdf")
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed) as parser:
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+        self.assertRedirects(response, reverse("paket_spm:preview"), fetch_redirect_response=False)
+        parser.assert_called_once()
+        paket = PaketSPMUpload.objects.get()
+        self.assertEqual(paket.parsed_data["drpp"]["metadata"]["canonical_total"], "6776000")
+
+        preview = self.client.get(reverse("paket_spm:preview"))
+        self.assertEqual(preview.status_code, 200)
+        self.assertContains(preview, "BALANCE")
+        self.assertContains(preview, "Rp6.776.000")
+        self.assertNotContains(preview, "Rp677.600.000")
+        self.assertEqual(preview.context["preview_summary"]["drpp_count"], 0)
+        self.assertEqual(preview.context["preview_summary"]["kkp_reference_count"], 1)
 
     def test_empty_receipt_without_provenance_and_ambiguous_exact_key_are_blocked(self):
         parsed = self.parsed_batch()

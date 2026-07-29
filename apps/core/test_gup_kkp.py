@@ -7,8 +7,10 @@ from django.test import SimpleTestCase
 from .document_policy import SPMFamily
 from .drpp_batch_parser import (
     _classification,
+    _kkp_money_tokens,
     _kkp_payment_orders,
     _match_kkp_receipts,
+    _sanitize_kkp_description,
     evaluate_kkp_group_commitability,
     parse_kkp_reference,
 )
@@ -72,8 +74,10 @@ class GUPKKPParserTests(SimpleTestCase):
             page(
                 3,
                 "DRPP_COA",
-                "DETAIL COA 019937.010.524111.05401GG.2902BMA.A000000001.00000.2.0800.2.000000.000000 "
-                "006.523.0A.000337 Perjalanan dinas 1.076.000,00",
+                "LAMPIRAN SURAT PERINTAH MEMBAYAR DETAIL COA "
+                "019937.010.524111.05401GG.2902BMA.A000000001.00000.2.0800.2.000000.000000 "
+                "006.523.0A.000337 Perjalanan dinas 1.076.000,00 "
+                "006.530.0B.000491 Penginapan 5.700.000,00",
             ),
             page(
                 4,
@@ -180,6 +184,99 @@ class GUPKKPParserTests(SimpleTestCase):
         self.assertEqual(len(items), 2)
         self.assertTrue(validation["can_commit"], validation["errors"])
         self.assertEqual(reference["metadata"]["nomor_spp"], "00207T")
+        self.assertEqual(reference["metadata"]["payment_list_total"], Decimal("6776000"))
+        self.assertEqual(reference["metadata"]["printed_total"], Decimal("6776000"))
+        self.assertEqual(reference["metadata"]["canonical_total"], Decimal("6776000"))
+        self.assertEqual(reference["metadata"]["total_resolution_status"], "CONSENSUS")
+
+    def test_indonesian_money_formats_are_normalized_without_factor_guessing(self):
+        for raw in (
+            "6.776.000",
+            "6.776.000,00",
+            "Rp6.776.000",
+            "Rp 6.776.000,00",
+            "6 776 000",
+            "6776000",
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(_kkp_money_tokens(raw), [Decimal("6776000")])
+        self.assertEqual(_kkp_money_tokens("6.776.00000"), [])
+        for suspect in ("677.600.000", "677600000"):
+            self.assertEqual(_kkp_money_tokens(suspect), [Decimal("677600000")])
+            self.assertNotEqual(_kkp_money_tokens(suspect), [Decimal("6776000")])
+
+    def test_header_outlier_is_preserved_but_consensus_stays_balance(self):
+        spm = deepcopy(self.spm)
+        spm["metadata"]["jumlah_pengeluaran"] = Decimal("677600000")
+        spm["metadata"]["total_pembayaran"] = Decimal("677600000")
+        reference, validation = parse_kkp_reference(self.pages, spm, "abc123")
+        metadata = reference["metadata"]
+        self.assertEqual(metadata["spm_header_total_raw"], Decimal("677600000"))
+        self.assertEqual(metadata["payment_list_total"], Decimal("6776000"))
+        self.assertEqual(metadata["canonical_total"], Decimal("6776000"))
+        self.assertEqual(metadata["printed_total"], Decimal("6776000"))
+        self.assertGreaterEqual(len(metadata["total_resolution_sources"]), 2)
+        self.assertIn("CARD_STATEMENT", metadata["total_resolution_sources"])
+        self.assertIn("SPM_DETAIL", metadata["total_resolution_sources"])
+        self.assertTrue(metadata["total_resolution_warnings"])
+        self.assertTrue(metadata["total_provenance"]["spm_header_total_raw"]["suspect"])
+        self.assertEqual(
+            metadata["total_provenance"]["spm_header_total_raw"]["raw_token"],
+            "677600000",
+        )
+        self.assertEqual(validation["status"], "BALANCE")
+        self.assertTrue(validation["can_commit"], validation["errors"])
+
+    def test_footer_year_and_duplicate_detail_page_do_not_change_totals(self):
+        pages = deepcopy(self.pages)
+        pages[0]["tsv_words"].append(word("2026", 950, 500))
+        pages[2]["page_hash"] = "same-detail"
+        duplicate = deepcopy(pages[2])
+        duplicate["page_number"] = 7
+        duplicate["page_hash"] = "same-detail"
+        pages.append(duplicate)
+        reference, validation = parse_kkp_reference(pages, deepcopy(self.spm), "abc123")
+        self.assertEqual(reference["metadata"]["payment_list_raw_total"], Decimal("9776000"))
+        self.assertEqual(reference["metadata"]["spm_detail_total"], Decimal("6776000"))
+        self.assertEqual(reference["metadata"]["canonical_total"], Decimal("6776000"))
+        self.assertTrue(validation["can_commit"], validation["errors"])
+
+    def test_no_consensus_blocks_instead_of_dividing_outlier(self):
+        spm = deepcopy(self.spm)
+        spm["metadata"]["jumlah_pengeluaran"] = Decimal("677600000")
+        spm["metadata"]["total_pembayaran"] = Decimal("677600000")
+        pages = [self.pages[0], self.pages[3], self.pages[4]]
+        reference, validation = parse_kkp_reference(pages, spm, "abc123")
+        self.assertEqual(reference["metadata"]["canonical_total"], Decimal("0"))
+        self.assertEqual(reference["metadata"]["printed_total"], Decimal("0"))
+        self.assertEqual(reference["metadata"]["total_resolution_status"], "PERLU_REVIEW")
+        self.assertFalse(validation["can_commit"])
+        self.assertEqual(validation["status"], "PERLU_REVIEW")
+
+    def test_payment_and_canonical_totals_are_validated_separately(self):
+        reference, _validation = parse_kkp_reference(self.pages, deepcopy(self.spm), "abc123")
+        for field in ("payment_list_total", "canonical_total"):
+            with self.subTest(field=field):
+                changed = deepcopy(reference)
+                changed["metadata"][field] = Decimal("1")
+                validation = evaluate_kkp_group_commitability(changed, changed["items"])
+                self.assertFalse(validation["can_commit"])
+
+    def test_description_noise_is_removed_and_raw_value_remains_in_provenance(self):
+        noisy = "Belanja Barang Non . A $ | - Perjalanan dinas"
+        cleaned = _sanitize_kkp_description(noisy)
+        self.assertNotIn("Non . A", cleaned)
+        self.assertNotIn("$", cleaned)
+        self.assertNotIn("| -", cleaned)
+        reference, _validation = parse_kkp_reference(self.pages, deepcopy(self.spm), "abc123")
+        first = reference["items"][0]
+        self.assertTrue(first["deskripsi"])
+        self.assertIn("raw_value", first["field_provenance"]["deskripsi"])
+        self.assertEqual(first["pph21"], Decimal("0"))
+        self.assertEqual(
+            first["field_provenance"]["pph21"]["extraction_method"],
+            "confirmed_zero",
+        )
 
     def test_business_identifiers_and_receipt_provenance(self):
         reference, _validation = parse_kkp_reference(self.pages, self.spm, "abc123")

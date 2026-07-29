@@ -955,11 +955,14 @@ def build_preview_summary(parsed, decision, preview_state):
         groups = parsed.get("drpp_groups") or []
         balanced = sum(1 for group in groups if (group.get("validation") or {}).get("status") == "BALANCE")
         is_kkp = parsed.get("spm_family") == SPMFamily.GUP_KKP.value
+        kkp_reference_count = sum(1 for group in groups if group.get("is_kkp"))
+        drpp_count = sum(1 for group in groups if not group.get("is_kkp"))
         return {
             "upload_name": preview_state.get("original_filename", "-"),
             "file_count": len(parsed.get("files", [])),
             "spm_count": 1 if parsed.get("spm") else 0,
-            "drpp_count": len(groups),
+            "drpp_count": drpp_count,
+            "kkp_reference_count": kkp_reference_count,
             "kw_count": len(parsed.get("kw_items", [])),
             "total": sum((parse_user_decimal(item.get("nilai_bruto") or item.get("jumlah")) for item in parsed.get("kw_items", [])), Decimal("0")),
             "document_status": "Siap ditinjau" if parsed.get("ok") else "Perlu Review",
@@ -976,6 +979,7 @@ def build_preview_summary(parsed, decision, preview_state):
         "file_count": len(parsed.get("files", [])),
         "spm_count": 1 if parsed.get("spm") else 0,
         "drpp_count": len(parsed.get("drpps", []) or ([parsed.get("drpp")] if parsed.get("drpp") else [])),
+        "kkp_reference_count": 0,
         "kw_count": len(parsed.get("kw_items", [])),
         "total": meta.get("total") or Decimal("0"),
         "document_status": document_status,

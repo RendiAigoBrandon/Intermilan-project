@@ -34,6 +34,7 @@
           <th>Jumlah File</th>
           <th>SPM</th>
           <th>DRPP</th>
+          <th>Referensi KKP</th>
           <th>KW/Item</th>
           <th class="col-nominal">Total Nilai</th>
           <th>Status Dokumen</th>
@@ -47,6 +48,7 @@
           <td>{{ preview_summary.file_count }}</td>
           <td>{{ preview_summary.spm_count }}</td>
           <td>{{ preview_summary.drpp_count }}</td>
+          <td>{{ preview_summary.kkp_reference_count }}</td>
           <td>{{ preview_summary.kw_count }}</td>
           <td class="col-nominal">{{ preview_summary.total|id_number }}</td>
           <td><span class="status-pill">{{ summary_document_status }}</span></td>
@@ -140,6 +142,13 @@
         </div>
         {% endif %}
 
+        {% if group.warnings %}
+        <div class="note-box warning">
+          <strong>Peringatan:</strong>
+          <ul>{% for warning in group.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+        </div>
+        {% endif %}
+
         <div class="table-wrap">
           <table class="data-table data-table-wide" data-preview-columns="15">
             <thead>
@@ -163,7 +172,7 @@
                 <td class="preview-field{% if 'nilai_bruto' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'nilai_bruto' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_bruto" value="{% if 'nilai_bruto' not in row.preview_blank_fields %}{{ row.nilai_bruto|preview_number }}{% endif %}" aria-label="Nilai Bruto">{% if 'nilai_bruto' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'nilai_netto' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'nilai_netto' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-nilai_netto" value="{{ row.nilai_netto|preview_number }}" aria-label="Nilai Netto">{% if 'nilai_netto' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'pembebanan' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'pembebanan' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-pembebanan" value="{{ row.pembebanan }}" aria-label="Pembebanan">{% if 'pembebanan' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
-                <td class="preview-field{% if 'fp' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'fp' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-fp" value="{{ row.fp }}" aria-label="FP">{% if 'fp' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
+                <td class="preview-field{% if 'fp' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'fp' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input" name="rows-{{ row.form_index }}-fp" value="{{ row.fp }}"{% if group.is_kkp and not row.fp %} placeholder="-"{% endif %} aria-label="FP">{% if 'fp' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
                 <td class="preview-field{% if 'pph21' in row.preview_review_fields %} preview-field-review{% endif %}" data-field-status="{% if 'pph21' in row.preview_review_fields %}PERLU_REVIEW{% else %}VALID{% endif %}"><input class="table-input col-nominal" name="rows-{{ row.form_index }}-pph21" value="{% if 'pph21' not in row.preview_blank_fields %}{{ row.pph21|preview_number }}{% endif %}" aria-label="PPh21">{% if 'pph21' in row.preview_review_fields %}<span class="field-review-badge">Perlu review</span>{% endif %}</td>
               </tr>
               {% empty %}<tr><td colspan="15" class="empty">{% if group.is_kkp %}Transaksi KKP belum terbaca.{% else %}Baris DRPP belum terbaca.{% endif %}</td></tr>{% endfor %}

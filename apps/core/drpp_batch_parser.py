@@ -43,6 +43,7 @@ from apps.core.ocr import (
 )
 from apps.core.parsers import (
     compact_pembebanan_from_coa,
+    parse_decimal,
     parse_date,
     parse_drpp_pdf,
     parse_spm_pdf,
@@ -1818,22 +1819,41 @@ def _layout_lines(words, tolerance=16):
 
 
 _KKP_MONEY_RE = re.compile(
-    r"(?<!\d)([0-9S§][0-9S§IL|]*(?:\.[0-9S§IL|]{3})+(?:,[0-9]{2})?)(?!\d)",
+    r"(?<![0-9A-Z.])(?:RP\.?\s*)?("
+    r"(?:[0-9S§IL|]{1,3}(?:[.\s][0-9S§IL|]{3})+(?:,[0-9]{2})?)"
+    r"|(?:[0-9S§IL|]{4,12}(?:,[0-9]{2})?)"
+    r")(?![0-9A-Z.])",
     re.I,
 )
 
 
-def _kkp_money_tokens(value):
+def _kkp_money_evidence(value):
     output = []
-    for token in _KKP_MONEY_RE.findall(str(value or "")):
-        normalized = token.upper().translate(str.maketrans({"S": "5", "§": "5", "I": "1", "L": "1", "|": "1"}))
-        amount = _money(normalized)
+    for match in _KKP_MONEY_RE.finditer(str(value or "")):
+        raw = match.group(0)
+        numeric = re.sub(r"^RP\.?\s*", "", raw, flags=re.I)
+        numeric = numeric.upper().translate(
+            str.maketrans({"S": "5", "§": "5", "I": "1", "L": "1", "|": "1"})
+        )
+        amount = parse_decimal(numeric)
         if amount > 0:
-            output.append(amount)
+            output.append(
+                {
+                    "raw_token": raw,
+                    "normalized_value": amount,
+                    "start": match.start(),
+                    "end": match.end(),
+                }
+            )
     return output
 
 
+def _kkp_money_tokens(value):
+    return [item["normalized_value"] for item in _kkp_money_evidence(value)]
+
+
 def _page_source(page, method, locator="", inputs=None):
+    page = page or {}
     return {
         "source": "OCR" if page.get("engine") and page.get("engine") != "native_pdf" else "PARSER_STRUCTURAL",
         "engine": page.get("engine") or ("native_pdf" if page.get("native_text") else ""),
@@ -1847,6 +1867,34 @@ def _page_source(page, method, locator="", inputs=None):
         "locator": locator,
         "inputs": list(inputs or []),
     }
+
+
+def _kkp_total_provenance(page, method, raw_token, normalized_value, *, inputs=None):
+    return {
+        **_page_source(page, method, "total", inputs=inputs),
+        "method": method,
+        "raw_token": raw_token,
+        "normalized_value": normalized_value,
+        "suspect": False,
+    }
+
+
+def _sanitize_kkp_description(value):
+    text = str(value or "")
+    text = re.sub(r"\bNON\s*[.|$\-–—]+\s*[A-Z]\b", " ", text, flags=re.I)
+    text = re.sub(r"[$|]+", " ", text)
+    text = re.sub(r"(?:\s*[–—_-]\s*){2,}", " ", text)
+    tokens = []
+    for token in text.split():
+        cleaned = token.strip(".,;:!?()[]{}<>–—_-|$")
+        if not cleaned or re.fullmatch(r"[^A-Za-z0-9]+", cleaned):
+            continue
+        if len(cleaned) == 1 and cleaned.isalpha() and cleaned.isupper():
+            continue
+        tokens.append(cleaned)
+    return " ".join(tokens)
+
+
 
 
 def _kkp_payment_rows(page):
@@ -1886,10 +1934,15 @@ def _kkp_payment_rows(page):
         row_text = " ".join(word["text"] for word in sorted(row_words, key=lambda item: (item["top"], item["left"])))
         accounts = re.findall(r"\b5\d{5}\b", row_text)
         right_amounts = [
-            amount
+            (
+                abs(word["top"] + word["height"] // 2 - center),
+                -(word["left"] + word["width"]),
+                evidence,
+            )
             for word in row_words
             if word["left"] >= right_edge * 0.72
-            for amount in _kkp_money_tokens(word["text"])
+            for evidence in _kkp_money_evidence(word["text"])
+            if evidence["normalized_value"] >= Decimal("10000")
         ]
         if not accounts or not right_amounts:
             continue
@@ -1898,13 +1951,17 @@ def _kkp_payment_rows(page):
             if right_edge * 0.48 <= word["left"] < right_edge * 0.72
             and not re.fullmatch(r"(?:5\d{5}|\d{4})", word["text"])
         ]
-        description = " ".join(description_words).strip(" -|")
+        raw_description = " ".join(description_words).strip(" -|")
+        description = _sanitize_kkp_description(raw_description)
+        amount_evidence = min(right_amounts, key=lambda item: (item[0], item[1]))[2]
         rows.append(
             {
                 "ordinal": int(ordinal["text"]),
                 "akun": accounts[-1],
-                "jumlah": right_amounts[-1],
-                "keperluan": description or "Pembayaran tagihan Kartu Kredit Pemerintah",
+                "jumlah": amount_evidence["normalized_value"],
+                "raw_amount": amount_evidence["raw_token"],
+                "keperluan": description,
+                "raw_keperluan": raw_description,
                 "source_page": page.get("page_number"),
                 "source_file": page.get("file_name"),
                 "source_locator": f"table-row:{ordinal['text']}:y:{center}",
@@ -1918,20 +1975,50 @@ def _kkp_statement_amounts(page):
     lines = _layout_lines(page.get("tsv_words") or [])
     if not lines:
         lines = [{"text": line, "center": index, "words": []} for index, line in enumerate(str(page.get("text") or "").splitlines())]
+    transaction_right_edge = None
+    for line in lines:
+        if "INFORMASI KREDIT" not in line["text"].upper():
+            continue
+        info_word = next(
+            (word for word in line["words"] if word["text"].upper().startswith("INFORMASI")),
+            None,
+        )
+        if info_word:
+            transaction_right_edge = info_word["left"]
+            break
     charges = []
     credits = Counter()
     for line in lines:
         upper = line["text"].upper()
         if "TOTAL" in upper or "TAGIHAN BULAN" in upper or "PEMBAYARAN MINIMUM" in upper:
             continue
-        amounts = _kkp_money_tokens(line["text"])
+        positioned_amounts = [
+            (word["left"] + word["width"], item)
+            for word in line["words"]
+            if transaction_right_edge is None or word["left"] < transaction_right_edge
+            for item in _kkp_money_evidence(word["text"])
+            if item["normalized_value"] >= Decimal("10000")
+        ]
+        if positioned_amounts:
+            amounts = [max(positioned_amounts, key=lambda item: item[0])[1]]
+        else:
+            amounts = [
+                item for item in _kkp_money_evidence(line["text"])
+                if item["normalized_value"] >= Decimal("10000")
+            ]
         if not amounts:
             continue
         if "PEMBAYARAN" in upper or re.search(r"\bCR\b", upper):
-            credits[amounts[-1]] += 1
+            credits[amounts[-1]["normalized_value"]] += 1
             continue
         if len(re.findall(r"\b\d{1,2}[-/]\d{1,2}[-/]20\d{2}\b", line["text"])) >= 1:
-            charges.append({"amount": amounts[-1], "line": line})
+            charges.append(
+                {
+                    "amount": amounts[-1]["normalized_value"],
+                    "raw_amount": amounts[-1]["raw_token"],
+                    "line": line,
+                }
+            )
     remaining = []
     for charge in charges:
         if credits[charge["amount"]] > 0:
@@ -1955,6 +2042,135 @@ def _kkp_coa_evidence(pages, account):
         value = next(iter(distinct))
         return value, next(page for candidate, page in candidates if candidate == value)
     return "", None
+
+
+def _kkp_detail_total_evidence(pages):
+    """Jumlah lampiran COA per jenis dokumen; halaman BAST tidak ikut voting."""
+    grouped = defaultdict(list)
+    seen = defaultdict(set)
+    for page in pages:
+        text = str(page.get("text") or "")
+        upper = text.upper()
+        if "COA" not in upper:
+            continue
+        if re.search(r"LAMPIRAN\s+(?:SURAT\s+)?PERINTAH\s+MEMBAYAR", upper):
+            source_name = "SPM_DETAIL"
+        elif re.search(r"LAMPIRAN\s+(?:SURAT\s+)?PERMINTAAN\s+PEMBAYARAN", upper):
+            source_name = "SPP_DETAIL"
+        else:
+            continue
+        page_fingerprint = page.get("page_hash") or page.get("page_content_hash") or hashlib.sha256(
+            " ".join(text.split()).encode("utf-8", errors="ignore")
+        ).hexdigest()
+        if page_fingerprint in seen[source_name]:
+            continue
+        seen[source_name].add(page_fingerprint)
+        amounts = [
+            item for item in _kkp_money_evidence(text)
+            if re.search(r"[.,\s]", item["raw_token"])
+            and item["normalized_value"] >= Decimal("1000")
+        ]
+        if amounts:
+            grouped[source_name].append((page, amounts))
+
+    output = {}
+    for source_name, page_rows in grouped.items():
+        page = page_rows[0][0]
+        amounts = [item for _source_page, items in page_rows for item in items]
+        total = sum((item["normalized_value"] for item in amounts), Decimal("0"))
+        output[source_name] = {
+            "value": total,
+            "amounts": [item["normalized_value"] for item in amounts],
+            "amount_evidence": amounts,
+            "page": page,
+            "provenance": _kkp_total_provenance(
+                page,
+                "detail_coa_sum",
+                " + ".join(item["raw_token"] for item in amounts),
+                total,
+                inputs=[str(source_page.get("page_number") or "") for source_page, _items in page_rows],
+            ),
+        }
+    return output
+
+
+def _kkp_coa_description(page, amount):
+    text = str((page or {}).get("text") or "")
+    for evidence in _kkp_money_evidence(text):
+        if evidence["normalized_value"] != amount:
+            continue
+        prefix = text[max(0, evidence["start"] - 240):evidence["start"]]
+        parts = re.split(
+            r"\b\d{3}\.\d{3}\.[A-Z0-9.]{3,}\s*[-–—_]?\s*",
+            prefix,
+            flags=re.I,
+        )
+        candidate = _sanitize_kkp_description(parts[-1])
+        if candidate:
+            return candidate, parts[-1]
+    return "", ""
+
+
+def _kkp_spm_header_evidence(pages, spm_meta):
+    raw_value = spm_meta.get("jumlah_pengeluaran") or spm_meta.get("total_pembayaran")
+    normalized = _money(raw_value)
+    page = next(
+        (
+            item for item in pages
+            if item.get("document_type") == "SPM"
+            and "LAMPIRAN" not in str(item.get("text") or "").upper()
+        ),
+        next((item for item in pages if item.get("document_type") == "SPM"), None),
+    )
+    raw_token = str(raw_value or "")
+    if page and normalized > 0:
+        upper = str(page.get("text") or "").upper()
+        for label in (
+            "JUMLAH PENGELUARAN",
+            "NILAI PENGELUARAN",
+            "NILAI SPM",
+            "TOTAL PEMBAYARAN",
+            "JUMLAH YANG DIBAYARKAN",
+        ):
+            position = upper.find(label)
+            if position < 0:
+                continue
+            candidates = _kkp_money_evidence(upper[position + len(label):position + len(label) + 160])
+            match = next((item for item in candidates if item["normalized_value"] == normalized), None)
+            if match:
+                raw_token = match["raw_token"]
+                break
+    return {
+        "value": normalized,
+        "page": page,
+        "provenance": _kkp_total_provenance(
+            page,
+            "spm_header_metadata",
+            raw_token,
+            normalized,
+        ),
+    }
+
+
+def _resolve_kkp_canonical_total(candidates):
+    votes = defaultdict(list)
+    for source_name, evidence in candidates.items():
+        value = _money((evidence or {}).get("value"))
+        if value > 0:
+            votes[value].append(source_name)
+    consensus = [
+        (value, sources)
+        for value, sources in votes.items()
+        if len(set(sources)) >= 2
+    ]
+    if not consensus:
+        return Decimal("0"), [], "PERLU_REVIEW"
+    strongest = max(len(set(sources)) for _value, sources in consensus)
+    winners = [(value, sources) for value, sources in consensus if len(set(sources)) == strongest]
+    if len(winners) != 1:
+        return Decimal("0"), [], "PERLU_REVIEW"
+    value, sources = winners[0]
+    return value, list(dict.fromkeys(sources)), "CONSENSUS"
 
 
 def _kkp_payment_orders(pages):
@@ -2052,9 +2268,19 @@ def evaluate_kkp_group_commitability(reference, items, *, parser_validation=None
         errors.append("Total referensi KKP tidak ditemukan atau bernilai nol.")
     elif actual_total != expected_total:
         errors.append(f"Total baris Rp{actual_total:,.0f} tidak sama dengan total referensi KKP Rp{expected_total:,.0f}.")
-    spm_total = _money(metadata.get("spm_total"))
-    if spm_total <= 0 or expected_total != spm_total:
-        errors.append("Total referensi KKP tidak sama dengan bruto SPM.")
+    payment_list_total = _money(metadata.get("payment_list_total"))
+    if payment_list_total <= 0 or expected_total != payment_list_total:
+        errors.append("Total referensi KKP tidak sama dengan total daftar pembayaran KKP.")
+    canonical_total = _money(metadata.get("canonical_total"))
+    resolution_sources = set(metadata.get("total_resolution_sources") or [])
+    if (
+        metadata.get("total_resolution_status") != "CONSENSUS"
+        or canonical_total <= 0
+        or len(resolution_sources) < 2
+    ):
+        errors.append("Total KKP belum didukung minimal dua sumber independen.")
+    elif expected_total != canonical_total:
+        errors.append("Total daftar pembayaran KKP tidak sama dengan total canonical.")
     seen = set()
     for item in items:
         receipt = str(_group_item_value(item, "no_kuitansi", "no_bukti") or "")
@@ -2077,6 +2303,11 @@ def evaluate_kkp_group_commitability(reference, items, *, parser_validation=None
             errors.append("Tanggal SPM kosong.")
         if _money(_group_item_value(item, "nilai_bruto", "bruto", "jumlah")) <= 0:
             errors.append("Nilai bruto nol tanpa bukti.")
+        status_detail = str(
+            _group_item_value(item, "status_detail", "batch_status", "status") or ""
+        ).upper()
+        if status_detail in {"GAGAL", "PERLU_REVIEW", "PERLU REVIEW"}:
+            errors.append("Terdapat field transaksi KKP yang masih perlu review.")
         key = (_group_item_value(item, "nomor_spm"), receipt, account)
         if key in seen:
             errors.append("Duplikat exact key ditemukan dalam upload yang sama.")
@@ -2101,6 +2332,7 @@ def evaluate_kkp_group_commitability(reference, items, *, parser_validation=None
         "status": "BALANCE" if not errors else "PERLU_REVIEW",
         "can_commit": not errors,
         "errors": errors,
+        "warnings": list(metadata.get("total_resolution_warnings") or []),
     }
 
 
@@ -2112,19 +2344,137 @@ def parse_kkp_reference(page_index, spm, file_sha):
     if family != SPMFamily.GUP_KKP or not payment_page:
         return None
     source_rows = _kkp_payment_rows(payment_page)
-    spm_total = _money(spm_meta.get("jumlah_pengeluaran") or spm_meta.get("total_pembayaran"))
     statement_page = next((page for page in page_index if page.get("document_type") == "KKP_CARD_STATEMENT"), None)
     statement_rows = _kkp_statement_amounts(statement_page) if statement_page else []
     statement_amounts = [row["amount"] for row in statement_rows]
     list_amounts = [row["jumlah"] for row in source_rows]
-    reconciled_amounts = list_amounts
+    detail_evidence = _kkp_detail_total_evidence(page_index)
+    spm_header = _kkp_spm_header_evidence(page_index, spm_meta)
+    raw_list_total = sum(list_amounts, Decimal("0"))
+    statement_total = sum(statement_amounts, Decimal("0"))
+    total_candidates = {
+        "PAYMENT_LIST": {
+            "value": raw_list_total,
+            "page": payment_page,
+            "provenance": _kkp_total_provenance(
+                payment_page,
+                "payment_list_raw_sum",
+                " + ".join(row.get("raw_amount") or str(row["jumlah"]) for row in source_rows),
+                raw_list_total,
+            ),
+        },
+        "CARD_STATEMENT": {
+            "value": statement_total,
+            "page": statement_page,
+            "provenance": _kkp_total_provenance(
+                statement_page,
+                "card_statement_net_charges",
+                " + ".join(row.get("raw_amount") or str(row["amount"]) for row in statement_rows),
+                statement_total,
+            ),
+        },
+        **detail_evidence,
+        "SPM_HEADER": spm_header,
+    }
+    canonical_total, resolution_sources, resolution_status = _resolve_kkp_canonical_total(
+        total_candidates
+    )
+
+    amount_options = [
+        (
+            "PAYMENT_LIST",
+            list_amounts,
+            payment_page,
+            [row.get("raw_amount") or str(row["jumlah"]) for row in source_rows],
+        ),
+        (
+            "CARD_STATEMENT",
+            statement_amounts,
+            statement_page,
+            [row.get("raw_amount") or str(row["amount"]) for row in statement_rows],
+        ),
+    ]
+    for source_name in ("SPM_DETAIL", "SPP_DETAIL"):
+        evidence = detail_evidence.get(source_name) or {}
+        amount_options.append(
+            (
+                source_name,
+                evidence.get("amounts") or [],
+                evidence.get("page"),
+                [item["raw_token"] for item in evidence.get("amount_evidence") or []],
+            )
+        )
+    amount_source = ""
     amount_page = payment_page
-    if sum(list_amounts, Decimal("0")) != spm_total:
-        if len(statement_amounts) == len(source_rows) and sum(statement_amounts, Decimal("0")) == spm_total:
-            reconciled_amounts = statement_amounts
-            amount_page = statement_page
-        else:
-            reconciled_amounts = []
+    amount_raw_tokens = []
+    reconciled_amounts = []
+    if canonical_total > 0:
+        for source_name, amounts, source_page, raw_tokens in amount_options:
+            if (
+                len(amounts) == len(source_rows)
+                and sum(amounts, Decimal("0")) == canonical_total
+            ):
+                amount_source = source_name
+                amount_page = source_page or payment_page
+                amount_raw_tokens = raw_tokens
+                reconciled_amounts = amounts
+                break
+    payment_list_total = (
+        sum(reconciled_amounts, Decimal("0"))
+        if len(reconciled_amounts) == len(source_rows) and source_rows
+        else Decimal("0")
+    )
+    printed_total = payment_list_total
+
+    total_warnings = []
+    header_total = _money(spm_header.get("value"))
+    if canonical_total > 0:
+        for evidence in total_candidates.values():
+            provenance = (evidence or {}).get("provenance") or {}
+            value = _money((evidence or {}).get("value"))
+            if value > 0 and value != canonical_total:
+                provenance["suspect"] = True
+        if header_total > 0 and header_total != canonical_total:
+            total_warnings.append(
+                "Nilai header SPM terindikasi outlier OCR dan digantikan oleh konsensus "
+                "sumber independen KKP."
+            )
+    else:
+        total_warnings.append(
+            "Total KKP belum memiliki konsensus minimal dua sumber independen."
+        )
+
+    total_provenance = {
+        "payment_list_raw_total": total_candidates["PAYMENT_LIST"]["provenance"],
+        "card_statement_total": total_candidates["CARD_STATEMENT"]["provenance"],
+        "spm_header_total_raw": spm_header["provenance"],
+    }
+    if detail_evidence.get("SPM_DETAIL"):
+        total_provenance["spm_detail_total"] = detail_evidence["SPM_DETAIL"]["provenance"]
+    if detail_evidence.get("SPP_DETAIL"):
+        total_provenance["spp_detail_total"] = detail_evidence["SPP_DETAIL"]["provenance"]
+    total_provenance["payment_list_total"] = _kkp_total_provenance(
+        amount_page,
+        "payment_list_rows_reconciled" if amount_source != "PAYMENT_LIST" else "payment_list_row_sum",
+        " + ".join(amount_raw_tokens),
+        payment_list_total,
+        inputs=[amount_source] if amount_source else [],
+    )
+    total_provenance["canonical_total"] = {
+        **_page_source({}, "independent_source_consensus", "kkp-total", inputs=resolution_sources),
+        "source": "PARSER_STRUCTURAL",
+        "method": "independent_source_consensus",
+        "raw_token": "",
+        "normalized_value": canonical_total,
+        "suspect": False,
+    }
+    total_provenance["printed_total"] = _kkp_total_provenance(
+        payment_page,
+        "validated_payment_list_total",
+        "",
+        printed_total,
+        inputs=["payment_list_total", "canonical_total"],
+    )
 
     orders = _kkp_payment_orders(page_index)
     order_matches, ambiguous_receipts = _match_kkp_receipts(
@@ -2140,6 +2490,33 @@ def parse_kkp_reference(page_index, spm, file_sha):
         amount = reconciled_amounts[index] if index < len(reconciled_amounts) else Decimal("0")
         order = order_matches.get(index)
         charge, charge_page = _kkp_coa_evidence(page_index, row["akun"])
+        coa_description, raw_coa_description = _kkp_coa_description(charge_page, amount)
+        description_candidates = [
+            (row.get("keperluan") or "", row.get("raw_keperluan") or "", payment_page, "payment_list_description"),
+            (coa_description, raw_coa_description, charge_page, "coa_description"),
+            (
+                _sanitize_kkp_description((order or {}).get("description")),
+                (order or {}).get("description") or "",
+                (order or {}).get("page"),
+                "payment_order_description",
+            ),
+            (
+                _sanitize_kkp_description(spm_meta.get("uraian")),
+                spm_meta.get("uraian") or "",
+                spm_page,
+                "spm_description",
+            ),
+            (
+                _sanitize_kkp_description((order or {}).get("recipient")),
+                (order or {}).get("recipient") or "",
+                (order or {}).get("page"),
+                "payment_order_recipient",
+            ),
+        ]
+        description, raw_description, description_page, description_method = next(
+            (candidate for candidate in description_candidates if candidate[0]),
+            ("", "", payment_page, "description_not_proven"),
+        )
         receipt = order["no_kuitansi"] if order else ""
         receipt_ambiguous = index in ambiguous_receipts
         receipt_absent = not receipt and not receipt_ambiguous
@@ -2149,8 +2526,12 @@ def parse_kkp_reference(page_index, spm, file_sha):
                 amount_page or payment_page,
                 "reconciled_layout_amount",
                 f"transaction-row:{index + 1}",
-                inputs=["payment_list", "spm_total", "card_statement"] if amount_page is statement_page else ["payment_list", "spm_total"],
+                inputs=[amount_source, "canonical_total"],
             ),
+            "deskripsi": {
+                **_page_source(description_page, description_method, row["source_locator"]),
+                "raw_value": raw_description,
+            },
             "pembebanan": _page_source(charge_page or payment_page, "coa_16_segment", "account-and-coa"),
             "jenis_spm": _page_source(
                 spm_page,
@@ -2165,6 +2546,11 @@ def parse_kkp_reference(page_index, spm, file_sha):
                     "source": "PARSER_STRUCTURAL",
                 }
             ),
+            "pph21": {
+                **_page_source(payment_page, "confirmed_zero", row["source_locator"]),
+                "source": "PARSER_STRUCTURAL",
+                "inputs": ["payment_list_without_pph21_deduction"],
+            },
         }
         items.append(
             {
@@ -2178,8 +2564,8 @@ def parse_kkp_reference(page_index, spm, file_sha):
                 "no_bukti": receipt,
                 "no_kuitansi": receipt,
                 "no_drpp": "",
-                "keperluan": row["keperluan"],
-                "deskripsi": row["keperluan"],
+                "keperluan": description,
+                "deskripsi": description,
                 "jumlah": amount,
                 "bruto": amount,
                 "nilai_bruto": amount,
@@ -2200,12 +2586,12 @@ def parse_kkp_reference(page_index, spm, file_sha):
                     "payment_order": order["page"].get("page_number") if order else None,
                     "coa": charge_page.get("page_number") if charge_page else None,
                 },
-                "status": "LENGKAP" if amount and charge and not receipt_ambiguous else "PERLU_REVIEW",
-                "status_detail": "LENGKAP" if amount and charge and not receipt_ambiguous else "PERLU_REVIEW",
+                "status": "LENGKAP" if amount and charge and description and not receipt_ambiguous else "PERLU_REVIEW",
+                "status_detail": "LENGKAP" if amount and charge and description and not receipt_ambiguous else "PERLU_REVIEW",
                 "warnings": (
                     ["Kuitansi memiliki lebih dari satu kandidat transaksi dengan evidence setara."]
                     if receipt_ambiguous
-                    else ([] if amount and charge else ["Nominal atau pembebanan KKP belum terbukti unik."])
+                    else ([] if amount and charge and description else ["Nominal, pembebanan, atau deskripsi KKP belum terbukti."])
                 ),
             }
         )
@@ -2215,9 +2601,20 @@ def parse_kkp_reference(page_index, spm, file_sha):
         "nomor_drpp": "",
         "group_key": group_key,
         "source_item_count": len(source_rows),
-        "total": spm_total if reconciled_amounts else Decimal("0"),
-        "printed_total": spm_total if reconciled_amounts else Decimal("0"),
-        "spm_total": spm_total,
+        "total": printed_total,
+        "payment_list_raw_total": raw_list_total,
+        "payment_list_total": payment_list_total,
+        "card_statement_total": statement_total,
+        "spm_detail_total": _money((detail_evidence.get("SPM_DETAIL") or {}).get("value")),
+        "spp_detail_total": _money((detail_evidence.get("SPP_DETAIL") or {}).get("value")),
+        "spm_header_total_raw": header_total,
+        "canonical_total": canonical_total,
+        "printed_total": printed_total,
+        "spm_total": header_total,
+        "total_resolution_status": resolution_status,
+        "total_resolution_sources": resolution_sources,
+        "total_resolution_warnings": total_warnings,
+        "total_provenance": total_provenance,
         "parent_is_gup_kkp": True,
         "nomor_spm": spm_meta.get("nomor_spm") or "",
         "nomor_spp": spp_match.group(1).upper() if spp_match else "",
@@ -2235,6 +2632,7 @@ def parse_kkp_reference(page_index, spm, file_sha):
         "metadata": metadata,
         "items": items,
         "source_pages": [payment_page.get("page_number")],
+        "warnings": total_warnings,
         "status": "parsed_text",
     }
     validation = evaluate_kkp_group_commitability(reference, items)
