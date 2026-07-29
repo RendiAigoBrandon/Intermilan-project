@@ -45,7 +45,7 @@
 2. Setiap baris transaksi menampilkan tombol `Checklist` atau `Lihat Checklist`.
 3. User memilih tombol tersebut pada transaksi yang diinginkan.
 4. Sistem membuka detail di `/documents/<transaction_id>/`.
-5. Jika transaksi membutuhkan DRPP atau sudah punya data DRPP, D_K menampilkan tombol `Upload DRPP` atau `Lihat DRPP`.
+5. D_K menampilkan data inti DRPP pada baris transaksi; unggahan baru dilakukan melalui menu `Upload DRPP dan Kuitansi`.
 6. Admin dapat membuka semua transaksi; Operator Satker hanya dapat edit/upload untuk satker sendiri; Viewer hanya read-only.
 
 Catatan: `/documents/` tidak menjadi daftar transaksi duplikat D_K dan tidak boleh membuka transaksi default seperti SPM `00074T`.

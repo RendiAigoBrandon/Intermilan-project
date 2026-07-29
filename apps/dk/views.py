@@ -4,14 +4,13 @@ from django.db import connection
 from django.db.models import Count, F, Q
 from django.shortcuts import render
 
-from apps.accounts.access import can_edit_satker, filter_by_satker, get_profile, permission_context, is_viewer
+from apps.accounts.access import can_edit_satker, filter_by_satker, get_profile, is_admin, permission_context, is_viewer
 from apps.core.views import D_K_COLUMNS, MONTH_OPTIONS, build_satker_options, get_satker_name_map
 from apps.documents.models import ChecklistStatus
 from apps.paket_spm.models import PaketSPMPreviewItem
 from apps.sp2d.models import SP2DRaw
 
 from .models import MasterAkun, TransactionDetail
-from .services import has_drpp_record, requires_drpp
 
 
 PAGE_SIZE_OPTIONS = (20, 50, 100)
@@ -98,8 +97,6 @@ def transaction_list(request):
     attach_source_labels(rows)
     for row in rows:
         row.can_edit = can_edit_satker(request.user, row.satker_code)
-        row.requires_drpp = requires_drpp(row)
-        row.has_drpp_record = has_drpp_record(row)
 
     page_query = request.GET.copy()
     page_query.pop("page", None)
@@ -148,7 +145,7 @@ def transaction_list(request):
     context.update(
         {
             "page_title": "Database D_K",
-            "page_subtitle": "Detail transaksi keuangan lengkap; dari sini buka Checklist dan DRPP.",
+            "page_subtitle": "Detail transaksi keuangan lengkap; dari sini buka Checklist.",
             "columns": D_K_COLUMNS,
             "rows": rows,
             "filters": filters,
@@ -380,36 +377,9 @@ def transaction_edit(request, pk):
 
 @login_required
 @transaction.atomic
-def transaction_duplicate(request, pk):
-    instance = get_object_or_404(TransactionDetail, pk=pk)
-    if not can_edit_satker(request.user, instance.satker_code):
-        raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
-    if request.method == "POST":
-        original_pk = instance.pk
-        instance.pk = None
-        instance.status_detail = TransactionDetail.StatusDetail.DRAFT
-        instance.created_by = request.user
-        instance.save()
-        
-        # Log the duplication source on the NEW instance
-        TransactionChangeLog.objects.create(
-            transaction=instance,
-            field_name="duplicated_from",
-            old_value=str(original_pk),
-            new_value=str(instance.pk),
-            change_source=TransactionChangeLog.ChangeSource.MANUAL,
-            changed_by=request.user
-        )
-        
-        messages.success(request, "Baris D_K berhasil diduplikat.")
-        return redirect('dk:transaction_edit', pk=instance.pk)
-    return redirect('dk:transaction_list')
-
-@login_required
-@transaction.atomic
 def transaction_archive(request, pk):
     instance = get_object_or_404(TransactionDetail, pk=pk)
-    if not can_edit_satker(request.user, instance.satker_code):
+    if not is_admin(request.user) or not can_edit_satker(request.user, instance.satker_code):
         raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
     if instance.status_detail == TransactionDetail.StatusDetail.DIARSIPKAN:
         messages.error(request, "Baris D_K sudah dalam status DIARSIPKAN.")
@@ -433,7 +403,7 @@ def transaction_archive(request, pk):
 @transaction.atomic
 def transaction_restore(request, pk):
     instance = get_object_or_404(TransactionDetail, pk=pk)
-    if not can_edit_satker(request.user, instance.satker_code):
+    if not is_admin(request.user) or not can_edit_satker(request.user, instance.satker_code):
         raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
     if instance.status_detail != TransactionDetail.StatusDetail.DIARSIPKAN:
         messages.error(request, "Baris D_K tidak dalam status DIARSIPKAN.")

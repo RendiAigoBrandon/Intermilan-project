@@ -9,7 +9,6 @@ urlpatterns = [
     path("", views.transaction_list, name="transaction_list"),
     path("create/", views.transaction_create, name="transaction_create"),
     path("<int:pk>/edit/", views.transaction_edit, name="transaction_edit"),
-    path("<int:pk>/duplicate/", views.transaction_duplicate, name="transaction_duplicate"),
     path("<int:pk>/archive/", views.transaction_archive, name="transaction_archive"),
     path("<int:pk>/restore/", views.transaction_restore, name="transaction_restore"),
     path("bulk-edit/", views.transaction_bulk_edit, name="transaction_bulk_edit"),

@@ -187,10 +187,8 @@
           <td class="col-status action-cell">
             {% if row.can_edit %}
             <a class="btn tiny primary" href="{% url 'dk:transaction_edit' row.id %}">Edit</a>
-            <form method="post" action="{% url 'dk:transaction_duplicate' row.id %}" style="display:inline;">
-                {% csrf_token %}
-                <button type="submit" class="btn tiny ghost">Duplikat</button>
-            </form>
+            {% endif %}
+            {% if is_role_admin %}
             {% if row.status_detail != "DIARSIPKAN" %}
             <form method="post" action="{% url 'dk:transaction_archive' row.id %}" style="display:inline;" onsubmit="return confirm('Yakin ingin mengarsipkan baris ini?');">
                 {% csrf_token %}
@@ -206,13 +204,6 @@
             <a class="btn tiny ghost" href="{% url 'documents:checklist_detail' row.id %}">
               {% if row.can_edit %}Checklist{% else %}Lihat Checklist{% endif %}
             </a>
-            {% if row.requires_drpp %}
-              {% if row.has_drpp_record %}
-              <a class="btn tiny ghost" href="{% url 'paket_spm:list' %}?q={{ row.nomor_drpp|default:row.nomor_spm|urlencode }}">Lihat DRPP</a>
-              {% elif row.can_edit %}
-              <a class="btn tiny primary" href="{% url 'paket_spm:list' %}">Upload DRPP</a>
-              {% endif %}
-            {% endif %}
           </td>
         </tr>
         {% empty %}

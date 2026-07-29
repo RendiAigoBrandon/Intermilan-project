@@ -1,5 +1,5 @@
 from django.test import TestCase, Client
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 from django.contrib.auth import get_user_model
 from apps.dk.models import TransactionDetail, MasterAkun, TransactionChangeLog
 from apps.accounts.models import Profile
@@ -69,6 +69,128 @@ class DKTests(TestCase):
             'type="button" disabled aria-disabled="true" title="Fitur ekspor belum tersedia.">Export Excel Per Akun',
             html=False,
         )
+
+    def test_duplicate_feature_removed_and_legacy_endpoint_returns_404(self):
+        with self.assertRaises(NoReverseMatch):
+            reverse("dk:transaction_duplicate", args=[self.transaction.pk])
+
+        legacy_url = f"/dk/{self.transaction.pk}/duplicate/"
+        self.assertEqual(self.client.get(legacy_url).status_code, 404)
+        self.assertEqual(self.client.post(legacy_url).status_code, 404)
+
+    def test_action_buttons_follow_roles_and_remove_drpp_row_actions(self):
+        admin_response = self.client.get(reverse("dk:transaction_list"))
+        edit_url = reverse("dk:transaction_edit", args=[self.transaction.pk])
+        archive_url = reverse("dk:transaction_archive", args=[self.transaction.pk])
+        restore_url = reverse("dk:transaction_restore", args=[self.transaction.pk])
+        checklist_url = reverse("documents:checklist_detail", args=[self.transaction.pk])
+        self.assertContains(admin_response, edit_url)
+        self.assertContains(admin_response, archive_url)
+        self.assertContains(admin_response, checklist_url)
+        admin_html = admin_response.content.decode("utf-8")
+        self.assertLess(admin_html.index(edit_url), admin_html.index(archive_url))
+        self.assertLess(admin_html.index(archive_url), admin_html.index(checklist_url))
+        self.assertNotContains(admin_response, "Duplikat")
+        self.assertNotContains(admin_response, "Lihat DRPP")
+        self.assertNotContains(admin_response, ">Upload DRPP</a>", html=False)
+
+        other = TransactionDetail.objects.create(
+            satker_code="SAT2",
+            akun="12345",
+            nomor_spm="SPM-SAT2",
+            nilai_bruto=1,
+            nilai_netto=1,
+        )
+        self.client.login(username="op", password="password")
+        operator_response = self.client.get(reverse("dk:transaction_list"))
+        self.assertContains(operator_response, "SPM001")
+        self.assertNotContains(operator_response, "SPM-SAT2")
+        self.assertContains(operator_response, edit_url)
+        self.assertContains(operator_response, checklist_url)
+        operator_html = operator_response.content.decode("utf-8")
+        self.assertLess(operator_html.index(edit_url), operator_html.index(checklist_url))
+        self.assertNotContains(operator_response, archive_url)
+        self.assertNotContains(operator_response, restore_url)
+
+        self.transaction.status_detail = TransactionDetail.StatusDetail.DIARSIPKAN
+        self.transaction.save(update_fields=["status_detail"])
+        operator_archived = self.client.get(
+            reverse("dk:transaction_list"),
+            {"archive_status": "arsip"},
+        )
+        self.assertContains(operator_archived, edit_url)
+        self.assertContains(operator_archived, checklist_url)
+        self.assertNotContains(operator_archived, archive_url)
+        self.assertNotContains(operator_archived, restore_url)
+        self.transaction.status_detail = TransactionDetail.StatusDetail.DRAFT
+        self.transaction.save(update_fields=["status_detail"])
+
+        self.client.login(username="view", password="password")
+        viewer_response = self.client.get(reverse("dk:transaction_list"))
+        self.assertContains(viewer_response, "Lihat Checklist")
+        self.assertContains(viewer_response, checklist_url)
+        self.assertNotContains(viewer_response, edit_url)
+        self.assertNotContains(viewer_response, archive_url)
+        self.assertNotContains(viewer_response, restore_url)
+        self.assertNotContains(viewer_response, "Duplikat")
+        self.assertNotContains(viewer_response, "Lihat DRPP")
+        self.assertNotContains(viewer_response, ">Upload DRPP</a>", html=False)
+
+        other.delete()
+
+    def test_non_admin_archive_and_restore_posts_are_denied(self):
+        archive_url = reverse("dk:transaction_archive", args=[self.transaction.pk])
+        restore_url = reverse("dk:transaction_restore", args=[self.transaction.pk])
+
+        for username in ("op", "view"):
+            with self.subTest(username=username, action="archive"):
+                self.transaction.status_detail = TransactionDetail.StatusDetail.DRAFT
+                self.transaction.save(update_fields=["status_detail"])
+                self.client.login(username=username, password="password")
+                self.assertEqual(self.client.post(archive_url).status_code, 403)
+                self.transaction.refresh_from_db()
+                self.assertEqual(self.transaction.status_detail, TransactionDetail.StatusDetail.DRAFT)
+
+            with self.subTest(username=username, action="restore"):
+                self.transaction.status_detail = TransactionDetail.StatusDetail.DIARSIPKAN
+                self.transaction.save(update_fields=["status_detail"])
+                self.assertEqual(self.client.post(restore_url).status_code, 403)
+                self.transaction.refresh_from_db()
+                self.assertEqual(self.transaction.status_detail, TransactionDetail.StatusDetail.DIARSIPKAN)
+
+    def test_admin_archive_filters_restore_and_change_logs(self):
+        archive_url = reverse("dk:transaction_archive", args=[self.transaction.pk])
+        restore_url = reverse("dk:transaction_restore", args=[self.transaction.pk])
+
+        self.assertEqual(self.client.post(archive_url).status_code, 302)
+        self.transaction.refresh_from_db()
+        self.assertEqual(self.transaction.status_detail, TransactionDetail.StatusDetail.DIARSIPKAN)
+        self.assertTrue(
+            self.transaction.change_logs.filter(
+                field_name="status_detail",
+                old_value=TransactionDetail.StatusDetail.DRAFT,
+                new_value=TransactionDetail.StatusDetail.DIARSIPKAN,
+            ).exists()
+        )
+        self.assertNotContains(self.client.get(reverse("dk:transaction_list")), "SPM001")
+        archived_response = self.client.get(
+            reverse("dk:transaction_list"),
+            {"archive_status": "arsip"},
+        )
+        self.assertContains(archived_response, "SPM001")
+        self.assertContains(archived_response, restore_url)
+
+        self.assertEqual(self.client.post(restore_url).status_code, 302)
+        self.transaction.refresh_from_db()
+        self.assertEqual(self.transaction.status_detail, TransactionDetail.StatusDetail.DRAFT)
+        self.assertTrue(
+            self.transaction.change_logs.filter(
+                field_name="status_detail",
+                old_value=TransactionDetail.StatusDetail.DIARSIPKAN,
+                new_value=TransactionDetail.StatusDetail.DRAFT,
+            ).exists()
+        )
+        self.assertContains(self.client.get(reverse("dk:transaction_list")), "SPM001")
 
     def test_create_transaction_admin(self):
         url = reverse('dk:transaction_create')

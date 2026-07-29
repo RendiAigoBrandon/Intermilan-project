@@ -56,7 +56,7 @@ Tidak dikerjakan pada fase UI:
 - `/sp2d/` Upload & Data Mentah SP2D.
 - `/paket-spm/` Form Upload Paket SPM PDF/ZIP UI-only.
 - `/monitoring/` Monitoring Dokumen dengan metric cards, filter, tabel monitoring.
-- `/dk/` Database D_K Web dengan filter, tabel besar, tombol Checklist, serta tombol Upload/Lihat DRPP bersyarat.
+- `/dk/` Database D_K Web dengan filter, tabel besar, dan aksi Checklist; unggahan DRPP tersedia melalui menu utama.
 - `/documents/` halaman arahan singkat; detail checklist aktif di `/documents/<transaction_id>/`.
 - `/drpp/` Daftar DRPP UI-only, termasuk placeholder query `?transaction_id=<id>`.
 - `/master-akun/` Master Akun.
