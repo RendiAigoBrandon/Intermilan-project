@@ -242,21 +242,29 @@ input[type="file"].form-control::file-selector-button {
 .filter-cell { min-width: 180px; }
 .filter-cell.wide { flex: 1; min-width: 280px; }
 .filter-cell label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.table-wrap, .excel-grid-wrap, .wide-table-wrap {
+.table-wrap, .excel-grid-wrap, .wide-table-wrap, .table-responsive {
     width: 100%;
     max-width: 100%;
     overflow-x: auto;
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-    overscroll-behavior: contain;
+    overflow-y: hidden;
+    scrollbar-gutter: auto;
+    overscroll-behavior-x: contain;
+    overscroll-behavior-y: auto;
+}
+.table-wrap, .excel-grid-wrap, .wide-table-wrap {
     border: 1px solid var(--border);
     border-radius: 16px;
 }
 .table-wrap.large,
 .wide-table-wrap.large,
-.dashboard-table-wrap,
+.dashboard-table-wrap {
+    height: auto;
+    max-height: none;
+}
 .table-scroll-y {
     max-height: min(68vh, 720px);
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
 }
 .table-wrap::-webkit-scrollbar,
 .wide-table-wrap::-webkit-scrollbar,
