@@ -43,10 +43,13 @@ from apps.core.ocr import (
 )
 from apps.core.parsers import (
     compact_pembebanan_from_coa,
+    extract_drpp_printed_total,
+    extract_drpp_total_candidates,
     parse_decimal,
     parse_date,
     parse_drpp_pdf,
     parse_spm_pdf,
+    select_drpp_printed_total_candidate,
 )
 
 
@@ -482,6 +485,7 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
             continue
         found_summary = False
         summary_page = 0
+        coa_page = 0
         for page in page_index:
             if page["file_name"] != file_name:
                 continue
@@ -491,6 +495,8 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
             page["probe_ocr_called"] = not probe.get("cache_hit", False)
             page["probe_cache_hit"] = bool(probe.get("cache_hit"))
             document_type = _classification(probe.get("text", ""))[0]
+            if page.get("type_hint") == "KUITANSI" and page.get("page_number") == 1:
+                page["force_probe"] = True
             if document_type in {"SPM", "SPP", "SP2D"}:
                 page["force_probe"] = True
             if document_type == "DRPP_SUMMARY":
@@ -499,21 +505,20 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
                 summary_page = page["page_number"]
             elif found_summary and document_type == "DRPP_COA":
                 page["force_probe"] = True
-                break
+                coa_page = page["page_number"]
+                continue
+            elif coa_page:
+                page["force_probe"] = True
+                page["type_hint"] = "DRPP_COA"
+                page["drpp_continuation"] = True
+                if page["page_number"] >= coa_page + 1:
+                    break
             elif found_summary:
                 page["force_probe"] = True
                 page["type_hint"] = "DRPP_SUMMARY"
                 page["drpp_continuation"] = True
                 if page["page_number"] >= summary_page + 2:
                     break
-
-        if found_summary:
-            # Dalam PDF campuran, halaman identitas umumnya berada sebelum tabel
-            # DRPP. Probe resolusi rendah hanya memilih kandidat; OCR detail tetap
-            # dijalankan page-level dan berhenti pada batas struktural ringkasan.
-            for candidate in page_index:
-                if candidate["file_name"] == file_name and candidate["page_number"] < summary_page:
-                    candidate["force_probe"] = True
 
     if not numbers:
         bundle_files = {
@@ -574,7 +579,7 @@ def discover_embedded_drpp_pages(page_index, ocr=True):
     return page_index
 
 
-def _ocr_page(page, use_cache=True):
+def _ocr_page(page, use_cache=True, rotations=None, dpi=220, timeout=None, configs=None, lang_attempts=None):
     # Versi ini membandingkan kedua orientasi landscape sebelum menerima hasil.
     # Versi cache dipisahkan agar hasil lama yang terbalik tidak digunakan lagi.
     cache_engine = "tesseract-ind+eng-v3"
@@ -589,12 +594,17 @@ def _ocr_page(page, use_cache=True):
     if not configure_tesseract(pytesseract):
         return {"text": "", "confidence": 0, "words": [], "engine": "tesseract", "warnings": ["Tesseract tidak tersedia."]}
 
-    image = _render_page(page, 220) or page.get("_image")
+    image = _render_page(page, dpi) or page.get("_image")
     if image is None:
         return {"text": "", "confidence": 0, "words": [], "engine": "tesseract", "warnings": ["Halaman gagal dirender."]}
     processed = preprocess_image(image)
     text, confidence, warnings, words, rotation, tried, _score = tesseract_page_text_best_rotation(
-        pytesseract, processed
+        pytesseract,
+        processed,
+        rotations=rotations,
+        timeout=timeout,
+        configs=configs,
+        lang_attempts=lang_attempts,
     )
     result = {
         "text": text,
@@ -635,6 +645,40 @@ def _ocr_page(page, use_cache=True):
     return result
 
 
+def _looks_like_drpp_summary_text(text):
+    """Kenali halaman DRPP dari OCR probe yang sering salah baca huruf."""
+    upper = " ".join(str(text or "").upper().split())
+    if not upper:
+        return False
+    compact = re.sub(r"[^A-Z0-9]", "", upper)
+    title_score = sum(
+        any(variant in upper for variant in variants)
+        for variants in (
+            ("DAFTAR", "OAFTAR"),
+            ("RINCIAN", "RINGIAN", "RINCIAAN"),
+            ("PERMINTAAN", "PERINTAAN"),
+            ("PEMBAYARAN", "PEMBAYARAR"),
+        )
+    )
+    has_drpp_marker = "DRPP" in compact
+    has_receipt_table = "BUKTI PENGELUARAN" in upper and re.search(r"\d{3,6}\s*/\s*KW", upper, re.I)
+    return (title_score >= 3 and has_drpp_marker) or (title_score >= 3 and has_receipt_table)
+
+
+def _looks_like_spm_text(text):
+    """Probe OCR scan kadang menjatuhkan huruf pada judul SPM."""
+    upper = " ".join(str(text or "").upper().split())
+    compact = re.sub(r"[^A-Z0-9]", "", upper)
+    if not upper:
+        return False
+    has_letterhead = "BADAN PUSAT STAT" in upper or "KEMENTERIAN" in upper
+    has_surat = "SURAT" in upper
+    has_perintah = "PERINTAH" in upper or "PERNTAH" in upper or "PERINTA" in upper
+    has_membayar = "MEMBAYAR" in upper or "EMBAYAR" in upper or "EMOAYAR" in upper or "MEMBAYAR" in compact
+    has_spm_fields = any(anchor in upper for anchor in ("JENIS TAGIHAN", "CARA BAYAR", "DIPA", "KPPN"))
+    return has_surat and has_perintah and has_membayar and (has_letterhead or has_spm_fields)
+
+
 def _classification(text):
     raw_text = str(text or "")
     upper = " ".join(raw_text.upper().split())
@@ -666,8 +710,14 @@ def _classification(text):
         or has_table_header
     ):
         return "DRPP_SUMMARY", 95, ["struktur tabel DRPP"]
+    if _looks_like_drpp_summary_text(raw_text):
+        return "DRPP_SUMMARY", 80, ["struktur DRPP dari OCR probe"]
+    if _looks_like_spm_text(raw_text):
+        return "SPM", 75, ["struktur SPM dari OCR probe"]
     receipt_anchors = (
-        "UNTUK PEMBAYARAN", "NILAI BRUTO", "NILAI NETTO", "AKUN", "PEMBEBANAN",
+        "UNTUK PEMBAYARAN", "NILAI BRUTO", "JUMLAH BRUTO", "BRUTO",
+        "NILAI NETTO", "JUMLAH DIBAYAR", "NETTO", "POTONGAN",
+        "AKUN", "PEMBEBANAN",
     )
     if receipt_number and (
         "NO KUITANSI" in upper
@@ -913,6 +963,71 @@ def verify_drpp_rows_high_res(items, pages, printed_total, dpi=360):
     return verification
 
 
+def _resolve_drpp_printed_total(number, pages, structural_total=Decimal("0"), structural_count=0):
+    candidates = []
+    for page in pages:
+        candidates.extend(extract_drpp_total_candidates(
+            page.get("text") or page.get("native_text") or "",
+            file_name=page.get("file_name", ""),
+            page_number=page.get("page_number"),
+            document_type=page.get("document_type", ""),
+            nomor_drpp=number,
+        ))
+    current = next((item for item in candidates if item.get("accepted") and item.get("kind") == "explicit_current"), None)
+    previous = next((item for item in candidates if item.get("kind") == "cumulative_previous"), None)
+    through = next((item for item in candidates if item.get("kind") == "cumulative_through_current"), None)
+    current_rejected_as_inconsistent = False
+    if current and previous and through:
+        if _money(current.get("value")) + _money(previous.get("value")) != _money(through.get("value")):
+            current["accepted"] = False
+            current["reason"] = "inconsistent_with_cumulative_totals"
+            current_rejected_as_inconsistent = True
+    if current_rejected_as_inconsistent and structural_count > 0 and _money(structural_total) > 0:
+        summary_page = next(
+            (
+                page for page in pages
+                if page.get("document_type") == "DRPP_SUMMARY"
+                and (not number or page.get("drpp_detected") in {"", None, number} or number in str(page.get("text") or ""))
+            ),
+            {},
+        )
+        candidates.append({
+            "raw_label": "SUM(DRPP item rows)",
+            "raw_money_token": str(structural_total),
+            "normalized_value": _money(structural_total),
+            "value": _money(structural_total),
+            "file": summary_page.get("file_name", ""),
+            "page": summary_page.get("page_number"),
+            "document_type": "DRPP_SUMMARY",
+            "nomor_drpp": number,
+            "expected_drpp": number,
+            "extraction_method": "drpp_structural_row_sum",
+            "confidence": 90,
+            "source_rank": 90,
+            "kind": "structural_rows_after_bad_current_label",
+            "selected": False,
+            "accepted": True,
+            "reason": "eligible_after_rejecting_inconsistent_current_label",
+        })
+    selected = select_drpp_printed_total_candidate(candidates)
+    conflict = False
+    if selected:
+        selected_value = _money(selected.get("value"))
+        accepted = [item for item in candidates if item.get("accepted") and _money(item.get("value")) > 0]
+        conflict = any(_money(item.get("value")) != selected_value for item in accepted)
+        if conflict:
+            for item in accepted:
+                if item is not selected and _money(item.get("value")) != selected_value:
+                    item["accepted"] = False
+                    item["reason"] = "conflicts_with_selected_total"
+    return {
+        "selected": selected,
+        "candidates": candidates,
+        "rejected": [item for item in candidates if not item.get("accepted")],
+        "conflict": conflict,
+    }
+
+
 def parse_drpp_summary(number, pages):
     summaries = [page for page in pages if page.get("document_type") == "DRPP_SUMMARY"]
     if not summaries:
@@ -978,10 +1093,26 @@ def parse_drpp_summary(number, pages):
                 item["kw_reconciled_from_filename"] = True
                 remaining_kw.remove(candidate)
     parsed.setdefault("metadata", {})["nomor_drpp"] = number or parsed["metadata"].get("nomor_drpp", "")
-    header = _parse_drpp_header(summary.get("text") or "")
+    selected_text = "\n".join(str(page.get("text") or "") for page in selected)
+    header = _parse_drpp_header(selected_text or summary.get("text") or "")
     for key, value in header.items():
         if value not in (None, "", Decimal("0")) and not parsed["metadata"].get(key):
             parsed["metadata"][key] = value
+    structural_total = sum((_money(item.get("jumlah")) for item in parsed.get("items", [])), Decimal("0"))
+    total_evidence = _resolve_drpp_printed_total(
+        number,
+        pages,
+        structural_total=structural_total,
+        structural_count=len(parsed.get("items", [])),
+    )
+    evidence_total = _money((total_evidence.get("selected") or {}).get("value"))
+    if evidence_total > 0:
+        parsed["metadata"]["printed_total"] = evidence_total
+        parsed["metadata"]["total_drpp"] = evidence_total
+        parsed["metadata"]["printed_total_provenance"] = total_evidence["selected"]
+        parsed["metadata"]["printed_total_candidates"] = total_evidence["candidates"]
+        parsed["metadata"]["printed_total_rejected_candidates"] = total_evidence["rejected"]
+        parsed["metadata"]["printed_total_conflict"] = total_evidence["conflict"]
     parsed["file_name"] = summary["file_name"]
     parsed["source_pages"] = [
         {"file_name": page["file_name"], "page_number": page["page_number"], "page_hash": page.get("page_hash", "")}
@@ -1006,7 +1137,7 @@ def parse_drpp_summary(number, pages):
             "Total item tidak sama dengan total cetak DRPP; nominal tidak dikoreksi otomatis."
         )
     for item in parsed.get("items", []):
-        item["no_drpp"] = parsed["metadata"]["nomor_drpp"]
+        item["no_drpp"] = parsed["metadata"].get("nomor_drpp_full") or parsed["metadata"].get("nomor_drpp")
     return parsed
 
 
@@ -1019,12 +1150,17 @@ def _parse_drpp_header(text):
 
     tahun = value(r"(?:TAHUN\s+ANGGARAN|TAHUN)\s*[:\-]?\s*(20\d{2})")
     bulan = value(r"\bBULAN\s*[:\-]?\s*([A-Z]+)")
-    total = value(r"(?:TOTAL\s+DRPP|JUMLAH\s+(?:SPP\s+INI|LAMPIRAN))\D{0,20}(\d{1,3}(?:[.,]\d{3})+)")
+    total = extract_drpp_printed_total(upper)
     pagu = value(r"PAGU\s+(?:OUTPUT|RO)\D{0,20}(\d{1,3}(?:[.,]\d{3})+)")
+    nomor_drpp_bare = _drpp_number_from_text(upper)
+    satker = value(r"(?:KODE\s+)?SATUAN\s+KERJA\s*[:\-]?\s*(\d{4,8})") or value(r"(?:KODE\s+SATKER|SATKER)\s*[:\-]?\s*(\d{4,8})")
+    # Construct full canonical DRPP number
+    nomor_drpp_full = f"{nomor_drpp_bare}/DRPP/{satker}/{tahun}" if nomor_drpp_bare and satker and tahun else nomor_drpp_bare
     return {
-        "nomor_drpp": _drpp_number_from_text(upper),
+        "nomor_drpp": nomor_drpp_bare,
+        "nomor_drpp_full": nomor_drpp_full,
         "tanggal_drpp": value(r"TANGGAL\s+DRPP\s*[:\-]?\s*([0-3]?\d[\-/ ][A-Z0-9]+[\-/ ]20\d{2})"),
-        "satker_code": value(r"(?:KODE\s+SATKER|SATKER)\s*[:\-]?\s*(\d{4,8})"),
+        "satker_code": satker,
         "kode_kegiatan": value(r"(?:KODE\s+)?KEGIATAN\s*[:\-]?\s*(\d{4})"),
         "kode_output": value(r"(?:KODE\s+)?OUTPUT\s*[:\-]?\s*([A-Z0-9.]{3,20})"),
         "tahun_anggaran": int(tahun) if tahun else None,
@@ -1245,38 +1381,77 @@ def _money(value):
 
 def _normalize_kw(value):
     text = str(value or "").upper().strip()
-    full = re.search(r"(\d{3,6})/KW/(\d{5,9})/(20\d{2})", text)
+    full = re.search(r"(\d{3,6})\s*/\s*KW\s*/\s*([0-9\s]{5,12})\s*/\s*(20\d{2})", text)
     if full:
-        return f"{full.group(1).zfill(5)}/KW/{full.group(2)}/{full.group(3)}"
+        satker = re.sub(r"\s+", "", full.group(2))
+        return f"{full.group(1).zfill(5)}/KW/{satker}/{full.group(3)}"
     short = re.search(r"\d{1,6}", text)
     return short.group(0).zfill(5) if short else ""
 
 
 def _receipt_number(text):
     match = re.search(
-        r"(?:NO\.?\s*KUITANSI|NOMOR)\s*[:\-]?\s*(\d{3,6})\s*/\s*KW\s*/\s*(\d{5,9})\s*/\s*(20\d{2})",
+        r"(?:NO\.?\s*KUITANSI|NOMOR)\s*[:\-]?\s*(\d{3,6})\s*/\s*KW\s*/\s*([0-9\s]{5,12})\s*/\s*(20\d{2})",
         str(text or ""),
         re.I,
     )
     if not match:
-        match = re.search(r"\b(\d{3,6})\s*/\s*KW\s*/\s*(\d{5,9})\s*/\s*(20\d{2})\b", str(text or ""), re.I)
-    return (
-        f"{match.group(1).zfill(5)}/KW/{match.group(2)}/{match.group(3)}"
-        if match else ""
-    )
+        match = re.search(r"\b(\d{3,6})\s*/\s*KW\s*/\s*([0-9\s]{5,12})\s*/\s*(20\d{2})\b", str(text or ""), re.I)
+    if not match:
+        return ""
+    satker = re.sub(r"\s+", "", match.group(2))
+    return f"{match.group(1).zfill(5)}/KW/{satker}/{match.group(3)}"
+
+
+def _kw_short(value):
+    normalized = _normalize_kw(value)
+    return normalized.split("/", 1)[0] if normalized else ""
+
+
+def _text_has_labeled_kw_short(text, short):
+    if not short:
+        return False
+    number = re.escape(short.lstrip("0") or short)
+    return bool(re.search(
+        rf"\b(?:NO\.?\s*KUITANSI|NOMOR\s*KUITANSI|KUITANSI|KW|NO\.?)\D{{0,25}}0*{number}\b",
+        str(text or ""),
+        re.I,
+    ))
 
 
 def _labeled_money(text, labels):
     label_pattern = "|".join(labels)
+    normalized = (
+        str(text or "")
+        .upper()
+        .replace("JUMTAH", "JUMLAH")
+        .replace("JUMIAH", "JUMLAH")
+        .replace("JUM1AH", "JUMLAH")
+    )
     match = re.search(
-        rf"(?:{label_pattern})\s*[:\-]?\s*(?:RP\s*)?([0-9OIL]{{1,3}}(?:[.,][0-9OIL]{{3}})*(?:[.,][0-9OIL]{{2}})?)",
-        str(text or "").upper(),
+        rf"(?:{label_pattern})\s*[:\-]?\s*(?:RP\.?\s*)?([0-9OIL]{{1,3}}(?:[.,][0-9OIL]{{3}})*(?:[.,][0-9OIL]{{2}})?)(?![0-9OIL])",
+        normalized,
         re.I,
     )
     if not match:
         return None
     value = match.group(1).replace("O", "0").replace("I", "1").replace("L", "1")
     return _money(value)
+
+
+def _money_after_account(text, account):
+    account = str(account or "").strip()
+    if not account:
+        return None
+    money_pattern = r"[0-9OIL]{1,3}(?:[.,][0-9OIL]{3})*(?:[.,][0-9OIL]{2})?(?![0-9OIL])"
+    match = re.search(
+        rf"\b{re.escape(account)}\b\D{{0,40}}(?:RP\.?\s*)?({money_pattern})",
+        str(text or "").upper(),
+        re.I,
+    )
+    if not match:
+        return None
+    return _money(match.group(1).replace("O", "0").replace("I", "1").replace("L", "1"))
 
 
 def _receipt_description(text):
@@ -1294,7 +1469,10 @@ def _receipt_item_from_page(page):
     """Bangun kandidat item tanpa menganggap kuitansi sebagai total DRPP."""
     text = str(page.get("text") or "")
     no_bukti = _receipt_number(text)
-    bruto = _labeled_money(text, (r"NILAI\s+BRUTO", r"JUMLAH\s+BRUTO"))
+    bruto = _labeled_money(
+        text,
+        (r"NILAI\s+BRUTO", r"JUMLAH\s+BRUTO", r"JUMLAH\s+PENGELUARAN", r"\bBRUTO\b"),
+    )
     if not no_bukti or bruto is None or bruto <= 0:
         return None
     account_match = re.search(r"\bAKUN\s*[:\-]?\s*(5\d{5})\b", text, re.I)
@@ -1302,8 +1480,14 @@ def _receipt_item_from_page(page):
     account = account_match.group(1) if account_match else ""
     if not account and len(charges) == 1:
         account = next(iter(charges)).rsplit(".", 1)[-1]
-    netto = _labeled_money(text, (r"NILAI\s+NETTO", r"JUMLAH\s+DIBAYAR"))
-    pph21 = _labeled_money(text, (r"PPH\s*(?:PASAL\s*)?21",)) or Decimal("0")
+    netto = _labeled_money(
+        text,
+        (r"NILAI\s+NETTO", r"JUMLAH\s+DIBAYAR", r"JUMLAH\s+BERSIH", r"YANG\s+DIBAYARKAN", r"\bNETTO\b"),
+    )
+    pph21 = _labeled_money(
+        text,
+        (r"PPH\s*(?:PASAL\s*)?21", r"JUMLAH\s+POTONGAN", r"\bPOTONGAN\b"),
+    ) or Decimal("0")
     fp = _labeled_money(text, (r"\bFP\b",)) or Decimal("0")
     return {
         "no_bukti": no_bukti,
@@ -1325,16 +1509,26 @@ def _receipt_item_from_page(page):
 
 
 def _receipt_page_score(item, page):
-    if page.get("document_type") not in KW_PAGE_TYPES:
+    if page.get("document_type") not in KW_PAGE_TYPES and page.get("document_type") != "SUPPORT_DOCUMENT":
         return 0
     text = str(page.get("text") or "")
     receipt = _receipt_number(text)
     item_kw = _normalize_kw(item.get("no_bukti"))
     score = 6 if receipt and receipt == item_kw else 0
+    if not score and _text_has_labeled_kw_short(text, _kw_short(item_kw)):
+        score += 3
+    item_account = str(item.get("akun") or "")
     account_match = re.search(r"\bAKUN\s*[:\-]?\s*(5\d{5})\b", text, re.I)
-    if account_match and account_match.group(1) == str(item.get("akun") or ""):
+    if account_match and account_match.group(1) == item_account:
         score += 2
-    bruto = _labeled_money(text, (r"NILAI\s+BRUTO", r"JUMLAH\s+BRUTO"))
+    elif item_account and re.search(rf"\b{re.escape(item_account)}\b", text):
+        score += 2
+    bruto = _labeled_money(
+        text,
+        (r"NILAI\s+BRUTO", r"JUMLAH\s+BRUTO", r"JUMLAH\s+PENGELUARAN", r"\bBRUTO\b"),
+    )
+    if bruto is None:
+        bruto = _money_after_account(text, item_account)
     if bruto is not None and bruto > 0 and bruto == _money(item.get("bruto") or item.get("jumlah")):
         score += 2
     return score
@@ -1360,9 +1554,20 @@ def parse_kw_support(items, pages, year=""):
         upper = text.upper()
         fp = re.search(r"(?:NOMOR\s+SERI\s+FAKTUR\s+PAJAK|FAKTUR\s+PAJAK)\s*[:\-]?\s*([0-9.\-]{10,25})", upper)
         fp_amount = _labeled_money(upper, (r"\bFP\b",))
-        pph21 = _labeled_money(upper, (r"PPH\s*(?:PASAL\s*)?21",))
-        bruto = _labeled_money(upper, (r"NILAI\s+BRUTO", r"JUMLAH\s+BRUTO"))
-        netto = _labeled_money(upper, (r"NILAI\s+NETTO", r"JUMLAH\s+DIBAYAR"))
+        pph21 = _labeled_money(
+            upper,
+            (r"PPH\s*(?:PASAL\s*)?21", r"JUMLAH\s+POTONGAN", r"\bPOTONGAN\b"),
+        )
+        bruto = _labeled_money(
+            upper,
+            (r"NILAI\s+BRUTO", r"JUMLAH\s+BRUTO", r"JUMLAH\s+PENGELUARAN", r"\bBRUTO\b"),
+        )
+        if bruto is None:
+            bruto = _money_after_account(upper, item.get("akun"))
+        netto = _labeled_money(
+            upper,
+            (r"NILAI\s+NETTO", r"JUMLAH\s+DIBAYAR", r"JUMLAH\s+BERSIH", r"YANG\s+DIBAYARKAN", r"\bNETTO\b"),
+        )
         receipt_numbers = {_receipt_number(page.get("text")) for page in candidates}
         receipt_numbers.discard("")
         if len(receipt_numbers) == 1:
@@ -1387,6 +1592,8 @@ def parse_kw_support(items, pages, year=""):
             item["pph21"] = pph21
         if netto is not None:
             item["netto"] = netto
+        elif bruto is not None and pph21 is not None:
+            item["netto"] = max(bruto - pph21 - (fp_amount or Decimal("0")), Decimal("0"))
         elif pph21 is not None and pph21 > 0:
             item["netto"] = max(_money(item.get("bruto") or item.get("jumlah")) - pph21, Decimal("0"))
         description = _receipt_description(text)
@@ -1451,6 +1658,13 @@ def _recover_missing_candidate_pages(
             }
         group_pages = [page for page in page_index if page.get("file_name") in target_files]
         recover_from_receipts = not items
+        source_page_numbers = [
+            int(source.get("page_number") or 0)
+            for source in drpp.get("source_pages") or []
+            if source.get("page_number")
+        ]
+        first_source_page = min(source_page_numbers, default=0)
+        receipt_recovery_window = max(1, int(os.getenv("DRPP_RECEIPT_RECOVERY_PAGE_WINDOW", "8")))
 
         def cache_identity_collides(page):
             page_hash = page.get("page_hash")
@@ -1468,6 +1682,32 @@ def _recover_missing_candidate_pages(
             parsed = sum((_money(item.get("bruto") or item.get("jumlah")) for item in items), Decimal("0"))
             source_count = int(meta.get("source_item_count") or len(items))
             missing_receipts = [item for item in items if not _matching_receipt_pages(item, group_pages)]
+            unread_receipt_candidates = any(
+                page.get("is_representative") is not False
+                and int(page.get("page_number") or 0) > first_source_page
+                and int(page.get("page_number") or 0) <= first_source_page + receipt_recovery_window
+                and page.get("type_hint") in {"SPM", "KUITANSI", "DRPP_SUMMARY"}
+                and page.get("document_type") not in {"SPM", "SPP", "SP2D", "DRPP_SUMMARY", "DRPP_COA"}
+                and not str(page.get("text") or page.get("native_text") or "").strip()
+                for page in group_pages
+            )
+            rows_complete = (
+                bool(items)
+                and source_count <= len(items)
+                and not (missing_receipts and unread_receipt_candidates)
+                and all(
+                    _normalize_kw(item.get("no_bukti") or item.get("no_kuitansi"))
+                    and item.get("akun")
+                    and _money(item.get("bruto") or item.get("jumlah")) > 0
+                    for item in items
+                )
+            )
+            if rows_complete:
+                return False
+            is_balanced = printed > 0 and parsed == printed and source_count <= len(items)
+            if is_balanced and not missing_receipts:
+                return False
+
             return (
                 printed <= 0
                 or parsed != printed
@@ -1478,7 +1718,15 @@ def _recover_missing_candidate_pages(
         if not unresolved():
             continue
         for page in sorted(group_pages, key=lambda item: item.get("page_number", 0)):
-            if not page.get("is_representative", True):
+            if page.get("is_representative") is False:
+                continue
+            if items and int(page.get("page_number") or 0) <= first_source_page:
+                continue
+            if items and int(page.get("page_number") or 0) > first_source_page + receipt_recovery_window:
+                continue
+            if items and page.get("type_hint") not in {"SPM", "KUITANSI", "DRPP_SUMMARY"}:
+                continue
+            if items and page.get("document_type") in {"SPM", "SPP", "SP2D", "DRPP_SUMMARY", "DRPP_COA"}:
                 continue
             page_key = _recovery_page_key(page)
             if page_key in processed_page_keys:
@@ -1496,7 +1744,30 @@ def _recover_missing_candidate_pages(
             # yang berbeda agar kuitansi berikutnya tidak memakai teks halaman
             # sebelumnya.
             try:
-                result = _ocr_page(page, use_cache=not cache_identity_collides(page))
+                use_recovery_cache = not cache_identity_collides(page)
+                if items and not str(page.get("text") or page.get("native_text") or "").strip():
+                    use_recovery_cache = False
+                if use_recovery_cache:
+                    cached_recovery = _load_page_cache(page, "tesseract-ind+eng-v3")
+                    if cached_recovery and (
+                        cached_recovery.get("cache_empty")
+                        or not str(cached_recovery.get("text") or "").strip()
+                    ):
+                        use_recovery_cache = False
+                recovery_rotations = (0,) if items else None
+                recovery_dpi = 180 if items else 220
+                recovery_timeout = int(os.getenv("OCR_RECEIPT_RECOVERY_TIMEOUT_SECONDS", "3")) if items else None
+                recovery_configs = ("--psm 6",) if items else None
+                recovery_langs = ("eng", "ind+eng", "") if items else None
+                result = _ocr_page(
+                    page,
+                    use_cache=use_recovery_cache,
+                    rotations=recovery_rotations,
+                    dpi=recovery_dpi,
+                    timeout=recovery_timeout,
+                    configs=recovery_configs,
+                    lang_attempts=recovery_langs,
+                )
             except Exception as exc:
                 page["ocr_duration"] = time.monotonic() - started
                 page["ocr_called"] = True
@@ -1518,6 +1789,8 @@ def _recover_missing_candidate_pages(
                 page["drpp_detected"] = detected
             if page["document_type"] in {"DRPP_SUMMARY", "DRPP_COA"}:
                 structural_page_found = True
+            if items and (page["document_type"] in KW_PAGE_TYPES or page["document_type"] == "SUPPORT_DOCUMENT"):
+                parse_kw_support(items, [page], year=str(meta.get("tahun") or ""))
             if recover_from_receipts and page["document_type"] in KW_PAGE_TYPES:
                 recovered_item = _receipt_item_from_page(page)
                 if recovered_item and recovered_item["no_bukti"] not in {
@@ -1633,7 +1906,7 @@ def resolve_spm_parent(drpps, page_index):
     # database fallback, dan nama arsip/member.
     for candidate in page_index:
         if candidate.get("document_type") == "SPM":
-            identity_cache_engine = "spm-detail-v2"
+            identity_cache_engine = "spm-detail-v3"
             spm = _load_page_cache(candidate, identity_cache_engine)
             if not spm:
                 summary_boundaries = [
@@ -1766,7 +2039,7 @@ def build_transaction_items(drpp, spm=None):
                 "jenis_spm": spm_meta.get("jenis_spm") or "",
                 "no_bukti": no_kw,
                 "no_kuitansi": no_kw,
-                "no_drpp": meta.get("nomor_drpp") or "",
+                "no_drpp": meta.get("nomor_drpp_full") or meta.get("nomor_drpp") or "",
                 "keperluan": item.get("keperluan") or item.get("deskripsi") or "",
                 "deskripsi": item.get("keperluan") or item.get("deskripsi") or "",
                 "jumlah": bruto,
@@ -2686,12 +2959,12 @@ def evaluate_drpp_group_commitability(
         errors.append("Total referensi DRPP tidak ditemukan atau bernilai nol.")
     elif actual_total != expected_total:
         errors.append(f"Total baris Rp{actual_total:,.0f} tidak sama dengan total DRPP Rp{expected_total:,.0f}.")
-    missing_receipts = metadata.get("missing_receipt_count") or 0
-    if missing_receipts:
-        errors.append(f"Terdapat {missing_receipts} kuitansi sumber yang belum memiliki detail.")
+    if metadata.get("printed_total_conflict"):
+        errors.append("Kandidat total referensi DRPP saling berbeda.")
     if metadata.get("identity_conflict") or metadata.get("nomor_spm_conflict"):
         errors.append("Konflik identitas utama ditemukan.")
     seen = set()
+    row_detail_errors = []
     for item in items:
         no_kuitansi = _group_item_value(item, "no_kuitansi", "no_bukti")
         akun = str(_group_item_value(item, "akun") or "")
@@ -2702,27 +2975,38 @@ def evaluate_drpp_group_commitability(
             _group_item_value(item, "status_detail", "batch_status", "status") or ""
         ).upper()
         if not no_kuitansi:
-            errors.append("Nomor kuitansi kosong.")
+            row_detail_errors.append("Nomor kuitansi kosong.")
         if not akun:
-            errors.append("Akun kosong.")
+            row_detail_errors.append("Akun kosong.")
         if _money(_group_item_value(item, "nilai_bruto", "bruto", "jumlah")) <= 0:
-            errors.append("Nilai bruto nol tanpa bukti.")
+            row_detail_errors.append("Nilai bruto nol tanpa bukti.")
         if not nomor_spm:
-            errors.append("Nomor SPM kosong.")
+            row_detail_errors.append("Nomor SPM kosong.")
         if not tanggal_spm:
-            errors.append("Tanggal SPM kosong.")
+            row_detail_errors.append("Tanggal SPM kosong.")
         if not pembebanan:
-            errors.append("Pembebanan kosong.")
+            row_detail_errors.append("Pembebanan kosong.")
         elif "0000" in pembebanan:
-            errors.append("Pembebanan mengandung 0000.")
+            row_detail_errors.append("Pembebanan mengandung 0000.")
         elif akun and not pembebanan.endswith(akun):
-            errors.append("Akhiran Pembebanan tidak sama dengan Akun.")
+            row_detail_errors.append("Akhiran Pembebanan tidak sama dengan Akun.")
         if status_detail in {"GAGAL", "PERLU_REVIEW", "PERLU REVIEW"}:
-            errors.append("Terdapat field transaksi yang masih perlu review.")
+            row_detail_errors.append("Terdapat field transaksi yang masih perlu review.")
         key = (nomor_spm, no_kuitansi, akun)
         if key in seen:
-            errors.append("Duplikat exact key ditemukan dalam upload yang sama.")
+            row_detail_errors.append("Duplikat exact key ditemukan dalam upload yang sama.")
         seen.add(key)
+    errors.extend(row_detail_errors)
+    missing_receipts = metadata.get("missing_receipt_count") or 0
+    rows_are_reconciled = (
+        bool(items)
+        and expected_count > 0
+        and len(items) == expected_count
+        and expected_total > 0
+        and actual_total == expected_total
+    )
+    if missing_receipts and row_detail_errors:
+        errors.append(f"Terdapat {missing_receipts} kuitansi sumber yang belum memiliki detail.")
     if parser_validation and (
         parser_validation.get("status") != "BALANCE"
         or parser_validation.get("can_commit") is False
@@ -2730,6 +3014,11 @@ def evaluate_drpp_group_commitability(
         parser_errors = parser_validation.get("errors") or [
             parser_validation.get("status_message") or "Validasi parser masih perlu review."
         ]
+        if missing_receipts and not row_detail_errors:
+            parser_errors = [
+                error for error in parser_errors
+                if not re.search(r"kuitansi\s+sumber.*belum\s+memiliki\s+detail", str(error), re.I)
+            ]
         errors.extend(parser_errors)
     errors.extend(extra_errors or [])
     errors = list(dict.fromkeys(errors))
@@ -2814,14 +3103,33 @@ def parse_drpp_upload_batch(file_path, ocr=True):
         discover_embedded_drpp_pages(page_index, ocr=ocr)
         page_index = deduplicate_pages(page_index)
         classify_candidate_pages(page_index, ocr=ocr)
+
+        base_spm, base_sp2d_parent = resolve_spm_parent([], page_index)
+        base_meta = (base_spm or {}).get("metadata") or {}
+        spm_family = normalize_spm_family(base_meta.get("jenis_spm") or base_meta.get("jenis_tagihan"))
+        policy = document_requirement_policy(spm_family)
+
+        if spm_family == SPMFamily.GUP_KKP and ocr:
+            if not any(p.get("document_type") == "KKP_PAYMENT_LIST" for p in page_index):
+                for page in page_index:
+                    if page.get("is_representative") and page.get("document_type") in {"UNKNOWN", "SUPPORT_DOCUMENT"}:
+                        started_probe = time.monotonic()
+                        probe = _probe_page_text(page)
+                        page["probe_duration"] = time.monotonic() - started_probe
+                        page["probe_ocr_called"] = not probe.get("cache_hit", False)
+                        page["probe_cache_hit"] = bool(probe.get("cache_hit"))
+                        page["text"] = probe.get("text", "")
+                        page["document_type"], page["confidence"], page["evidence"] = _classification(page["text"])
+                        if page["document_type"] == "KKP_PAYMENT_LIST":
+                            break
+
         if any(
             page.get("document_type") in {"KKP_PAYMENT_LIST", "KKP_CARD_STATEMENT", "KKP_PAYMENT_ORDER"}
             for page in page_index
         ):
-            kkp_spm, kkp_sp2d_parent = resolve_spm_parent([], page_index)
-            kkp_meta = (kkp_spm or {}).get("metadata") or {}
-            family = normalize_spm_family(kkp_meta.get("jenis_spm") or kkp_meta.get("jenis_tagihan"))
-            policy = document_requirement_policy(family)
+            kkp_spm = base_spm
+            kkp_sp2d_parent = base_sp2d_parent
+            family = spm_family
             if family == SPMFamily.GUP_KKP:
                 package_sha = hashlib.sha256(
                     "|".join(sorted(item["sha256"] for item in manifest)).encode("utf-8")
@@ -2922,38 +3230,54 @@ def parse_drpp_upload_batch(file_path, ocr=True):
                     coa_rows,
                     activity=drpp.get("metadata", {}).get("kode_kegiatan", ""),
                 )
+                parse_kw_support(
+                    drpp.get("items", []),
+                    group_pages,
+                    year=str(drpp.get("metadata", {}).get("tahun") or ""),
+                )
                 parsed.append(drpp)
             return parsed, missing
 
         drpps, missing_numbers = read_drpps()
-        recovery_targets = drpps or [
-            {"metadata": {"nomor_drpp": number, "printed_total": Decimal("0")}, "items": []}
-            for number in missing_numbers
-        ]
-        if _recover_missing_candidate_pages(
-            recovery_targets,
-            page_index,
-            ocr=ocr,
-            processed_page_keys=processed_page_keys,
-            diagnostics=recovery_diagnostics,
-        ):
-            drpps, missing_numbers = read_drpps()
-        for number in missing_numbers:
-            groups.append({"no_drpp": number, "items": [], "validation": {"status": "PERLU_REVIEW", "can_commit": False, "errors": ["Halaman DRPP tidak ditemukan."]}})
+
+        if policy == DocumentRequirement.DRPP_REQUIRED or drpps:
+            recovery_targets = drpps or [
+                {"metadata": {"nomor_drpp": number, "printed_total": Decimal("0")}, "items": []}
+                for number in missing_numbers
+            ]
+            if _recover_missing_candidate_pages(
+                recovery_targets,
+                page_index,
+                ocr=ocr,
+                processed_page_keys=processed_page_keys,
+                diagnostics=recovery_diagnostics,
+            ):
+                drpps, missing_numbers = read_drpps()
+
+            if policy == DocumentRequirement.DRPP_REQUIRED:
+                for number in missing_numbers:
+                    groups.append({"no_drpp": number, "items": [], "validation": {"status": "PERLU_REVIEW", "can_commit": False, "errors": ["Halaman DRPP tidak ditemukan."]}})
+            else:
+                for number in missing_numbers:
+                    groups.append({"no_drpp": number, "items": [], "validation": {"status": "PERLU_REVIEW", "can_commit": False, "errors": []}})
+        else:
+            for number in missing_numbers:
+                groups.append({"no_drpp": number, "items": [], "validation": {"status": "PERLU_REVIEW", "can_commit": False, "errors": []}})
 
         spm, sp2d_parent = resolve_spm_parent(drpps, page_index)
         _apply_group_date_consensus(drpps, spm)
         for drpp in drpps:
-            number = drpp.get("metadata", {}).get("nomor_drpp", "")
+            # Use canonical no_drpp format for group key matching
+            number = drpp.get("metadata", {}).get("nomor_drpp_full") or drpp.get("metadata", {}).get("nomor_drpp", "")
             group_pages = pages_for(number)
             year = drpp.get("metadata", {}).get("tahun") or getattr((spm or {}).get("metadata", {}).get("tanggal_spm"), "year", "")
+            parse_kw_support(drpp.get("items", []), group_pages, year=str(year or ""))
             missing_receipts = sum(
                 1 for item in drpp.get("items", [])
                 if not _matching_receipt_pages(item, group_pages)
             )
             drpp.setdefault("metadata", {})["missing_receipt_count"] = missing_receipts
             drpp["metadata"]["detail_receipt_count"] = len(drpp.get("items", [])) - missing_receipts
-            parse_kw_support(drpp.get("items", []), group_pages, year=str(year or ""))
             items = build_transaction_items(drpp, spm)
             duplicate_kw = []
             for item in items:

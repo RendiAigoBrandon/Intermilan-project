@@ -22,6 +22,11 @@ from apps.core.drpp_batch_parser import (
     evaluate_kkp_group_commitability,
     parse_drpp_upload_batch,
 )
+from apps.core.dk_draft_adapter import (
+    DraftSource,
+    DraftStatus,
+    build_dk_drafts_from_parsed_data,
+)
 from apps.core.document_policy import SPMFamily, normalize_spm_family
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_date, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
@@ -227,6 +232,19 @@ def paket_spm_list(request):
                     parsed = parse_paket_spm_zip(file_path, ocr=use_ocr)
             except Exception as exc:
                 parsed = {"ok": False, "files": [], "spm": None, "drpp": None, "kw_items": [], "warnings": [str(exc)], "temp_dir": ""}
+
+        # Generate 15-column D_K drafts using adapter
+        # This populates parsed_data["dk_drafts"] without modifying existing keys
+        try:
+            parsed["dk_drafts"] = build_dk_drafts_from_parsed_data(
+                parsed,
+                satker=satker,
+                tahun=tahun,
+                sp2d_match={"bulan": bulan, "cara_pembayaran": spm_meta.get("cara_pembayaran")} if bulan else None,
+            )
+        except Exception:
+            # Adapter failure should not block upload - draft generation can be deferred
+            parsed["dk_drafts"] = []
 
         # 2. Simpan ke database sebagai DRAFT
         spm_meta = (parsed.get("spm") or {}).get("metadata", {})
@@ -481,6 +499,10 @@ def paket_spm_preview(request):
                         row["status_detail"] = "PERLU_REVIEW" if review_fields else "LENGKAP"
                         preview_rows.append(row)
                 parsed["preview_rows"] = preview_rows
+
+                # Update dk_drafts with manual edits (manual_confirmed source)
+                # This preserves manual values when draft is saved
+                _update_dk_drafts_with_manual_edits(parsed, preview_rows)
                 if preview_rows:
                     first = preview_rows[0]
                     _meta["nomor_spm"] = first.get("nomor_spm") or _meta.get("nomor_spm") or paket.nomor_spm
@@ -1293,6 +1315,90 @@ def build_transaction_groups(parsed, transaction_rows):
 
 def build_kw_rows(parsed):
     return parsed.get("kw_items", []) or []
+
+
+
+def _update_dk_drafts_with_manual_edits(parsed, preview_rows):
+    """
+    Update dk_drafts with manual edits from preview form.
+
+    When operator edits a field:
+    - Update the row value
+    - field_source becomes manual_confirmed
+    - field_status becomes MANUAL_CONFIRMED
+    - Old evidence remains preserved
+    - Manual values are NOT overwritten by parser/enrichment
+
+    Helper field remains read-only (derived from akun + no_kuitansi).
+    """
+    dk_drafts = parsed.get("dk_drafts", [])
+    if not dk_drafts or not preview_rows:
+        return
+
+    # Get the 15 column field names (excluding helper which is read-only)
+    editable_fields = [
+        "akun", "bulan_sp2d", "cara_pembayaran", "nomor_spm", "tanggal_spm",
+        "jenis_spm", "no_kuitansi", "no_drpp", "deskripsi", "nilai_bruto",
+        "nilai_netto", "pembebanan", "fp", "pph21",
+    ]
+
+    for idx, edited_row in enumerate(preview_rows):
+        if idx >= len(dk_drafts):
+            break
+
+        draft = dk_drafts[idx]
+        row = draft.get("row", {})
+        metadata = draft.get("review_metadata", {})
+
+        for field in editable_fields:
+            new_value = edited_row.get(field)
+            if new_value is not None and new_value != "":
+                # Check if value changed from original
+                original_value = row.get(field)
+                if new_value != original_value:
+                    # Manual edit detected - update row with manual value
+                    row[field] = new_value
+
+                    # Update metadata
+                    metadata["field_status"][field] = DraftStatus.MANUAL_CONFIRMED
+                    metadata["field_source"][field] = DraftSource.MANUAL_CONFIRMED
+
+                    # Preserve old evidence in field_evidence (keyed by old value)
+                    if original_value is not None:
+                        old_evidence_key = f"original_{field}"
+                        metadata["field_evidence"][old_evidence_key] = original_value
+
+                    # Recalculate helper if akun or no_kuitansi changed
+                    if field in ("akun", "no_kuitansi"):
+                        _recalculate_helper(row, metadata)
+
+    # Update requires_review based on current status
+    _update_requires_review(metadata)
+
+
+def _recalculate_helper(row, metadata):
+    """Recalculate helper from akun + no_kuitansi."""
+    akun = row.get("akun")
+    no_kuitansi = row.get("no_kuitansi")
+
+    if akun and no_kuitansi:
+        helper = f"{akun}{no_kuitansi}"
+        row["helper"] = helper
+        metadata["field_status"]["helper"] = DraftStatus.DERIVED
+        metadata["field_source"]["helper"] = DraftSource.DERIVED
+    else:
+        row["helper"] = None
+        metadata["field_status"]["helper"] = DraftStatus.REVIEW
+        metadata["field_source"]["helper"] = DraftSource.NULL_REVIEW
+
+
+def _update_requires_review(metadata):
+    """Update requires_review flag based on current field statuses."""
+    review_statuses = (DraftStatus.REVIEW, DraftStatus.MISSING)
+    metadata["requires_review"] = any(
+        status in review_statuses
+        for status in metadata.get("field_status", {}).values()
+    )
 
 
 def save_many_files_as_zip(fs, upload_files):

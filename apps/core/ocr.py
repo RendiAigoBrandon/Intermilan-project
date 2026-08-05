@@ -613,14 +613,15 @@ def auto_rotate_for_ocr(pytesseract, image):
         return image
 
 
-def tesseract_page_text(pytesseract, image):
-    configs = ["--psm 6", "--psm 4", "--psm 11"]
-    lang_attempts = ["ind+eng", "eng", ""]
+def tesseract_page_text(pytesseract, image, timeout=None, configs=None, lang_attempts=None):
+    configs = configs or ["--psm 6", "--psm 4", "--psm 11"]
+    lang_attempts = lang_attempts or ["ind+eng", "eng", ""]
+    timeout = int(timeout if timeout is not None else os.getenv("OCR_TESSERACT_TIMEOUT_SECONDS", "25"))
     warnings = []
     for config in configs:
         for lang in lang_attempts:
             try:
-                kwargs = {"config": config, "output_type": pytesseract.Output.DICT}
+                kwargs = {"config": config, "output_type": pytesseract.Output.DICT, "timeout": timeout}
                 if lang:
                     kwargs["lang"] = lang
                 data = pytesseract.image_to_data(image, **kwargs)
@@ -668,20 +669,42 @@ def rotation_score_is_strong(text, confidence, score):
     return False
 
 
-def tesseract_page_text_best_rotation(pytesseract, image, document_type=None):
+def tesseract_page_text_best_rotation(
+    pytesseract,
+    image,
+    document_type=None,
+    rotations=None,
+    timeout=None,
+    configs=None,
+    lang_attempts=None,
+):
     best = ("", 0.0, [], [], 0, 0.0)
     warnings = []
     tried_rotations = []
     # Untuk halaman landscape, 90 dan 270 harus dibandingkan. OCR terbalik
     # sering menghasilkan teks panjang/angka yang tampak kuat dan sebelumnya
     # menghentikan pencarian sebelum orientasi lawannya dicoba.
-    for rotation in (0, 90, 270, 180):
+    for rotation in (rotations or (0, 90, 270, 180)):
         rotated = image.rotate(rotation, expand=True) if rotation else image
-        text, confidence, page_warnings, tsv_words = tesseract_page_text(pytesseract, rotated)
+        text, confidence, page_warnings, tsv_words = tesseract_page_text(
+            pytesseract,
+            rotated,
+            timeout=timeout,
+            configs=configs,
+            lang_attempts=lang_attempts,
+        )
         tried_rotations.append(rotation)
         warnings.extend(page_warnings)
         score = score_text(text, document_type=document_type, confidence=confidence)
-        if score > best[5]:
+        if (
+            score > best[5]
+            or (text.strip() and not best[0].strip())
+            or (
+                score == best[5]
+                and text.strip()
+                and len(text.strip()) > len(best[0].strip())
+            )
+        ):
             best = (text, confidence, page_warnings, tsv_words, rotation, score)
         # Pada 0 derajat, early-stop hanya aman jika anchor dokumen nyata sudah
         # terbaca. Gibberish numerik panjang tanpa struktur tetap dibandingkan

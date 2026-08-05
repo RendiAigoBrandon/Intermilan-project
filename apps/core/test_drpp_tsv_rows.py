@@ -1,9 +1,16 @@
+from decimal import Decimal
+
 from django.test import SimpleTestCase
 
 from apps.core.parsers import (
+    clean_description,
+    extract_drpp_printed_total,
+    extract_drpp_total_candidates,
     parse_drpp_financial_table_rows,
+    parse_drpp_pdf,
     parse_drpp_items_from_tsv,
     parse_drpp_items_from_tsv_rows,
+    select_drpp_printed_total_candidate,
 )
 
 
@@ -242,3 +249,116 @@ class DRPPTSVRowRecoveryTests(SimpleTestCase):
         self.assertEqual(second["no_bukti"], "00888/KW/098765/2029")
         self.assertEqual(second["akun"], "524111")
         self.assertEqual(second["jumlah"], 12345000)
+
+    def test_printed_total_is_read_from_noisy_summary_or_coa_labels(self):
+        cases = [
+            "Jumlah SPP ini : Rp9.720.000 Lembar",
+            "Jumiah DRPP Rp 12,345,000",
+            "Total DRPP - 7.654.321",
+            "Jumlah : 1.234.567",
+        ]
+
+        self.assertEqual(extract_drpp_printed_total(cases[0]), Decimal("9720000"))
+        self.assertEqual(extract_drpp_printed_total(cases[1]), Decimal("12345000"))
+        self.assertEqual(extract_drpp_printed_total(cases[2]), Decimal("7654321"))
+        self.assertEqual(extract_drpp_printed_total(cases[3]), Decimal("0"))
+        self.assertEqual(extract_drpp_printed_total("Jumlah s.d. lalu 99.999.999"), Decimal("0"))
+
+    def test_printed_total_candidates_keep_provenance_and_reject_wrong_sources(self):
+        summary = (
+            "Nomor : 00421/DRPP/123456/2028 "
+            "Jumlah SPP ini : Rp1.200.000 "
+            "Jumlah s.d. lalu atas beban output ini : Rp1.970.000 "
+            "Jumlah s.d.SPP ini atas beban output ini : Rp3.170.000"
+        )
+        support = "MEMO PERINTAH BAYAR Jumlah : Rp4.200.000"
+        candidates = [
+            *extract_drpp_total_candidates(
+                summary,
+                file_name="holdout-a.pdf",
+                page_number=5,
+                document_type="DRPP_SUMMARY",
+                nomor_drpp="00421",
+            ),
+            *extract_drpp_total_candidates(
+                support,
+                file_name="holdout-a.pdf",
+                page_number=9,
+                document_type="SUPPORT_DOCUMENT",
+                nomor_drpp="00421",
+            ),
+        ]
+        selected = select_drpp_printed_total_candidate(candidates)
+        rejected_reasons = {item["reason"] for item in candidates if not item["accepted"]}
+
+        self.assertEqual(selected["value"], Decimal("1200000"))
+        self.assertEqual(selected["file"], "holdout-a.pdf")
+        self.assertEqual(selected["page"], 5)
+        self.assertEqual(selected["document_type"], "DRPP_SUMMARY")
+        self.assertEqual(selected["raw_label"], "JUMLAH SPP INI")
+        self.assertEqual(selected["raw_money_token"], "1.200.000")
+        self.assertIn("cumulative_previous", rejected_reasons)
+        self.assertIn("cumulative_through_current", rejected_reasons)
+        self.assertIn("wrong_document_type", rejected_reasons)
+
+    def test_clean_description_stops_before_drpp_footer_variants(self):
+        raw = (
+            "Honor kegiatan keluarga statistik bulan Juli 2028 "
+            "Jumlah Lampiran 2 Jumlah SPP ini : 9.720.000 "
+            "SUMATERA BARAT, 17-07-2028 Pejabat Pembuat Komitmen"
+        )
+
+        self.assertEqual(
+            clean_description(raw),
+            "Honor kegiatan keluarga statistik bulan Juli 2028",
+        )
+
+    def test_parse_drpp_pdf_uses_summary_total_evidence_not_only_row_sum(self):
+        def word(text, left, top):
+            return {
+                "text": text,
+                "left": left,
+                "top": top,
+                "width": max(18, len(text) * 7),
+                "height": 14,
+                "confidence": 90,
+            }
+
+        text = (
+            "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN "
+            "Nomor DRPP 00444/DRPP/123456/2028 "
+            "Jumlah SPP ini : Rp12.300.000"
+        )
+        words = [
+            word("Kuitansi", 100, 40), word("Akun", 300, 40),
+            word("Deskripsi", 500, 40), word("Bruto", 1000, 40),
+            word("Netto", 1200, 40), word("Pembebanan", 1400, 40),
+            word("PPh21", 1750, 40),
+            word("Pengadaan", 450, 75), word("peralatan", 540, 75),
+            word("00991/KW/123456/2028", 100, 105), word("523121", 300, 105),
+            word("12.300.000", 1000, 105), word("12.177.000", 1200, 105),
+            word("4001.ABC.111.222.523121", 1400, 105), word("123.000", 1750, 105),
+        ]
+
+        parsed = parse_drpp_pdf(
+            "synthetic-holdout.pdf",
+            ocr=False,
+            extracted={
+                "status": "parsed_ocr",
+                "page_count": 1,
+                "method": "unit",
+                "warnings": [],
+                "pages": [text],
+                "page_details": [{
+                    "page_number": 1,
+                    "text": text,
+                    "extracted_text": text,
+                    "tsv_words": words,
+                }],
+            },
+        )
+
+        self.assertEqual(parsed["metadata"]["printed_total"], Decimal("12300000"))
+        self.assertTrue(parsed["metadata"]["total_valid"])
+        self.assertEqual(len(parsed["items"]), 1)
+        self.assertEqual(parsed["items"][0]["no_bukti"], "00991/KW/123456/2028")

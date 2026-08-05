@@ -26,7 +26,7 @@ class OCRRotationSelectionTests(SimpleTestCase):
             180: "",
         }
 
-        def fake_page_text(_pytesseract, image):
+        def fake_page_text(_pytesseract, image, **_kwargs):
             return texts[image.rotation], 80.0, [], []
 
         with patch("apps.core.ocr.tesseract_page_text", side_effect=fake_page_text):
@@ -48,7 +48,7 @@ class OCRRotationSelectionTests(SimpleTestCase):
             180: "",
         }
 
-        def fake_page_text(_pytesseract, image):
+        def fake_page_text(_pytesseract, image, **_kwargs):
             return texts[image.rotation], 80.0, [], []
 
         with patch("apps.core.ocr.tesseract_page_text", side_effect=fake_page_text):
@@ -69,3 +69,20 @@ class OCRRotationSelectionTests(SimpleTestCase):
         self.assertEqual(result[4], 0)
         self.assertEqual(result[5], [0])
         page_text.assert_called_once()
+
+    def test_non_anchor_support_text_is_not_discarded_when_scores_are_zero(self):
+        texts = {
+            0: "alpha beta gamma tanpa judul baku " * 5,
+            90: "delta epsilon zeta halaman pendukung umum " * 10,
+            270: "",
+            180: "",
+        }
+
+        def fake_page_text(_pytesseract, image, **_kwargs):
+            return texts[image.rotation], 70.0, [], []
+
+        with patch("apps.core.ocr.tesseract_page_text", side_effect=fake_page_text):
+            result = tesseract_page_text_best_rotation(object(), _Image())
+
+        self.assertEqual(result[4], 90)
+        self.assertIn("halaman pendukung umum", result[0])

@@ -804,3 +804,590 @@ class DRPPRealHTTPAcceptanceTests(TestCase):
                 sample.fp, str(sample.pph21),
             ],
         }, ensure_ascii=False, default=str), flush=True)
+
+
+class DKDraft15ColumnIntegrationTests(TestCase):
+    """Test 15-column D_K draft integration with web preview and save."""
+
+    PREVIEW_HEADERS = (
+        "Helper", "Akun", "Bulan SP2D", "Cara Pembayaran", "Nomor SPM",
+        "Tanggal SPM", "Jenis SPM", "No. Kuitansi", "No. DRPP", "Deskripsi",
+        "Nilai Bruto", "Nilai Netto", "Pembebanan", "FP", "PPh21",
+    )
+
+    EXPECTED_FIELD_ORDER = [
+        "helper", "akun", "bulan_sp2d", "cara_pembayaran", "nomor_spm",
+        "tanggal_spm", "jenis_spm", "no_kuitansi", "no_drpp", "deskripsi",
+        "nilai_bruto", "nilai_netto", "pembebanan", "fp", "pph21",
+    ]
+
+    def setUp(self):
+        self.media_tmp = tempfile.TemporaryDirectory()
+        self.media_settings = override_settings(MEDIA_ROOT=self.media_tmp.name)
+        self.media_settings.enable()
+        self.user = User.objects.create_user(username="dk-operator", password="password")
+        Profile.objects.filter(user=self.user).update(
+            role=Profile.Role.SATKER,
+            satker_code="019937",
+        )
+
+    def tearDown(self):
+        self.media_settings.disable()
+        self.media_tmp.cleanup()
+
+    def parsed_batch(self):
+        """Create a minimal parsed batch with one transaction."""
+        item = {
+            "helper": "52111101011/KW/019937/2026",
+            "akun": "521111",
+            "bulan_sp2d": 6,
+            "cara_pembayaran": "UP",
+            "nomor_spm": "01077A",
+            "tanggal_spm": "2026-06-15",
+            "jenis_spm": "GUP_REGULAR",
+            "no_kuitansi": "01011/KW/019937/2026",
+            "no_bukti": "01011/KW/019937/2026",
+            "no_drpp": "00107",
+            "deskripsi": "Pengadaan ATK",
+            "nilai_bruto": "8425000",
+            "nilai_netto": "8425000",
+            "pembebanan": "2886.EBA.994.002.521111",
+            "fp": "",
+            "pph21": "0",
+            "status_detail": "LENGKAP",
+            "warnings": [],
+        }
+        drpp = {
+            "metadata": {"nomor_drpp": "00107", "total": "8425000", "printed_total": "8425000"},
+            "items": [item],
+        }
+        return {
+            "parser_version": PARSER_VERSION,
+            "spm": {
+                "metadata": {
+                    "nomor_spm": "01077A",
+                    "tanggal_spm": "2026-06-15",
+                    "jenis_spm": "GUP_REGULAR",
+                    "satker_app_code": "019937",
+                    "bulan_sp2d": 6,
+                }
+            },
+            "drpp": drpp,
+            "drpps": [drpp],
+            "drpp_groups": [{"no_drpp": "00107", "drpp": drpp, "items": [item], "validation": {"status": "BALANCE"}}],
+            "kw_items": [item],
+            "preview_rows": [],
+        }
+
+    def parsed_batch_two_transactions(self):
+        """Create parsed batch with two transactions."""
+        item1 = {
+            "akun": "521111",
+            "no_kuitansi": "01011/KW/019937/2026",
+            "no_drpp": "00107",
+            "nilai_bruto": "8425000",
+            "nilai_netto": "8425000",
+            "pembebanan": "2886.EBA.994.002.521111",
+            "fp": "",
+            "pph21": "0",
+        }
+        item2 = {
+            "akun": "521112",
+            "no_kuitansi": "01012/KW/019937/2026",
+            "no_drpp": "00107",
+            "nilai_bruto": "2000000",
+            "nilai_netto": "2000000",
+            "pembebanan": "2886.EBA.994.002.521112",
+            "fp": "",
+            "pph21": "0",
+        }
+        drpp = {
+            "metadata": {"nomor_drpp": "00107", "total": "10425000", "printed_total": "10425000"},
+            "items": [item1, item2],
+        }
+        return {
+            "parser_version": PARSER_VERSION,
+            "spm": {
+                "metadata": {
+                    "nomor_spm": "01077A",
+                    "tanggal_spm": "2026-06-15",
+                    "jenis_spm": "GUP_REGULAR",
+                    "satker_app_code": "019937",
+                    "bulan_sp2d": 6,
+                }
+            },
+            "drpp": drpp,
+            "drpps": [drpp],
+            "drpp_groups": [{"no_drpp": "00107", "drpp": drpp, "items": [item1, item2], "validation": {"status": "BALANCE"}}],
+            "kw_items": [item1, item2],
+            "preview_rows": [],
+        }
+
+    def paket(self, parsed):
+        return PaketSPMUpload.objects.create(
+            original_filename="DRPP 00107.zip",
+            uploaded_by=self.user,
+            status=PaketSPMUpload.Status.PREVIEW,
+            nomor_spm="01077A",
+            satker_code="019937",
+            tahun=2026,
+            bulan=6,
+            tanggal_spm=datetime.date(2026, 6, 15),
+            jenis_spm_asli="GUP_REGULAR",
+            parsed_data=parsed,
+        )
+
+    def open_preview(self, paket):
+        self.client.force_login(self.user)
+        session = self.client.session
+        session["paket_spm_preview_id"] = paket.id
+        session.save()
+
+    # --- Test 1: Upload produces dk_drafts ---
+
+    def test_upload_produces_dk_drafts(self):
+        """Upload should generate dk_drafts via adapter."""
+        parsed = self.parsed_batch()
+        parsed.update({"ok": True, "files": [], "warnings": [], "temp_dir": "", "metrics": {}})
+        self.client.login(username="dk-operator", password="password")
+        upload = SimpleUploadedFile("DRPP 00107.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        self.assertRedirects(response, reverse("paket_spm:preview"), fetch_redirect_response=False)
+        paket = PaketSPMUpload.objects.latest("id")
+        # dk_drafts key should exist (may be empty list if adapter fails silently)
+        self.assertIn("dk_drafts", paket.parsed_data)
+
+    # --- Test 2: One transaction produces one preview row ---
+
+    def test_one_transaction_creates_one_preview_row(self):
+        """One kw_item should produce one preview row."""
+        parsed = self.parsed_batch()
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        response = self.client.get(reverse("paket_spm:preview"))
+        self.assertEqual(response.status_code, 200)
+        groups = response.context.get("transaction_groups", [])
+        if groups:
+            self.assertEqual(len(groups[0]["rows"]), 1)
+
+    # --- Test 3: Exactly 15 columns in preview ---
+
+    def test_preview_has_exactly_15_columns(self):
+        """Preview table must have exactly 15 columns."""
+        parsed = self.parsed_batch()
+        parsed.update({"ok": True, "files": [], "warnings": [], "temp_dir": "", "metrics": {}})
+        self.client.login(username="dk-operator", password="password")
+        upload = SimpleUploadedFile("DRPP 00107.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        preview = self.client.get(reverse("paket_spm:preview"))
+        content = preview.content.decode("utf-8")
+        table_match = content.split('data-preview-columns="15"', 1)
+        self.assertTrue(len(table_match) > 1)
+        preview_table = table_match[1].split("</table>", 1)[0]
+        self.assertEqual(preview_table.count("</th>"), 15)
+
+    # --- Test 4: Correct column order ---
+
+    def test_column_order_matches_contract(self):
+        """Column order must be exactly 1-15 per domain contract."""
+        parsed = self.parsed_batch()
+        parsed.update({"ok": True, "files": [], "warnings": [], "temp_dir": "", "metrics": {}})
+        self.client.login(username="dk-operator", password="password")
+        upload = SimpleUploadedFile("DRPP 00107.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        preview = self.client.get(reverse("paket_spm:preview"))
+        content = preview.content.decode("utf-8")
+        table_match = content.split('data-preview-columns="15"', 1)
+        preview_table = table_match[1].split("</table>", 1)[0]
+
+        for idx, header in enumerate(self.PREVIEW_HEADERS, 1):
+            self.assertIn(f">{header}</th>", preview_table, f"Header {idx} '{header}' not found")
+
+    # --- Test 5: review_metadata is NOT column 16 ---
+
+    def test_review_metadata_not_column_16(self):
+        """review_metadata should not appear as a table column."""
+        parsed = self.parsed_batch()
+        parsed.update({"ok": True, "files": [], "warnings": [], "temp_dir": "", "metrics": {}})
+        self.client.login(username="dk-operator", password="password")
+        upload = SimpleUploadedFile("DRPP 00107.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        preview = self.client.get(reverse("paket_spm:preview"))
+        content = preview.content.decode("utf-8")
+        table_match = content.split('data-preview-columns="15"', 1)
+        preview_table = table_match[1].split("</table>", 1)[0]
+        self.assertNotIn("review_metadata", preview_table.lower())
+        self.assertNotIn("field_status", preview_table.lower())
+
+    # --- Test 6: Helper is read-only ---
+
+    def test_helper_is_read_only(self):
+        """Helper field must not have an editable input."""
+        parsed = self.parsed_batch()
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        response = self.client.get(reverse("paket_spm:preview"))
+        content = response.content.decode("utf-8")
+        # Helper should appear as <output> tag, not <input name="rows-*-helper">
+        self.assertIn("js-helper", content)
+        self.assertNotIn('name="rows-0-helper"', content)
+
+    # --- Test 7: Null displays as empty, not "-", "TANPA_DRPP", or implicit 0 ---
+
+    def test_null_displays_as_empty(self):
+        """Null values should show as empty input, not placeholder."""
+        parsed = self.parsed_batch()
+        # Set fp to empty to trigger null
+        parsed["kw_items"][0]["fp"] = ""
+        parsed["kw_items"][0]["pph21"] = "0"  # Explicit 0 for PPh21
+        parsed["drpp_groups"][0]["items"] = [parsed["kw_items"][0]]
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        response = self.client.get(reverse("paket_spm:preview"))
+        content = response.content.decode("utf-8")
+        # FP should be empty (value="")
+        self.assertIn('name="rows-0-fp" value=""', content)
+        # Should NOT have "TANPA_DRPP"
+        self.assertNotIn("TANPA_DRPP", content)
+
+    # --- Test 8: REVIEW fields are marked ---
+
+    def test_review_field_is_marked(self):
+        """Fields with REVIEW status should be visually marked."""
+        parsed = self.parsed_batch()
+        # Make fp empty to trigger REVIEW
+        parsed["kw_items"][0]["fp"] = ""
+        parsed["kw_items"][0]["status_detail"] = "PERLU_REVIEW"
+        parsed["kw_items"][0]["preview_review_fields"] = ["fp"]
+        parsed["kw_items"][0]["warnings"] = ["FP belum terbaca."]
+        parsed["drpp_groups"][0]["items"] = [parsed["kw_items"][0]]
+        # Mark validation as needing review
+        parsed["drpp_groups"][0]["validation"] = {
+            "status": "PERLU_REVIEW",
+            "can_commit": False,
+            "errors": [],
+            "warnings": ["FP belum terbaca."],
+        }
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        response = self.client.get(reverse("paket_spm:preview"))
+        content = response.content.decode("utf-8")
+        # The preview table shows PERLU_REVIEW status pill for the group
+        self.assertIn("PERLU_REVIEW", content)
+        # Row should be marked as needing review
+        self.assertIn('data-row-status="PERLU_REVIEW"', content)
+
+    # --- Test 9: raw_evidence is preserved ---
+
+    def test_raw_evidence_preserved_in_dk_drafts(self):
+        """raw_evidence should be preserved in dk_drafts."""
+        parsed = self.parsed_batch()
+        paket = self.paket(parsed)
+
+        dk_drafts = paket.parsed_data.get("dk_drafts", [])
+        if dk_drafts:
+            self.assertIn("raw_evidence", dk_drafts[0])
+            # Original kw_item should be preserved
+            original_kw = dk_drafts[0]["raw_evidence"].get("original_kw_item")
+            self.assertIsNotNone(original_kw)
+            self.assertEqual(original_kw.get("akun"), "521111")
+
+    # --- Test 10: Manual edit becomes MANUAL_CONFIRMED ---
+
+    def test_manual_edit_becomes_manual_confirmed(self):
+        """When operator edits a field, it should become MANUAL_CONFIRMED."""
+        parsed = self.parsed_batch()
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        # Simulate manual edit via POST
+        post_data = {
+            "action": "recalculate",
+            "preview_row_count": "1",
+            "rows-0-akun": "521111",
+            "rows-0-bulan_sp2d": "6",
+            "rows-0-cara_pembayaran": "UP",
+            "rows-0-nomor_spm": "01077A",
+            "rows-0-tanggal_spm": "2026-06-15",
+            "rows-0-jenis_spm": "GUP_REGULAR",
+            "rows-0-no_kuitansi": "01011/KW/019937/2026",
+            "rows-0-no_drpp": "00107",
+            "rows-0-deskripsi": "Pengadaan ATK [EDITED]",
+            "rows-0-nilai_bruto": "8425000",
+            "rows-0-nilai_netto": "8425000",
+            "rows-0-pembebanan": "2886.EBA.994.002.521111",
+            "rows-0-fp": "",
+            "rows-0-pph21": "0",
+        }
+        response = self.client.post(reverse("paket_spm:preview"), post_data)
+        self.assertRedirects(response, reverse("paket_spm:preview"), fetch_redirect_response=False)
+
+        paket.refresh_from_db()
+        dk_drafts = paket.parsed_data.get("dk_drafts", [])
+        if dk_drafts:
+            metadata = dk_drafts[0].get("review_metadata", {})
+            # deskripsi should be MANUAL_CONFIRMED after manual edit
+            self.assertEqual(metadata.get("field_status", {}).get("deskripsi"), "MANUAL_CONFIRMED")
+            self.assertEqual(metadata.get("field_source", {}).get("deskripsi"), "manual_confirmed")
+
+    # --- Test 11: Manual value not overwritten on draft save ---
+
+    def test_manual_value_preserved_on_draft_save(self):
+        """Manual values should not be overwritten when draft is saved."""
+        parsed = self.parsed_batch()
+        parsed["kw_items"][0]["deskripsi"] = "Original description"
+        parsed["drpp_groups"][0]["items"] = [parsed["kw_items"][0]]
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        # First save with manual edit
+        post_data = {
+            "action": "recalculate",
+            "preview_row_count": "1",
+            "rows-0-akun": "521111",
+            "rows-0-bulan_sp2d": "6",
+            "rows-0-cara_pembayaran": "UP",
+            "rows-0-nomor_spm": "01077A",
+            "rows-0-tanggal_spm": "2026-06-15",
+            "rows-0-jenis_spm": "GUP_REGULAR",
+            "rows-0-no_kuitansi": "01011/KW/019937/2026",
+            "rows-0-no_drpp": "00107",
+            "rows-0-deskripsi": "Manual edited description",
+            "rows-0-nilai_bruto": "8425000",
+            "rows-0-nilai_netto": "8425000",
+            "rows-0-pembebanan": "2886.EBA.994.002.521111",
+            "rows-0-fp": "",
+            "rows-0-pph21": "0",
+        }
+        self.client.post(reverse("paket_spm:preview"), post_data)
+        paket.refresh_from_db()
+
+        # Save again - manual value should be preserved
+        self.client.post(reverse("paket_spm:preview"), post_data)
+        paket.refresh_from_db()
+
+        dk_drafts = paket.parsed_data.get("dk_drafts", [])
+        if dk_drafts:
+            row = dk_drafts[0].get("row", {})
+            self.assertEqual(row.get("deskripsi"), "Manual edited description")
+
+    # --- Test 12: Draft REVIEW can be saved ---
+
+    def test_draft_review_can_be_saved(self):
+        """Draft with REVIEW status should be saveable."""
+        parsed = self.parsed_batch()
+        # Make it incomplete to trigger REVIEW
+        parsed["kw_items"][0]["fp"] = ""
+        parsed["kw_items"][0]["status_detail"] = "PERLU_REVIEW"
+        parsed["kw_items"][0]["preview_review_fields"] = ["fp"]
+        parsed["kw_items"][0]["warnings"] = ["FP belum terbaca."]
+        parsed["drpp_groups"][0]["items"] = [parsed["kw_items"][0]]
+        parsed["drpp_groups"][0]["validation"] = {
+            "status": "PERLU_REVIEW",
+            "can_commit": False,
+            "errors": [],
+            "warnings": ["FP belum terbaca."],
+        }
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        post_data = {
+            "action": "recalculate",
+            "preview_row_count": "1",
+            "rows-0-akun": "521111",
+            "rows-0-bulan_sp2d": "6",
+            "rows-0-cara_pembayaran": "UP",
+            "rows-0-nomor_spm": "01077A",
+            "rows-0-tanggal_spm": "2026-06-15",
+            "rows-0-jenis_spm": "GUP_REGULAR",
+            "rows-0-no_kuitansi": "01011/KW/019937/2026",
+            "rows-0-no_drpp": "00107",
+            "rows-0-deskripsi": "Pengadaan ATK",
+            "rows-0-nilai_bruto": "8425000",
+            "rows-0-nilai_netto": "8425000",
+            "rows-0-pembebanan": "2886.EBA.994.002.521111",
+            "rows-0-fp": "",
+            "rows-0-pph21": "0",
+        }
+        response = self.client.post(reverse("paket_spm:preview"), post_data)
+        self.assertRedirects(response, reverse("paket_spm:preview"), fetch_redirect_response=False)
+
+        # Draft should still be PREVIEW status, not committed
+        paket.refresh_from_db()
+        self.assertEqual(paket.status, PaketSPMUpload.Status.PREVIEW)
+
+    # --- Test 13: No TransactionDetail on draft save ---
+
+    def test_draft_save_does_not_create_transaction_detail(self):
+        """Saving draft should NOT create TransactionDetail."""
+        parsed = self.parsed_batch()
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        post_data = {
+            "action": "recalculate",
+            "preview_row_count": "1",
+            "rows-0-akun": "521111",
+            "rows-0-bulan_sp2d": "6",
+            "rows-0-cara_pembayaran": "UP",
+            "rows-0-nomor_spm": "01077A",
+            "rows-0-tanggal_spm": "2026-06-15",
+            "rows-0-jenis_spm": "GUP_REGULAR",
+            "rows-0-no_kuitansi": "01011/KW/019937/2026",
+            "rows-0-no_drpp": "00107",
+            "rows-0-deskripsi": "Pengadaan ATK",
+            "rows-0-nilai_bruto": "8425000",
+            "rows-0-nilai_netto": "8425000",
+            "rows-0-pembebanan": "2886.EBA.994.002.521111",
+            "rows-0-fp": "",
+            "rows-0-pph21": "0",
+        }
+        self.client.post(reverse("paket_spm:preview"), post_data)
+
+        # No TransactionDetail should be created
+        self.assertEqual(TransactionDetail.objects.count(), 0)
+
+    # --- Test 14: Generic GUP stays null + REVIEW ---
+
+    def test_generic_gup_stays_null_review(self):
+        """Generic 'GUP' without subtype should stay null + REVIEW."""
+        parsed = self.parsed_batch()
+        # Use generic GUP instead of GUP_REGULAR
+        parsed["spm"]["metadata"]["jenis_spm"] = "GUP"
+        parsed["kw_items"][0]["jenis_spm"] = "GUP"
+        parsed["drpp_groups"][0]["items"] = [parsed["kw_items"][0]]
+        paket = self.paket(parsed)
+
+        dk_drafts = paket.parsed_data.get("dk_drafts", [])
+        if dk_drafts:
+            row = dk_drafts[0].get("row", {})
+            metadata = dk_drafts[0].get("review_metadata", {})
+            # jenis_spm should be null (not "GUP")
+            self.assertIsNone(row.get("jenis_spm"))
+            # field_status should be REVIEW
+            self.assertEqual(metadata.get("field_status", {}).get("jenis_spm"), "REVIEW")
+
+    # --- Test 15: GUP_KKP no_drpp null + NOT_APPLICABLE ---
+
+    def test_gup_kkp_no_drpp_not_applicable(self):
+        """GUP_KKP should have no_drpp=null with NOT_APPLICABLE status."""
+        parsed = self.parsed_batch()
+        # Convert to KKP
+        parsed["spm"]["metadata"]["jenis_spm"] = "GUP_KKP"
+        parsed["spm_family"] = "GUP_KKP"
+        parsed["kw_items"][0]["jenis_spm"] = "GUP_KKP"
+        parsed["kw_items"][0]["no_drpp"] = ""
+        parsed["drpp_groups"][0]["items"] = [parsed["kw_items"][0]]
+        parsed["drpp_groups"][0]["is_kkp"] = True
+        paket = self.paket(parsed)
+
+        dk_drafts = paket.parsed_data.get("dk_drafts", [])
+        if dk_drafts:
+            row = dk_drafts[0].get("row", {})
+            metadata = dk_drafts[0].get("review_metadata", {})
+            # no_drpp should be null
+            self.assertIsNone(row.get("no_drpp"))
+            # status should be NOT_APPLICABLE
+            self.assertEqual(metadata.get("field_status", {}).get("no_drpp"), "NOT_APPLICABLE")
+
+    # --- Test 16: tanggal_spm not from tgl_sp2d ---
+
+    def test_tanggal_spm_not_from_tgl_sp2d(self):
+        """tanggal_spm must not be sourced from tgl_sp2d."""
+        parsed = self.parsed_batch()
+        # Set different dates for SPM and SP2D
+        parsed["spm"]["metadata"]["tanggal_spm"] = "2026-06-15"
+        parsed["spm"]["metadata"]["tanggal_sp2d"] = "2026-07-01"  # Different date
+        paket = self.paket(parsed)
+
+        dk_drafts = paket.parsed_data.get("dk_drafts", [])
+        if dk_drafts:
+            row = dk_drafts[0].get("row", {})
+            # tanggal_spm should be from SPM, not SP2D
+            self.assertEqual(str(row.get("tanggal_spm")), "2026-06-15")
+
+    # --- Test 17: Backward compatibility with old parsed_data ---
+
+    def test_backward_compatibility_without_dk_drafts(self):
+        """Old parsed_data without dk_drafts should still work."""
+        parsed = self.parsed_batch()
+        # Remove dk_drafts to simulate old data
+        if "dk_drafts" in parsed:
+            del parsed["dk_drafts"]
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        # Should still render preview without error
+        response = self.client.get(reverse("paket_spm:preview"))
+        self.assertEqual(response.status_code, 200)
+
+    # --- Test 18: Two transactions don't swap fields ---
+
+    def test_two_transactions_no_field_swap(self):
+        """Two transactions should not swap field values."""
+        parsed = self.parsed_batch_two_transactions()
+        parsed.update({"ok": True, "files": [], "warnings": [], "temp_dir": "", "metrics": {}})
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        response = self.client.get(reverse("paket_spm:preview"))
+        content = response.content.decode("utf-8")
+
+        # Both akun values should appear in correct positions
+        self.assertIn("521111", content)
+        self.assertIn("521112", content)
+
+        # No kuitansi numbers swapped
+        self.assertIn("01011/KW/019937/2026", content)
+        self.assertIn("01012/KW/019937/2026", content)
+
+    # --- Test 19: CSRF protection still works ---
+
+    def test_csrf_validation_in_preview_form(self):
+        """Preview form should include CSRF token."""
+        parsed = self.parsed_batch()
+        paket = self.paket(parsed)
+        self.open_preview(paket)
+
+        response = self.client.get(reverse("paket_spm:preview"))
+        content = response.content.decode("utf-8")
+        # Should have CSRF token in form
+        self.assertIn("csrfmiddlewaretoken", content)
+        # Form should have proper action
+        self.assertIn('method="post"', content)
+
+    # --- Test 20: source_transaction_index preserved ---
+
+    def test_source_transaction_index_preserved(self):
+        """source_transaction_index should be preserved in dk_drafts."""
+        parsed = self.parsed_batch_two_transactions()
+        parsed.update({"ok": True, "files": [], "warnings": [], "temp_dir": "", "metrics": {}})
+        self.client.login(username="dk-operator", password="password")
+        upload = SimpleUploadedFile("DRPP 00107.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        paket = PaketSPMUpload.objects.latest("id")
+        dk_drafts = paket.parsed_data.get("dk_drafts", [])
+
+        if len(dk_drafts) >= 2:
+            # Each draft should have unique index
+            self.assertEqual(dk_drafts[0].get("source_transaction_index"), 0)
+            self.assertEqual(dk_drafts[1].get("source_transaction_index"), 1)

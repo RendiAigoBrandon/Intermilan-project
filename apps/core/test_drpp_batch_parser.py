@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import skipUnless
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.core.exceptions import UploadTechnicalError
 from apps.core.drpp_batch_parser import (
@@ -18,6 +18,7 @@ from apps.core.drpp_batch_parser import (
     _extracted_from_pages,
     _match_coa,
     _recover_missing_candidate_pages,
+    _resolve_drpp_printed_total,
     _type_hint,
     build_transaction_items,
     classify_candidate_pages,
@@ -32,6 +33,7 @@ from apps.core.drpp_batch_parser import (
 from apps.core.parsers import (
     clean_description,
     consensus_sp2d_from_pages,
+    parse_drpp_items_from_text,
     reconcile_spp_suffix_with_spm,
 )
 
@@ -96,8 +98,80 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
         ):
             discover_embedded_drpp_pages(pages)
 
-        self.assertTrue(all(page.get("force_probe") for page in pages))
+        self.assertTrue(pages[0].get("force_probe"))
+        self.assertFalse(pages[1].get("force_probe", False))
+        self.assertTrue(all(pages[index].get("force_probe") for index in (2, 3, 4)))
         self.assertEqual(pages[3]["type_hint"], "DRPP_SUMMARY")
+
+    def test_garbled_probe_drpp_summary_still_triggers_full_ocr_candidate(self):
+        pages = [
+            {
+                "file_name": "mixed.pdf",
+                "page_number": number,
+                "type_hint": "KUITANSI",
+                "drpp_hint": "00062",
+            }
+            for number in range(1, 6)
+        ]
+        texts = {
+            1: "SURAT PERINTAH MEMBAYAR",
+            2: "dokumen pendukung",
+            3: "OAFTAR RINGIAN PERMINTAAN PEMBAYARAN Nomor: DONDRPPOINN7 2026",
+            4: "lanjutan tabel bukti pengeluaran 00328/KW/019937/2026",
+            5: "LAMPIRAN DAFTAR RINCIAN PERMINTAAN PEMBAYARAN Detail COA",
+        }
+
+        with patch(
+            "apps.core.drpp_batch_parser._probe_page_text",
+            side_effect=lambda page: {"text": texts[page["page_number"]], "cache_hit": False},
+        ):
+            discover_embedded_drpp_pages(pages)
+
+        self.assertTrue(pages[0].get("force_probe"))
+        self.assertEqual(_classification(texts[3])[0], "DRPP_SUMMARY")
+        self.assertTrue(pages[2].get("force_probe"))
+        self.assertTrue(pages[3].get("force_probe"))
+        self.assertTrue(pages[4].get("force_probe"))
+        self.assertEqual(pages[3]["type_hint"], "DRPP_SUMMARY")
+
+    def test_embedded_drpp_forces_next_coa_continuation_page(self):
+        pages = [
+            {
+                "file_name": "mixed.pdf",
+                "page_number": number,
+                "type_hint": "KUITANSI",
+                "drpp_hint": "00062",
+            }
+            for number in range(1, 6)
+        ]
+        texts = {
+            1: "SURAT PERINTAH MEMBAYAR",
+            2: "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN Nomor 00062/DRPP/019937/2026",
+            3: "LAMPIRAN DAFTAR RINCIAN PERMINTAAN PEMBAYARAN Detail COA Halaman 1 dari 2",
+            4: "batman 2 da 2 oetancoA lanjutan angka akun",
+            5: "dokumen pendukung berikutnya",
+        }
+
+        with patch(
+            "apps.core.drpp_batch_parser._probe_page_text",
+            side_effect=lambda page: {"text": texts[page["page_number"]], "cache_hit": False},
+        ):
+            discover_embedded_drpp_pages(pages)
+
+        self.assertTrue(pages[2].get("force_probe"))
+        self.assertTrue(pages[3].get("force_probe"))
+        self.assertEqual(pages[3]["type_hint"], "DRPP_COA")
+        self.assertFalse(pages[4].get("force_probe", False))
+
+    def test_garbled_probe_spm_title_still_triggers_identity_ocr_candidate(self):
+        document_type, confidence, evidence = _classification(
+            "BADAN PUSAT STATISTIK PROP. SUMATERA BARAT "
+            "SURAT PERNTAH EMOAYAR Nomor 00203A Jenis Tagihan GUP DIPA"
+        )
+
+        self.assertEqual(document_type, "SPM")
+        self.assertGreaterEqual(confidence, 70)
+        self.assertIn("struktur SPM dari OCR probe", evidence)
 
     def test_sp2d_page_has_distinct_document_type(self):
         document_type, _, _ = _classification("SURAT PERINTAH PENCAIRAN DANA")
@@ -149,6 +223,24 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
             "Honor Narasumber Rapat Pembinaan PPID 7 Mei 2026",
         )
 
+    def test_drpp_text_parser_splits_receipt_with_spaced_satker_segment(self):
+        text = (
+            "BUKTI PENGELUARAN "
+            "10 00317/KW/019937/2026 PDAM 001858539201000 522113 378,837 "
+            "09-07-2026 Belanja langganan air PDAM bulan Juli tahun 2026 "
+            "11 00319/KW/01 9937/2026 Nurul Hasanudin, dkk 001858539201000 "
+            "521115 7,454,000 10-07-2026 Honor Penanggung Jawab Pengelola Keuangan "
+            "Jumlah SPP ini : 7,832,837"
+        )
+
+        items = parse_drpp_items_from_text(text)
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["no_bukti"], "00317/KW/019937/2026")
+        self.assertEqual(items[1]["no_bukti"], "00319/KW/019937/2026")
+        self.assertEqual(items[1]["jumlah"], Decimal("7454000"))
+        self.assertNotIn("00319/KW", items[0]["keperluan"])
+
     def test_flattened_coa_header_fills_missing_account_and_pembebanan(self):
         rows = parse_drpp_coa(
             [{
@@ -186,6 +278,162 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
         text = "Lampiran kontrol. Parser mengambil detail dari kuitansi dan tabel DRPP."
         self.assertEqual(_classification(text)[0], "SUPPORT_DOCUMENT")
 
+    def test_drpp_total_resolver_prefers_current_summary_and_rejects_cumulative_support(self):
+        pages = [
+            {
+                "file_name": "holdout-current.pdf",
+                "page_number": 7,
+                "document_type": "DRPP_SUMMARY",
+                "text": (
+                    "Nomor : 00421/DRPP/123456/2028 "
+                    "Jumlah SPP ini : Rp1.200.000 "
+                    "Jumlah s.d. lalu atas beban output ini : Rp1.970.000 "
+                    "Jumlah s.d.SPP ini atas beban output ini : Rp3.170.000"
+                ),
+            },
+            {
+                "file_name": "holdout-current.pdf",
+                "page_number": 11,
+                "document_type": "SUPPORT_DOCUMENT",
+                "text": "Surat perintah bayar Jumlah : Rp4.200.000",
+            },
+        ]
+
+        evidence = _resolve_drpp_printed_total("00421", pages)
+        reasons = {item["reason"] for item in evidence["rejected"]}
+
+        self.assertEqual(evidence["selected"]["value"], Decimal("1200000"))
+        self.assertEqual(evidence["selected"]["page"], 7)
+        self.assertEqual(evidence["selected"]["document_type"], "DRPP_SUMMARY")
+        self.assertIn("cumulative_previous", reasons)
+        self.assertIn("cumulative_through_current", reasons)
+        self.assertIn("wrong_document_type", reasons)
+
+    def test_drpp_total_resolver_uses_matching_coa_when_summary_total_missing(self):
+        pages = [
+            {
+                "file_name": "holdout-coa.pdf",
+                "page_number": 3,
+                "document_type": "DRPP_SUMMARY",
+                "text": "Nomor : 00777/DRPP/123456/2028 Daftar Rincian Permintaan Pembayaran",
+            },
+            {
+                "file_name": "holdout-coa.pdf",
+                "page_number": 4,
+                "document_type": "DRPP_COA",
+                "text": "Nomor : 00777/DRPP/123456/2028 Detail COA Total DRPP : Rp3.300.000",
+            },
+            {
+                "file_name": "holdout-coa.pdf",
+                "page_number": 5,
+                "document_type": "DRPP_COA",
+                "text": "Nomor : 00778/DRPP/123456/2028 Detail COA Total DRPP : Rp7.700.000",
+            },
+        ]
+
+        evidence = _resolve_drpp_printed_total("00777", pages)
+
+        self.assertEqual(evidence["selected"]["value"], Decimal("3300000"))
+        self.assertEqual(evidence["selected"]["document_type"], "DRPP_COA")
+        self.assertIn("wrong_drpp_number", {item["reason"] for item in evidence["rejected"]})
+
+    def test_drpp_total_resolver_uses_structural_rows_only_after_bad_current_label(self):
+        pages = [{
+            "file_name": "holdout-noisy-current.pdf",
+            "page_number": 6,
+            "document_type": "DRPP_SUMMARY",
+            "text": (
+                "Nomor : 00421/DRPP/123456/2028 "
+                "Jumlah SPP ini : Rp4.200.000 "
+                "Jumlah s.d. lalu atas beban output ini : Rp1.970.000 "
+                "Jumlah s.d.SPP ini atas beban output ini : Rp3.170.000"
+            ),
+        }]
+
+        evidence = _resolve_drpp_printed_total(
+            "00421",
+            pages,
+            structural_total=Decimal("1200000"),
+            structural_count=2,
+        )
+        rejected = {item["reason"] for item in evidence["rejected"]}
+
+        self.assertEqual(evidence["selected"]["value"], Decimal("1200000"))
+        self.assertEqual(evidence["selected"]["extraction_method"], "drpp_structural_row_sum")
+        self.assertIn("inconsistent_with_cumulative_totals", rejected)
+
+    def test_drpp_total_conflict_keeps_group_review(self):
+        drpp = {
+            "metadata": {
+                "nomor_drpp": "00421",
+                "printed_total": Decimal("1200000"),
+                "printed_total_conflict": True,
+                "source_item_count": 2,
+            },
+            "items": [],
+        }
+        items = [
+            {
+                "no_kuitansi": "00081/KW/123456/2028",
+                "akun": "524113",
+                "nomor_spm": "00421A",
+                "tanggal_spm": date(2028, 7, 1),
+                "pembebanan": "2897.BMA.006.982.524113",
+                "nilai_bruto": Decimal("750000"),
+            },
+            {
+                "no_kuitansi": "00082/KW/123456/2028",
+                "akun": "524113",
+                "nomor_spm": "00421A",
+                "tanggal_spm": date(2028, 7, 1),
+                "pembebanan": "2897.BMA.006.982.524113",
+                "nilai_bruto": Decimal("450000"),
+            },
+        ]
+
+        validation = evaluate_drpp_group_commitability(drpp, items)
+
+        self.assertEqual(validation["status"], "PERLU_REVIEW")
+        self.assertFalse(validation["can_commit"])
+        self.assertIn("Kandidat total referensi DRPP saling berbeda.", validation["errors"])
+
+    def test_support_individual_receipts_do_not_create_delta_transactions(self):
+        summary = {
+            "file_name": "holdout-individual.pdf", "_path": "holdout-individual.pdf",
+            "page_number": 2, "page_hash": "summary", "document_type": "DRPP_SUMMARY",
+            "text": (
+                "Nomor : 00421/DRPP/123456/2028 "
+                "1 00081/KW/123456/2028 A 123 524113 750.000 "
+                "2 00082/KW/123456/2028 B 123 524113 450.000 "
+                "Jumlah SPP ini : Rp1.200.000"
+            ),
+            "native_text": "",
+        }
+        support_pages = [
+            {
+                "file_name": "holdout-individual.pdf", "_path": "holdout-individual.pdf",
+                "page_number": page, "page_hash": str(page), "document_type": "SUPPORT_DOCUMENT",
+                "text": f"Kuitansi perjalanan individu Jumlah : Rp150.000 penerima {page}",
+                "native_text": "",
+            }
+            for page in (3, 4, 5)
+        ]
+        parsed = {
+            "metadata": {"nomor_drpp": "00421", "printed_total": Decimal("1200000"), "source_item_count": 2},
+            "items": [
+                {"no_bukti": "00081/KW/123456/2028", "akun": "524113", "jumlah": Decimal("750000")},
+                {"no_bukti": "00082/KW/123456/2028", "akun": "524113", "jumlah": Decimal("450000")},
+            ],
+        }
+
+        with patch("apps.core.drpp_batch_parser.parse_drpp_pdf", return_value=parsed):
+            result = parse_drpp_summary("00421", [summary, *support_pages])
+
+        self.assertEqual(len(result["items"]), 2)
+        self.assertEqual(result["metadata"]["printed_total"], Decimal("1200000"))
+        self.assertEqual(result["metadata"]["printed_total_provenance"]["document_type"], "DRPP_SUMMARY")
+        self.assertTrue(all(item["jumlah"] != Decimal("150000") for item in result["items"]))
+
     def test_missing_receipt_fallback_stops_after_matching_structural_page(self):
         pages = [
             {
@@ -194,17 +442,19 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
             },
             {
                 "file_name": "mixed.pdf", "page_number": 3, "is_representative": True,
+                "type_hint": "SPM",
                 "text": "", "native_text": "", "document_type": "UNKNOWN", "_path": "unused.pdf",
             },
             {
                 "file_name": "mixed.pdf", "page_number": 4, "is_representative": True,
+                "type_hint": "SPM",
                 "text": "", "native_text": "", "document_type": "UNKNOWN", "_path": "unused.pdf",
             },
         ]
         drpp = {
             "metadata": {"nomor_drpp": "00456", "printed_total": Decimal("9750000"), "source_item_count": 1},
             "source_pages": [{"file_name": "mixed.pdf", "page_number": 2}],
-            "items": [{"no_bukti": "00456/KW/012345/2028", "akun": "521219", "jumlah": Decimal("9750000")}],
+            "items": [{"no_bukti": "00456/KW/012345/2028", "akun": "521219", "jumlah": Decimal("0")}],
         }
         receipt = {
             "text": (
@@ -219,6 +469,148 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
         self.assertEqual(ocr_page.call_count, 1)
         self.assertEqual(pages[1]["document_type"], "KUITANSI")
         self.assertEqual(pages[2]["text"], "")
+
+    def test_complete_unbalanced_rows_do_not_trigger_receipt_recovery(self):
+        pages = [
+            {
+                "file_name": "mixed.pdf", "page_number": 2, "is_representative": True,
+                "text": "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "document_type": "DRPP_SUMMARY",
+            },
+            {
+                "file_name": "mixed.pdf", "page_number": 3, "is_representative": True,
+                "text": "", "native_text": "", "document_type": "UNKNOWN", "_path": "unused.pdf",
+            },
+        ]
+        drpp = {
+            "metadata": {"nomor_drpp": "00456", "printed_total": Decimal("9750000"), "source_item_count": 1},
+            "source_pages": [{"file_name": "mixed.pdf", "page_number": 2}],
+            "items": [{"no_bukti": "00456/KW/012345/2028", "akun": "521219", "jumlah": Decimal("9000000")}],
+        }
+
+        with patch("apps.core.drpp_batch_parser._ocr_page") as ocr_page:
+            self.assertFalse(_recover_missing_candidate_pages([drpp], pages))
+
+        ocr_page.assert_not_called()
+
+    def test_balanced_summary_skips_missing_receipt_recovery(self):
+        pages = [
+            {
+                "file_name": "mixed.pdf", "page_number": 2, "is_representative": True,
+                "text": "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN", "document_type": "DRPP_SUMMARY",
+            },
+            {
+                "file_name": "mixed.pdf", "page_number": 3, "is_representative": True,
+                "text": "", "native_text": "", "document_type": "UNKNOWN", "_path": "unused.pdf",
+            },
+        ]
+        drpp = {
+            "metadata": {"nomor_drpp": "00456", "printed_total": Decimal("9750000"), "source_item_count": 1},
+            "source_pages": [{"file_name": "mixed.pdf", "page_number": 2}],
+            "items": [{"no_bukti": "00456/KW/012345/2028", "akun": "521219", "jumlah": Decimal("9750000")}],
+        }
+
+        with patch("apps.core.drpp_batch_parser._ocr_page") as ocr_page:
+            self.assertFalse(_recover_missing_candidate_pages([drpp], pages))
+
+        ocr_page.assert_not_called()
+
+    def test_complete_rows_recover_labeled_receipt_from_following_candidate_page(self):
+        pages = [
+            {
+                "file_name": "mixed.pdf", "page_number": 2, "is_representative": True,
+                "type_hint": "DRPP_SUMMARY",
+                "text": "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN",
+                "document_type": "DRPP_SUMMARY",
+            },
+            {
+                "file_name": "mixed.pdf", "page_number": 3, "is_representative": True,
+                "type_hint": "SPM",
+                "text": "", "native_text": "", "document_type": "UNKNOWN", "_path": "unused.pdf",
+            },
+            {
+                "file_name": "mixed.pdf", "page_number": 4, "is_representative": True,
+                "type_hint": "SPM",
+                "text": "", "native_text": "", "document_type": "UNKNOWN", "_path": "unused.pdf",
+            },
+        ]
+        drpp = {
+            "metadata": {"nomor_drpp": "00456", "printed_total": Decimal("9750000"), "source_item_count": 1},
+            "source_pages": [{"file_name": "mixed.pdf", "page_number": 2}],
+            "items": [{
+                "no_bukti": "00456/KW/012345/2028",
+                "akun": "521219",
+                "jumlah": Decimal("9750000"),
+                "bruto": Decimal("9750000"),
+            }],
+        }
+        receipt_text = (
+            "KUITANSI Nomor: 00456/KW/012345/2028 Akun 521219 "
+            "Bruto Rp9.750.000 Jumlah Potongan Rp50.000 "
+            "Yang Dibayarkan Rp9.700.000"
+        )
+
+        with patch(
+            "apps.core.drpp_batch_parser._ocr_page",
+            side_effect=[{"text": receipt_text, "cache_hit": False, "engine": "tesseract", "words": []}],
+        ) as ocr_page:
+            self.assertFalse(_recover_missing_candidate_pages([drpp], pages))
+
+        self.assertEqual(ocr_page.call_count, 1)
+        self.assertEqual(ocr_page.call_args.kwargs.get("rotations"), (0,))
+        self.assertEqual(ocr_page.call_args.kwargs.get("dpi"), 180)
+        self.assertEqual(ocr_page.call_args.kwargs.get("timeout"), 3)
+        self.assertEqual(ocr_page.call_args.kwargs.get("configs"), ("--psm 6",))
+        self.assertEqual(ocr_page.call_args.kwargs.get("lang_attempts"), ("eng", "ind+eng", ""))
+        self.assertEqual(drpp["items"][0]["pph21"], Decimal("50000"))
+        self.assertEqual(drpp["items"][0]["netto"], Decimal("9700000"))
+
+    def test_receipt_support_can_match_labeled_short_kw_number(self):
+        item = {
+            "no_bukti": "00991/KW/123456/2028",
+            "akun": "521219",
+            "jumlah": Decimal("8880000"),
+            "bruto": Decimal("8880000"),
+        }
+        page = {
+            "file_name": "holdout.pdf",
+            "page_number": 7,
+            "document_type": "KUITANSI",
+            "text": (
+                "Bukti pembayaran KW No. 991 Akun 521219 "
+                "Nilai Bruto Rp8.880.000 Jumlah Potongan Rp444.000 "
+                "Jumlah Dibayar Rp8.436.000"
+            ),
+        }
+
+        parse_kw_support([item], [page], year="2028")
+
+        self.assertEqual(item["pph21"], Decimal("444000"))
+        self.assertEqual(item["netto"], Decimal("8436000"))
+
+    def test_support_memo_can_enrich_matching_drpp_item_without_receipt_number(self):
+        item = {
+            "no_bukti": "00991/KW/123456/2028",
+            "akun": "521213",
+            "jumlah": Decimal("8880000"),
+            "bruto": Decimal("8880000"),
+        }
+        page = {
+            "file_name": "memo-holdout.pdf",
+            "page_number": 8,
+            "document_type": "SUPPORT_DOCUMENT",
+            "text": (
+                "MEMO PERINTAH BAYAR Pengeluaran Potongan "
+                "521213 Rp. 8.880.000,00 411618 Rp. 444.000,00 "
+                "Jumiah Pengeluaran Rp. 8.880.000,00 "
+                "Jumtah Potongan Rp. 444.000,00 Rp. 8.436.000,00"
+            ),
+        }
+
+        parse_kw_support([item], [page], year="2028")
+
+        self.assertEqual(item["bruto"], Decimal("8880000"))
+        self.assertEqual(item["pph21"], Decimal("444000"))
+        self.assertEqual(item["netto"], Decimal("8436000"))
 
     def test_recovery_reuses_shared_multi_drpp_page_without_second_ocr(self):
         page = {
@@ -419,6 +811,75 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
                 self.assertEqual(result["status"], "PERLU_REVIEW")
                 self.assertFalse(result["can_commit"])
 
+    def test_missing_receipt_detail_does_not_block_complete_balanced_row(self):
+        drpp = {
+            "metadata": {
+                "nomor_drpp": "00456",
+                "printed_total": Decimal("1000000"),
+                "source_item_count": 1,
+                "missing_receipt_count": 1,
+            },
+            "items": [{}],
+        }
+        item = {
+            "nomor_spm": "00789A",
+            "tanggal_spm": date(2028, 8, 28),
+            "no_kuitansi": "00318/KW/012345/2028",
+            "akun": "521115",
+            "nilai_bruto": Decimal("1000000"),
+            "pembebanan": "4001.ABC.010.020.521115",
+            "status_detail": "LENGKAP",
+        }
+
+        result = validate_drpp_group(drpp, [item])
+
+        self.assertEqual(result["status"], "BALANCE")
+        self.assertTrue(result["can_commit"])
+        self.assertNotIn("kuitansi sumber", " ".join(result["errors"]))
+
+        refreshed = evaluate_drpp_group_commitability(
+            drpp,
+            [item],
+            parser_validation={
+                "status": "PERLU_REVIEW",
+                "can_commit": False,
+                "errors": ["Terdapat 1 kuitansi sumber yang belum memiliki detail."],
+            },
+        )
+        self.assertEqual(refreshed["status"], "BALANCE")
+        self.assertTrue(refreshed["can_commit"])
+        self.assertNotIn("kuitansi sumber", " ".join(refreshed["errors"]))
+
+    def test_missing_receipt_detail_still_blocks_incomplete_row(self):
+        drpp = {
+            "metadata": {
+                "nomor_drpp": "00456",
+                "printed_total": Decimal("1000000"),
+                "source_item_count": 1,
+                "missing_receipt_count": 1,
+            },
+            "items": [{}],
+        }
+        item = {
+            "nomor_spm": "00789A",
+            "tanggal_spm": date(2028, 8, 28),
+            "no_kuitansi": "00318/KW/012345/2028",
+            "akun": "521115",
+            "nilai_bruto": Decimal("1000000"),
+            "pembebanan": "",
+            "status_detail": "LENGKAP",
+        }
+
+        result = validate_drpp_group(drpp, [item])
+
+        self.assertEqual(result["status"], "PERLU_REVIEW")
+        self.assertFalse(result["can_commit"])
+        self.assertIn("Pembebanan kosong.", result["errors"])
+        self.assertIn(
+            "Terdapat 1 kuitansi sumber yang belum memiliki detail.",
+            result["errors"],
+        )
+
     def test_authoritative_commitability_rejects_empty_reconciliation(self):
         result = evaluate_drpp_group_commitability(
             {
@@ -543,6 +1004,34 @@ class DRPPBatchParserUnitTests(SimpleTestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["no_bukti"], "00456/KW/012345/2028")
         self.assertEqual(items[0]["netto"], Decimal("9700000"))
+
+    def test_kw_support_reads_gross_potongan_and_netto_from_labeled_receipt(self):
+        items = [{
+            "no_bukti": "00991/KW/123456/2028",
+            "akun": "523121",
+            "jumlah": Decimal("12300000"),
+            "bruto": Decimal("12300000"),
+        }]
+        pages = [{
+            "document_type": "KUITANSI",
+            "file_name": "holdout.pdf",
+            "page_number": 7,
+            "text": (
+                "KUITANSI Nomor: 00991/KW/123456/2028 "
+                "Akun 523121 Pembebanan 4001.ABC.111.222.523121 "
+                "Uraian: Pengadaan peralatan kantor. "
+                "Bruto Rp12.300.000 Jumlah Potongan Rp123.000 "
+                "Yang Dibayarkan Rp12.177.000"
+            ),
+        }]
+
+        parse_kw_support(items, pages)
+
+        self.assertEqual(items[0]["bruto"], Decimal("12300000"))
+        self.assertEqual(items[0]["jumlah"], Decimal("12300000"))
+        self.assertEqual(items[0]["pph21"], Decimal("123000"))
+        self.assertEqual(items[0]["netto"], Decimal("12177000"))
+        self.assertEqual(items[0]["pembebanan"], "4001.ABC.111.222.523121")
 
     def test_selected_page_payload_has_legacy_parser_status(self):
         extracted = _extracted_from_pages([{"page_number": 1, "text": "DRPP", "engine": "tesseract"}])
@@ -1012,3 +1501,128 @@ class DRPPBatchIntegrationTests(TestCase):
                 self.assertIsNotNone(drpp_page)
                 self.assertEqual(drpp_page["file_name"], "SPM 002.pdf")
                 self.assertEqual(drpp_page["page_number"], 2)
+
+
+@skipUnless(
+    os.path.exists("scratch/real_holdout/input/DRPP 00062 KW 00325.pdf"),
+    "DRPP 00062 holdout PDF not found"
+)
+class DRPP00062HoldoutTests(TestCase):
+    """Regression tests for DRPP 00062 holdout validation.
+
+    This PDF is used to validate:
+    1. Parser extracts 18 transactions
+    2. Total matches 30,744,204
+    3. OCR quirks (00311, 00313) are handled correctly
+    4. Page 9 continuation is classified as DRPP
+    5. Group key uses canonical no_drpp format
+    """
+
+    def setUp(self):
+        self.pdf_path = "scratch/real_holdout/input/DRPP 00062 KW 00325.pdf"
+
+    def test_parser_extracts_18_transactions(self):
+        """Parser must extract exactly 18 transactions from DRPP 00062."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        self.assertEqual(len(kw_items), 18)
+
+    def test_total_matches_30744204(self):
+        """Total from parsed transactions must match printed total."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        total_bruto = sum(
+            (item.get("nilai_bruto") or item.get("jumlah") or 0)
+            for item in kw_items
+        )
+        self.assertEqual(total_bruto, Decimal("30744204"))
+
+    def test_ocr_quirk_00311_extracted(self):
+        """OCR quirk: 00311 reads as '0034 1/KW/...' but must be extracted."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        bukti_list = [item.get("no_kuitansi", "") for item in kw_items]
+        self.assertTrue(
+            any("00311" in bukti for bukti in bukti_list),
+            "Transaction 00311 must be extracted despite OCR quirk"
+        )
+
+    def test_ocr_quirk_00313_extracted(self):
+        """OCR quirk: 00313 reads as '00313KW/...' but must be extracted."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        bukti_list = [item.get("no_kuitansi", "") for item in kw_items]
+        self.assertTrue(
+            any("00313" in bukti for bukti in bukti_list),
+            "Transaction 00313 must be extracted despite OCR quirk"
+        )
+
+    def test_00310_and_00311_separate(self):
+        """00310 and 00311 must be separate transactions, not merged."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        count_00310 = sum(1 for item in kw_items if "00310" in item.get("no_kuitansi", ""))
+        count_00311 = sum(1 for item in kw_items if "00311" in item.get("no_kuitansi", ""))
+        self.assertEqual(count_00310, 1)
+        self.assertEqual(count_00311, 1)
+
+    def test_00312_and_00313_separate(self):
+        """00312 and 00313 must be separate transactions, not merged."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        count_00312 = sum(1 for item in kw_items if "00312" in item.get("no_kuitansi", ""))
+        count_00313 = sum(1 for item in kw_items if "00313" in item.get("no_kuitansi", ""))
+        self.assertEqual(count_00312, 1)
+        self.assertEqual(count_00313, 1)
+
+    def test_00317_bruto_378837(self):
+        """00317 must have bruto of 378,837, not 0."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        bruto_00317 = None
+        for item in kw_items:
+            if "00317" in item.get("no_kuitansi", ""):
+                bruto_00317 = item.get("nilai_bruto") or item.get("jumlah")
+                break
+        self.assertEqual(bruto_00317, Decimal("378837"))
+
+    def test_page_9_transactions_available(self):
+        """Page 9 transactions (14-18) must be extracted."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        page_9_kws = ["00322", "00323", "00324", "00325", "00328"]
+        found = sum(
+            1 for item in kw_items
+            for kw in page_9_kws
+            if kw in item.get("no_kuitansi", "")
+        )
+        self.assertEqual(found, 5)
+
+    def test_canonical_no_drpp_format(self):
+        """no_drpp must use canonical format 00062/DRPP/019937/2026."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        for item in kw_items:
+            no_drpp = item.get("no_drpp", "")
+            self.assertTrue(
+                no_drpp.startswith("00062/DRPP/"),
+                f"no_drpp should be canonical: got {no_drpp}"
+            )
+
+    def test_group_uses_canonical_no_drpp(self):
+        """drpp_groups must use canonical no_drpp for key matching."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        groups = parsed.get("drpp_groups", [])
+        self.assertEqual(len(groups), 1)
+        group = groups[0]
+        self.assertTrue(
+            group.get("no_drpp", "").startswith("00062/DRPP/"),
+            f"group no_drpp should be canonical: got {group.get('no_drpp')}"
+        )
+
+    def test_group_has_18_items(self):
+        """drpp_groups must contain 18 items for display."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        groups = parsed.get("drpp_groups", [])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0].get("items", [])), 18)

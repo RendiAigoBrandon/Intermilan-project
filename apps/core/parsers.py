@@ -346,10 +346,18 @@ def classify_page_types(text):
     drpp_table_anchor_count = sum(
         anchor in upper for anchor in ("NO BUKTI", "NAMA PENERIMA", "PENERIMA", "NPWP", "AKUN", "JUMLAH KOTOR")
     )
+    # Count receipt number patterns for DRPP continuation detection
+    # Handle OCR quirks: "0034 1/KW/..." (space) and "00313KW/..." (missing slash)
+    drpp_receipt_count = len(re.findall(
+        r"\b[0-9OIL]{3,6}(?:[\s]*[0-9OIL]*)?[\s]*/?[\s]*KW[\s/]*[0-9OIL\s]{5,12}[\s/]*20[0-9OIL]{2}\b",
+        upper,
+        re.IGNORECASE,
+    ))
     if (
         "DAFTAR RINCIAN PERMINTAAN PEMBAYARAN" in upper
         or re.search(r"(?:NOMOR\s+DRPP|\b\d{3,6}/DRPP/)", upper)
         or ("BUKTI PENGELUARAN" in upper and drpp_table_anchor_count >= 3)
+        or ("BUKTI PENGELUARAN" in upper and drpp_receipt_count >= 3)
     ):
         types.append("DRPP")
     if is_ssp:
@@ -654,8 +662,10 @@ def clean_description(value):
     )
     # Baris terakhir tabel DRPP kadang menyerap footer halaman ke kolom uraian.
     footer = re.search(
-        r"\b(?:Jumlah\s+Lampiran|Jumlah\s+SPP\s+ini|Jumlah\s+s\.?\s*d\.?\s*(?:SPP)?\s*ini|"
-        r"Kuasa\s+Pengguna\s+Anggaran|Pejabat\s+Pembuat\s+Komitmen)\b",
+        r"\b(?:(?:Jumlah|Jumtah|Jumiah)\s+(?:Lampiran|Lamplran|SPP\s+ini|DRPP)|Total\s+DRPP|"
+        r"(?:Jumlah|Jumtah|Jumiah)\s+s\.?\s*d\.?\s*(?:SPP)?\s*(?:ini|lalu)?|"
+        r"Kuasa\s+Pengguna\s+Anggaran|Pejabat\s+Pembuat\s+Komitmen|"
+        r"Bendahara\s+Pengeluaran|Pengguna\s+Anggaran)\b",
         text,
         flags=re.IGNORECASE,
     )
@@ -666,6 +676,13 @@ def clean_description(value):
             r"\1",
             text,
         )
+    signature = re.search(
+        r"\b[A-Z][A-Z .]{3,50},\s*\d{1,2}[-/ ](?:\d{1,2}|[A-Z]{3,12})[-/ ]20\d{2}\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if signature:
+        text = text[: signature.start()]
     text = re.sub(r"(\b20\d{2})\s+NC\s*$", r"\1", text)
     text = re.sub(r"\s+[_/|]{1,3}\s+", " ", text)
     text = re.sub(r"(\bsebanyak\s+\d+\s+pegawai\b).*$", r"\1", text, flags=re.IGNORECASE)
@@ -1558,13 +1575,15 @@ def parse_drpp_items_from_text(text):
     compact_block = normalize_text(block).replace("§", "5")
     rich_pattern = re.compile(
         r"(?P<no>\d{1,3})\s+"
-        r"(?P<bukti>\d{3,6}/KW/[0-9A-Z./-]+)\s+"
+        # Fixed: handles "0034 1/KW/..." and "00313KW/..."
+        r"(?P<bukti>[0-9OIL]{3,6}(?:[\s]*[0-9OIL]*)?[\s]*/?[\s]*KW[\s/]*[0-9OIL\s]{5,12}[\s/]*20[0-9OIL]{2})\s+"
         r"(?P<penerima>.*?)\s+"
         r"(?P<npwp>\d{12,20})\s+"
         r"(?P<akun>5\d{5,7})\s+"
         r"(?P<jumlah>\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)\s*[.;:]?\s+"
         r"(?P<tanggal>\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\s+"
-        r"(?P<keperluan>.*?)(?=\s+\d{1,3}\s+\d{3,6}/KW/|\s+JUMLAH SPP INI|\s+LEMBAR|\Z)",
+        # Fixed: handles "0034 1/KW/..." and "00313KW/..."
+        r"(?P<keperluan>.*?)(?=\s+\d{1,3}\s+[0-9OIL]{3,6}(?:[\s]*[0-9OIL]*)?[\s]*/?[\s]*KW|\s+JUMLAH SPP INI|\s+LEMBAR|\Z)",
         re.IGNORECASE,
     )
     rich_items = []
@@ -1572,7 +1591,7 @@ def parse_drpp_items_from_text(text):
         rich_items.append(
             {
                 "no_urut": int(match.group("no")),
-                "no_bukti": normalize_text(match.group("bukti")),
+                "no_bukti": _normalize_ocr_kw_number(match.group("bukti")) or normalize_text(match.group("bukti")),
                 "tanggal_bukti": match.group("tanggal"),
                 "penerima": normalize_text(match.group("penerima"))[:200],
                 "npwp": match.group("npwp"),
@@ -1612,8 +1631,12 @@ def parse_drpp_items_from_text(text):
         npwp_match = re.search(r"\b\d{2}[.\d-]{10,}\b", body)
         no_bukti = normalize_text(match.group("bukti"))
         if not no_bukti:
-            kw_match = re.search(r"(?:KW|KUITANSI|BUKTI)\s*[:\-]?\s*([0-9A-Z./-]{3,})", body, re.IGNORECASE)
-            no_bukti = kw_match.group(1) if kw_match else ""
+            kw_match = re.search(
+                r"(?:KW|KUITANSI|BUKTI)\s*[:\-]?\s*([0-9A-Z./\s-]{3,})",
+                body,
+                re.IGNORECASE,
+            )
+            no_bukti = (_normalize_ocr_kw_number(kw_match.group(1)) or kw_match.group(1)) if kw_match else ""
         items.append(
             {
                 "no_urut": int(match.group("no")),
@@ -1791,7 +1814,12 @@ def parse_drpp_items_from_tsv(raw_words, page_number=1, confidence_threshold=55)
         bukti_text = normalize_text(" ".join(word["text"] for word in cells["bukti"]))
         starts_row = bool(
             re.fullmatch(r"\d{1,3}", no_text)
-            and re.search(r"[0-9OIL]{3,6}/KW/[0-9OIL]{5,9}/20[0-9OIL]{2}", bukti_text, re.I)
+            and re.search(
+                # Fixed: handles "0034 1/KW/..." and "00313KW/..."
+                r"[0-9OIL]{3,6}(?:[\s]*[0-9OIL]*)?[\s]*/?[\s]*KW[\s/]*[0-9OIL\s]{5,12}[\s/]*20[0-9OIL]{2}",
+                bukti_text,
+                re.I,
+            )
         )
         has_table_content = any(cells[name] for name in ("bukti", "nama", "npwp", "akun", "jumlah"))
         if not has_table_content:
@@ -1819,7 +1847,12 @@ def parse_drpp_items_from_tsv(raw_words, page_number=1, confidence_threshold=55)
             continue
         no_match = re.search(r"\d{1,3}", raw_cells["no"])
         bukti_text = raw_cells["bukti"]
-        no_bukti_match = re.search(r"\b[0-9A-Z]{3,6}/KW/[0-9A-Z./-]+", bukti_text, re.IGNORECASE)
+        no_bukti_match = re.search(
+            # Fixed: handles "0034 1/KW/..." and "00313KW/..."
+            r"[0-9OIL]{3,6}(?:[\s]*[0-9OIL]*)?[\s]*/?[\s]*KW[\s/]*[0-9OIL\s]{5,12}[\s/]*20[0-9OIL]{2}",
+            bukti_text,
+            re.IGNORECASE,
+        )
         tanggal_match = re.search(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", bukti_text)
         akun_match = re.search(r"\b5\d{5}\b", raw_cells["akun"])
         amount_match = re.search(r"\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?|\d+", raw_cells["jumlah"])
@@ -1829,7 +1862,7 @@ def parse_drpp_items_from_tsv(raw_words, page_number=1, confidence_threshold=55)
         ]
         missing_fields = [
             name for name, value in {
-                "no_bukti": no_bukti_match.group(0) if no_bukti_match else "",
+                "no_bukti": _normalize_ocr_kw_number(no_bukti_match.group(0)) if no_bukti_match else "",
                 "akun": akun_match.group(0) if akun_match else "",
                 "jumlah": amount_match.group(0) if amount_match else "",
             }.items()
@@ -1839,7 +1872,7 @@ def parse_drpp_items_from_tsv(raw_words, page_number=1, confidence_threshold=55)
         jumlah = parse_decimal(amount_match.group(0)) if amount_match else Decimal("0")
         normalized = {
             "no": int(no_match.group(0)) if no_match else None,
-            "no_bukti": no_bukti_match.group(0) if no_bukti_match else "",
+            "no_bukti": _normalize_ocr_kw_number(no_bukti_match.group(0)) if no_bukti_match else "",
             "tanggal_bukti": tanggal_match.group(0) if tanggal_match else "",
             "penerima": raw_cells["nama"][:200],
             "npwp": re.sub(r"\D", "", raw_cells["npwp"])[:30],
@@ -1890,10 +1923,16 @@ def parse_drpp_items_from_tsv(raw_words, page_number=1, confidence_threshold=55)
 
 
 def _normalize_ocr_kw_number(value):
-    parts = normalize_text(value).upper().strip("—–-|:;,. ").split("/")
+    text = str(value or "").upper().strip("—–-|:;,. ")
+    # Handle 'KW' without leading slash (e.g., '00313KW/...')
+    text = re.sub(r"(\d{3,6})KW", r"\1/KW", text)
+    # Handle space before slash (e.g., '0034 1/KW/...')
+    text = re.sub(r"(\d)\s*/\s*KW", r"\1/KW", text)
+    parts = [part.strip() for part in normalize_text(text).upper().split("/")]
     if len(parts) < 4 or parts[1] != "KW":
         return ""
     for index in (0, 2, 3):
+        parts[index] = re.sub(r"\s+", "", parts[index])
         parts[index] = parts[index].replace("O", "0").replace("I", "1").replace("L", "1")
     normalized = "/".join(parts[:4])
     return normalized if re.fullmatch(r"\d{3,6}/KW/\d{5,9}/20\d{2}", normalized) else ""
@@ -1909,7 +1948,11 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
     """
     words = [word for word in (_to_tsv_word(raw_word) for raw_word in (raw_words or [])) if word]
     lines = _group_tsv_words_by_line(words)
-    kw_re = re.compile(r"[0-9OIL]{3,6}/KW/[0-9OIL]{5,9}/20[0-9OIL]{2}", re.IGNORECASE)
+    kw_re = re.compile(
+        # Fixed: handles "0034 1/KW/..." (space before slash) and "00313KW/..." (missing slash before KW)
+        r"[0-9OIL]{3,6}(?:[\s]*[0-9OIL]*)?[\s]*/?[\s]*KW[\s/]*[0-9OIL\s]{5,12}[\s/]*20[0-9OIL]{2}",
+        re.IGNORECASE,
+    )
     amount_re = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?")
     small_amount_re = re.compile(r"\b\d{1,3}\b")
     row_starts = []
@@ -3871,20 +3914,118 @@ def parse_drpp_number(value):
     }
 
 
-def extract_drpp_printed_total(text):
+def _normalize_drpp_total_text(text):
+    normalized = normalize_text(text).upper()
+    replacements = {
+        "JUMIAH": "JUMLAH",
+        "JUM1AH": "JUMLAH",
+        "JUMTAH": "JUMLAH",
+        "JUMT4H": "JUMLAH",
+        "JUMIAH": "JUMLAH",
+        "JUMLAH": "JUMLAH",
+        "SPP INI": "SPP INI",
+    }
+    for wrong, right in replacements.items():
+        normalized = normalized.replace(wrong, right)
+    normalized = re.sub(r"\bJ\s*U\s*M\s*(?:L|I|1)\s*A\s*H\b", "JUMLAH", normalized)
+    normalized = re.sub(r"\bT[O0]T[A4]L\b", "TOTAL", normalized)
+    return normalized
+
+
+def _drpp_number_from_total_text(text):
+    match = re.search(r"\b(\d{1,6})\s*/\s*DRPP\s*/\s*\d{3,9}\s*/\s*20\d{2}\b", str(text or ""), re.I)
+    return match.group(1).zfill(5) if match else ""
+
+
+def extract_drpp_total_candidates(
+    text,
+    *,
+    file_name="",
+    page_number=None,
+    document_type="",
+    nomor_drpp="",
+):
+    normalized = _normalize_drpp_total_text(text)
+    raw = normalize_text(text)
+    page_drpp = _drpp_number_from_total_text(normalized)
+    expected_drpp = str(nomor_drpp or "").zfill(5) if nomor_drpp else ""
+    doc_type = str(document_type or "").upper()
+    allowed_doc = doc_type in {"", "DRPP_SUMMARY", "DRPP_COA", "DRPP"}
+    matched_drpp = not expected_drpp or not page_drpp or page_drpp == expected_drpp
+    amount = r"([0-9OIL]{1,3}(?:[.,][0-9OIL]{3})+(?:[.,][0-9OIL]{2})?)"
+
+    def candidate(match, kind, rank, reason="", rejected=False):
+        token = match.group("amount").replace("O", "0").replace("I", "1").replace("L", "1")
+        value = parse_decimal(token)
+        raw_label = match.group("label").strip(" .,:;|-")
+        reject_reason = reason
+        if value <= 0:
+            reject_reason = reject_reason or "zero_or_invalid"
+        if not allowed_doc:
+            reject_reason = reject_reason or "wrong_document_type"
+        if not matched_drpp:
+            reject_reason = reject_reason or "wrong_drpp_number"
+        return {
+            "raw_label": raw_label,
+            "raw_money_token": match.group("amount"),
+            "normalized_value": value,
+            "value": value,
+            "file": file_name,
+            "page": page_number,
+            "document_type": document_type,
+            "nomor_drpp": page_drpp,
+            "expected_drpp": expected_drpp,
+            "extraction_method": "drpp_total_label",
+            "confidence": rank,
+            "source_rank": rank,
+            "kind": kind,
+            "selected": False,
+            "accepted": not (rejected or reject_reason),
+            "reason": reject_reason or "eligible",
+        }
+
     candidates = []
     patterns = [
-        r"JUM(?:LAH|IAH)\s+SPP\s+INI\s*[:\-]?\s*(\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)",
-        r"JUM(?:LAH|IAH)\s+LAMPIRAN\s*[:\-]?\s*(\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)",
-        r"TOTAL\s+(?:DRPP\s+)?(?:BRUTO\s+)?(?:RP\s*)?(\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)",
-        r"TOTAL\s*[:\-]?\s*(\d{1,3}(?:[.,]\d{3})+(?:,\d{2})?)",
+        ("explicit_current", 100, rf"(?P<label>\bJUMLAH\s+SPP\s+INI\b)[^0-9]{{0,80}}(?:RP\s*)?(?P<amount>{amount})", ""),
+        ("drpp_label", 80, rf"(?P<label>\bJUMLAH\s+DRPP\b)[^0-9]{{0,80}}(?:RP\s*)?(?P<amount>{amount})", ""),
+        ("drpp_label", 80, rf"(?P<label>\bTOTAL\s+DRPP\b)[^0-9]{{0,80}}(?:RP\s*)?(?P<amount>{amount})", ""),
+        ("cumulative_previous", 0, rf"(?P<label>\bJUMLAH\s+S\.?\s*D\.?\s*(?:LALU|SEBELUMNYA)\b)[^0-9]{{0,120}}(?:RP\s*)?(?P<amount>{amount})", "cumulative_previous"),
+        ("cumulative_through_current", 0, rf"(?P<label>\bJUMLAH\s+S\.?\s*D\.?\s*SPP\s+INI\b)[^0-9]{{0,120}}(?:RP\s*)?(?P<amount>{amount})", "cumulative_through_current"),
+        ("generic_jumlah", 30, rf"(?P<label>\bJUMLAH\b(?!\s+(?:LAMPIRAN|S\.?\s*D\.?|SD|SAMPAI|LALU|SPP\s+INI|DRPP)))[^0-9]{{0,40}}(?:RP\s*)?(?P<amount>{amount})", ""),
     ]
-    for pattern in patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            amount = parse_decimal(match.group(1))
-            if amount > 0:
-                candidates.append(amount)
-    return candidates[-1] if candidates else Decimal("0")
+    for kind, rank, pattern, reject_reason in patterns:
+        for match in re.finditer(pattern, normalized, re.IGNORECASE):
+            rejected = bool(reject_reason)
+            reason = reject_reason
+            if kind == "generic_jumlah":
+                if doc_type not in {"DRPP_SUMMARY", "DRPP_COA", "DRPP"}:
+                    rejected = True
+                    reason = "wrong_document_type"
+                elif expected_drpp and page_drpp != expected_drpp:
+                    rejected = True
+                    reason = "wrong_drpp_number"
+            candidates.append(candidate(match, kind, rank, reason=reason, rejected=rejected))
+
+    # Kalau OCR normalisasi mengubah label, raw_label tetap cukup informatif.
+    for item in candidates:
+        if item["raw_label"] and item["raw_label"] not in raw:
+            item["raw_label_normalized"] = item["raw_label"]
+    return candidates
+
+
+def select_drpp_printed_total_candidate(candidates):
+    eligible = [item for item in candidates if item.get("accepted") and item.get("value", Decimal("0")) > 0]
+    if not eligible:
+        return None
+    best = sorted(eligible, key=lambda item: (-int(item.get("source_rank") or 0), item.get("page") or 9999))[0]
+    best["selected"] = True
+    best["reason"] = "selected_by_rank_and_provenance"
+    return best
+
+
+def extract_drpp_printed_total(text):
+    selected = select_drpp_printed_total_candidate(extract_drpp_total_candidates(text))
+    return selected["value"] if selected else Decimal("0")
 
 
 def extract_drpp_date(text):
@@ -3913,7 +4054,10 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
     ]
     drpp_total_pages = [
         page for page in page_details
-        if re.search(r"JUM(?:LAH|IAH)\s+SPP\s+INI|JUM(?:LAH|IAH)\s+LAMPIRAN", (page.get("text") or page.get("extracted_text") or ""), re.IGNORECASE)
+        if (
+            set(page.get("page_types") or []) & {"DRPP", "LAMPIRAN_COA"}
+            and extract_drpp_printed_total(page.get("text") or page.get("extracted_text") or "") > 0
+        )
     ]
     coa_pages = [
         page for page in page_details
@@ -3959,13 +4103,22 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
         page_layout_totals = extract_drpp_layout_totals(page_words) if page_words else {}
         if page_layout_totals.get("bruto", Decimal("0")) > layout_totals.get("bruto", Decimal("0")):
             layout_totals = page_layout_totals
-        page_items = max(
-            (cell_items, anchor_items, financial_items),
-            key=lambda rows: (
-                sum(bool(item.get("no_bukti") and item.get("akun") and item.get("jumlah")) for item in rows),
-                len(rows),
-            ),
-        )
+        def row_quality(rows):
+            complete_identity = sum(
+                bool(item.get("no_bukti") and item.get("akun") and item.get("jumlah"))
+                for item in rows
+            )
+            financial_evidence = sum(
+                bool(item.get("bruto") and parse_decimal(item.get("bruto")) > 0)
+                + bool(item.get("netto") and parse_decimal(item.get("netto")) > 0)
+                + bool(item.get("pph21") and parse_decimal(item.get("pph21")) > 0)
+                + bool(item.get("pembebanan"))
+                + bool(item.get("keperluan"))
+                for item in rows
+            )
+            return (complete_identity, financial_evidence, len(rows))
+
+        page_items = max((cell_items, anchor_items, financial_items), key=row_quality)
         items.extend(page_items)
         ocr_trace.append({
             "file": os.path.basename(file_path),
@@ -4045,7 +4198,23 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
     for item in items:
         item["no_drpp"] = drpp_parts["nomor_drpp"]
     total = sum((item["jumlah"] for item in items), Decimal("0"))
-    printed_total = extract_drpp_printed_total(item_text) or layout_totals.get("bruto", Decimal("0"))
+    total_evidence_pages = item_pages or drpp_pages or coa_pages
+    total_candidates = []
+    for page in total_evidence_pages:
+        page_types = set(page.get("page_types") or [])
+        document_type = "DRPP_COA" if "LAMPIRAN_COA" in page_types else ("DRPP_SUMMARY" if "DRPP" in page_types else "")
+        total_candidates.extend(extract_drpp_total_candidates(
+            page.get("text") or page.get("extracted_text") or "",
+            file_name=os.path.basename(file_path),
+            page_number=page.get("page_number") or page.get("page"),
+            document_type=document_type,
+            nomor_drpp=drpp_parts["no_drpp"],
+        ))
+    selected_total = select_drpp_printed_total_candidate(total_candidates)
+    printed_total = (
+        (selected_total or {}).get("value")
+        or layout_totals.get("bruto", Decimal("0"))
+    )
     status = parser_status(extracted)
     warnings = list(extracted["warnings"])
     if tsv_review_warning:
@@ -4083,11 +4252,13 @@ def parse_drpp_pdf(file_path, ocr=False, extracted=None):
             "nomor_spm": spm_match.group(1) if spm_match else "",
             "total": total,
             "printed_total": printed_total,
+            "printed_total_provenance": selected_total or {},
+            "printed_total_candidates": total_candidates,
             "printed_fp": layout_totals.get("fp", Decimal("0")),
             "printed_pph21": layout_totals.get("pph21", Decimal("0")),
             "printed_netto": layout_totals.get("netto", Decimal("0")),
             "source_item_count": len(items),
-            "total_valid": not printed_total or abs(printed_total - total) <= Decimal("1"),
+            "total_valid": printed_total > 0 and abs(printed_total - total) <= Decimal("1"),
         },
         "items": items,
         "ocr_trace": ocr_trace,
