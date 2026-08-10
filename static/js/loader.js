@@ -88,7 +88,7 @@
   }
 
   // Reset loader after BFCache restore (Back/Forward button)
-  window.addEventListener('pageshow', function () {
+  window.addEventListener('pageshow', function (e) {
     if (e.persisted) {
       hideLoader();
     }
