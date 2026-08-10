@@ -31,7 +31,7 @@ from apps.core.document_policy import SPMFamily, normalize_spm_family
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_date, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
 from apps.dk.models import TransactionDetail
-from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, upsert_drpp_group
+from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, resolve_satker_from_existing_dk, short_document_number, upsert_drpp_group
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMUpload
@@ -246,6 +246,9 @@ def paket_spm_list(request):
             # Adapter failure should not block upload - draft generation can be deferred
             parsed["dk_drafts"] = []
 
+        # attach_shadow disabled — ollama_shadow module removed
+        # Re-enable only after restoring apps.core.ollama_shadow
+
         # 2. Simpan ke database sebagai DRAFT
         spm_meta = (parsed.get("spm") or {}).get("metadata", {})
         if sp2d_row:
@@ -408,8 +411,32 @@ def paket_spm_preview(request):
             raw_satker = (
                 access_context.get("user_satker_code") or ""
                 if access_context.get("is_role_operator")
-                else clean_text(request.POST.get("satker_code", paket.satker_code))
+                else clean_text(request.POST.get("satker_code", ""))
             )
+            # Cascade satker: operator scope → top-level POST → existing paket satker
+            # → forced_sp2d satker → paket_context satker → existing D_K by SPM+tahun
+            if not raw_satker:
+                raw_satker = paket.satker_code or (
+                    (forced_sp2d.satker_code if forced_sp2d else None)
+                    or parsed.get("paket_context", {}).get("satker_code") or ""
+                )
+            _dk_satker_ambiguous = False
+            # Extract tahun from SPM date in parsed metadata as fallback when paket.tahun is None
+            _spm_tahun = getattr(
+                (parsed.get("spm") or {}).get("metadata", {}).get("tanggal_spm"), "year", None
+            ) or (parsed.get("spm") or {}).get("metadata", {}).get("tahun")
+            _tahun = paket.tahun or _spm_tahun
+            if not raw_satker and paket.nomor_spm and _tahun:
+                # Final fallback: look up satker from existing D_K records using the
+                # normalized SPM body number and tahun. Returns None (not found),
+                # '' (ambiguous/multiple satkers), or a single satker_code string.
+                nomor_body = short_document_number(paket.nomor_spm) if paket.nomor_spm else ""
+                dk_satker = resolve_satker_from_existing_dk(nomor_body, _tahun)
+                if dk_satker == "":
+                    # Ambiguous — multiple distinct satkers exist for this SPM body in D_K
+                    _dk_satker_ambiguous = True
+                elif dk_satker:
+                    raw_satker = dk_satker
             paket.satker_code = raw_satker.split(" - ")[0].strip()[:32]
 
             # We also update the parsed_data so it reflects in decision and UI
@@ -558,7 +585,9 @@ def paket_spm_preview(request):
                         current["metadata"] = {}
                     meta = current["metadata"]
                     meta["nomor_drpp"] = clean_text(request.POST.get(f"drpp-{index}-nomor_drpp", meta.get("nomor_drpp", "")))
-                    meta["satker_code"] = clean_text(request.POST.get(f"drpp-{index}-satker", meta.get("satker_app_code") or meta.get("satker_code", "")))
+                    meta["satker_code"] = clean_text(request.POST.get(f"drpp-{index}-satker")) or (
+                        meta.get("satker_app_code") or meta.get("satker_code") or ""
+                    )
                     meta["satker_app_code"] = meta["satker_code"]
                     raw_tahun = clean_text(request.POST.get(f"drpp-{index}-tahun", meta.get("tahun", "")))
                     meta["tahun"] = int(raw_tahun) if str(raw_tahun).isdigit() else raw_tahun
@@ -626,7 +655,7 @@ def paket_spm_preview(request):
                 if not commit_drpp:
                     messages.error(request, "Pilih kelompok DRPP yang akan disimpan.")
                     return redirect("paket_spm:preview")
-                
+
                 # GUP Reguler Validation
                 spm_meta = parsed.get("spm", {}).get("metadata", {}) if parsed.get("spm") else {}
                 family = normalize_spm_family(
@@ -661,8 +690,23 @@ def paket_spm_preview(request):
                             extra_errors.append("Terdapat nomor kuitansi duplikat.")
                         if not spm_meta.get("nomor_spm"):
                             extra_errors.append("Parent SPM belum ditentukan.")
-                        if not spm_meta.get("satker_code") and not spm_meta.get("satker_app_code") and not spm_meta.get("satker_djpb_code"):
+                        # Ambiguity check (before "Satker belum ditentukan") so it appears first
+                        if _dk_satker_ambiguous:
+                            extra_errors.append(
+                                "Satker ambigu: nomor SPM ditemukan di beberapa satker berbeda dalam D_K. "
+                                "Tetapkan satker secara manual atau hubungi administrator."
+                            )
+                        elif not spm_meta.get("satker_code") and not spm_meta.get("satker_app_code") and not spm_meta.get("satker_djpb_code"):
                             extra_errors.append("Satker belum ditentukan.")
+                        # Safe conflict check: SP2D satker must agree with resolved document satker
+                        if forced_sp2d and spm_meta.get("satker_code"):
+                            sp2d_satker = (forced_sp2d.satker_code or "").strip()
+                            doc_satker = (spm_meta.get("satker_code") or "").strip()
+                            if sp2d_satker and doc_satker and sp2d_satker != doc_satker:
+                                extra_errors.append(
+                                    f"Satker dokumen ({doc_satker}) berbeda dari Satker SP2D ({sp2d_satker}). "
+                                    "Satukan sebelum menyimpan."
+                                )
                         validation = evaluate_drpp_group_commitability(
                             commit_group.get("drpp") or {},
                             items,
@@ -723,6 +767,10 @@ def paket_spm_preview(request):
                 return redirect("paket_spm:preview")
 
             commit_choice = request.POST.get("commit_choice") # 'link_existing', 'create_from_package', 'review_manual', 'save_draft'
+            import logging
+            logger = logging.getLogger('paket_spm')
+            logger.warning(f"[PAKET SPM] commit_choice={commit_choice}")
+
             decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
 
             if commit_choice == "save_draft":
@@ -911,6 +959,7 @@ def paket_spm_preview(request):
         "scan_rows": scan_rows,
         "drpp_rows": drpp_rows,
         "kw_rows": kw_rows,
+        "ai_shadow_result": parsed.get("ai_shadow") or {},
         "document_checklist": document_checklist,
         "spm_meta": spm_meta,
         "spm_bruto": spm_bruto,
@@ -1315,7 +1364,6 @@ def build_transaction_groups(parsed, transaction_rows):
 
 def build_kw_rows(parsed):
     return parsed.get("kw_items", []) or []
-
 
 
 def _update_dk_drafts_with_manual_edits(parsed, preview_rows):

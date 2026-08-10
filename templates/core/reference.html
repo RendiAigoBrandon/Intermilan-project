@@ -1,9 +1,35 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 
 {% block content %}
-<section class="card">
-  <div class="card-head"><div><h2>{{ page_title }}</h2><p class="muted">Konten referensi akan mengikuti dokumen internal BPS dan template INTERMILAN.</p></div></div>
-  <div class="note-box">Konten referensi akan diisi sesuai dokumen internal yang disetujui.</div>
-  <div class="table-wrap mt-small"><table><thead><tr><th>Judul</th><th>Keterangan</th><th>Status</th></tr></thead><tbody><tr><td>{{ page_title }}</td><td>Referensi aplikasi INTERMILAN</td><td><span class="badge blue">Placeholder UI</span></td></tr></tbody></table></div>
+{% if reference_items %}
+<section class="card app-card">
+  <div class="card-head">
+    <div>
+      <h3>Daftar {{ page_title }}</h3>
+      <span class="eyebrow">{{ reference_items|length }} item</span>
+    </div>
+  </div>
+  <div class="reference-list">
+    {% for item in reference_items %}
+    <div class="reference-item">
+      <div class="reference-number">{{ forloop.counter }}</div>
+      <div class="reference-content">
+        <span class="reference-title">{{ item.0 }}</span>
+      </div>
+      <div class="reference-action">
+        <a href="{{ item.1 }}" target="_blank" rel="noopener noreferrer" class="btn primary-btn btn-sm">
+          {% if kind == "peraturan" %}Buka Peraturan{% else %}Buka Template{% endif %}
+        </a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
 </section>
+{% else %}
+<section class="card app-card">
+  <div class="empty-state">
+    <p>Belum ada item untuk {{ page_title }}.</p>
+  </div>
+</section>
+{% endif %}
 {% endblock %}

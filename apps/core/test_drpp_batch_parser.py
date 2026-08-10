@@ -1626,3 +1626,90 @@ class DRPP00062HoldoutTests(TestCase):
         groups = parsed.get("drpp_groups", [])
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(groups[0].get("items", [])), 18)
+
+
+@skipUnless(
+    os.path.exists("scratch/real_holdout/input/DRPP 00061 KW 00318.pdf"),
+    "DRPP 00061 holdout PDF not found"
+)
+class DRPP00061HoldoutTests(TestCase):
+    """Regression tests for DRPP 00061 holdout validation.
+
+    This PDF is used to validate:
+    1. Parser correctly identifies DRPP summary on page 8 (not page 1-4)
+    2. Transaction value is current SPP amount (1,000,000), not cumulative (10,223,800)
+    3. Current amount + previous cumulative = cumulative total (1,000,000 + 9,223,800 = 10,223,800)
+    4. The cumulative totals do not become the transaction nilai_bruto
+    """
+
+    def setUp(self):
+        self.pdf_path = "scratch/real_holdout/input/DRPP 00061 KW 00318.pdf"
+
+    def test_printed_total_is_1000000(self):
+        """Printed total from DRPP summary must be 1,000,000 (current SPP), not 10,223,800 (cumulative)."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        drpps = parsed.get("drpps", [])
+        self.assertEqual(len(drpps), 1)
+        meta = drpps[0].get("metadata", {})
+        self.assertEqual(meta.get("printed_total"), Decimal("1000000"))
+
+    def test_printed_total_provenance_is_explicit_current(self):
+        """Selected total must be 'explicit_current' kind (Jumlah SPP ini), not 'cumulative_through_current'."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        drpps = parsed.get("drpps", [])
+        self.assertEqual(len(drpps), 1)
+        provenance = drpps[0].get("metadata", {}).get("printed_total_provenance", {})
+        self.assertEqual(provenance.get("kind"), "explicit_current")
+        self.assertEqual(provenance.get("value"), Decimal("1000000"))
+
+    def test_cumulative_through_current_not_selected(self):
+        """Cumulative total (10,223,800) must NOT be the selected transaction total."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        drpps = parsed.get("drpps", [])
+        self.assertEqual(len(drpps), 1)
+        provenance = drpps[0].get("metadata", {}).get("printed_total_provenance", {})
+        self.assertNotEqual(provenance.get("value"), Decimal("10223800"))
+
+    def test_row_total_is_1000000(self):
+        """Row total / transaction nilai_bruto must be 1,000,000, not 10,223,800."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        self.assertGreater(len(kw_items), 0)
+        for item in kw_items:
+            bruto = item.get("nilai_bruto") or item.get("jumlah") or Decimal("0")
+            self.assertNotEqual(
+                bruto, Decimal("10223800"),
+                f"Transaction should not have cumulative total as nilai_bruto: {bruto}"
+            )
+
+    def test_cumulative_totals_present_but_not_selected(self):
+        """Cumulative candidates must be present in rejected candidates."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        drpps = parsed.get("drpps", [])
+        self.assertEqual(len(drpps), 1)
+        candidates = drpps[0].get("metadata", {}).get("printed_total_candidates", [])
+        rejected_values = {
+            c.get("value"): c.get("kind")
+            for c in candidates
+            if not c.get("accepted")
+        }
+        self.assertIn(Decimal("9223800"), rejected_values)
+        self.assertEqual(rejected_values.get(Decimal("9223800")), "cumulative_previous")
+        self.assertIn(Decimal("10223800"), rejected_values)
+        self.assertEqual(rejected_values.get(Decimal("10223800")), "cumulative_through_current")
+
+    def test_drpp_metadata(self):
+        """DRPP metadata must have correct values."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        drpps = parsed.get("drpps", [])
+        self.assertEqual(len(drpps), 1)
+        meta = drpps[0].get("metadata", {})
+        self.assertEqual(meta.get("nomor_drpp"), "00061")
+
+    def test_single_transaction_kw_00318(self):
+        """DRPP 00061 contains single transaction KW 00318."""
+        parsed = parse_drpp_upload_batch(self.pdf_path, ocr=True)
+        kw_items = parsed.get("kw_items", [])
+        self.assertEqual(len(kw_items), 1)
+        self.assertIn("00318", kw_items[0].get("no_kuitansi", ""))
+        self.assertEqual(kw_items[0].get("nilai_bruto"), Decimal("1000000"))

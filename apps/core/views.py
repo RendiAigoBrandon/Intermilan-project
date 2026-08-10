@@ -9,9 +9,10 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.accounts.access import can_access_audit_data, can_edit_satker, filter_by_satker, get_profile, permission_context
+from apps.accounts.access import can_access_audit_data, can_edit_satker, can_view_all_satker, filter_by_satker, get_profile, permission_context
 from apps.core.models import MonitoringSummary
 from apps.core.satker import get_satker_name_map
+from apps.core.document_policy import get_required_documents, normalize_akun_family
 from apps.dk.models import MasterAkun, TransactionDetail
 from apps.documents.models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink, DocumentUpload
 from apps.drpp.models import DRPPItem, DRPPMatch, DRPPUpload
@@ -101,6 +102,50 @@ MASTER_AKUN_ROWS = [
     ("522141", "Sewa", "Belanja Jasa"),
     ("524111", "Belanja Perjalanan Dinas Biasa", "Belanja Perjalanan Dinas"),
 ]
+
+REFERENCE_LINKS = {
+    "peraturan": {
+        "title": "Peraturan",
+        "subtitle": "Daftar peraturan pengelolaan administrasi keuangan.",
+        "items": [
+            ("PMK No. 39 Tahun 2024 Tentang Standar Biaya Masukan (SBM) Tahun Anggaran 2025", "https://djpb.kemenkeu.go.id/kppn/bandarlampung/id/download/peraturan-terbaru/3089-pmk-no-39-tahun-2024-tentang-standar-biaya-masukan-sbm-tahun-anggaran-2025.html"),
+            ("Perdirjen nomor PER-5/PB/2024 Tentang Petunjuk Teknis Penilaian Indikator Kinerja Pelaksanaan Anggaran Belanja Kementerian Negara/Lembaga", "https://djpb.kemenkeu.go.id/kppn/metro/id/download/peraturan/3506-perdirjen-nomor-per-5-pb-2024-tentang-petunjuk-teknis-penilaian-indikator-kinerja-pelaksanaan-anggaran-belanja-kementerian-negara-lembaga.html"),
+            ("Peraturan Menteri Keuangan Nomor 119 Tahun 2023 tentang Perubahan Atas PMK Nomor 113/PMK.05/2012 tentang Perjalanan Dinas Dalam Negeri", "https://djpb.kemenkeu.go.id/kppn/metro/id/download/peraturan/3508-peraturan-menteri-keuangan-nomor-119-tahun-2023-tentang-perubahan-atas-peraturan-menteri-keuangan-nomor-113-pmk-05-2012-tentang-perjalanan-dinas-dalam-negeri-bagi-pejabat-negara,-pegawai-negeri-dan-pegawai-tidak-tetap.html"),
+            ("PMK No. 232/PMK.05/2022 tentang Sistem Akuntansi dan Pelaporan Keuangan Instansi", "https://djpb.kemenkeu.go.id/kppn/metro/id/download/peraturan/3446-pmk-no-232-pmk-05-2022-tentang-sistem-akuntansi-dan-pelaporan-keuangan-instansi.html"),
+            ("PMK No. 210/PMK.05/2022 Tentang Tata Cara Pembayaran Dalam Rangka Pelaksanaan Anggaran Pendapatan dan Belanja Negara", "https://djpb.kemenkeu.go.id/kppn/metro/id/download/peraturan/3444-pmk-no-210-pmk-05-2022-tentang-tata-cara-pembayaran-dalam-rangka-pelaksanaan-anggaran-pendapatan-dan-belanja-negara.html"),
+            ("Perdirjen Perbendaharaan No. Per-7/PB/2022 Tentang Penggunaan Uang Persediaan Melalui Digipay Pada Satker K/L", "https://djpb.kemenkeu.go.id/kppn/metro/id/download/peraturan/3442-perdirjen-perbendaharaan-no-per-7-pb-2022-tentang-penggunaan-uang-persediaan-melalui-digipay-pada-satker-k-l.html"),
+            ("Petunjuk Pengajuan UP 2025", "https://drive.google.com/file/d/1K2_zNG0vS0LLFtN6I0tV7pTrZ_wccWov/view?usp=drive_link"),
+            ("Perka BPS No.115 Tahun 2024 Tentang Standar Biaya Kegiatan Statistik", "https://drive.google.com/file/d/136dGGDPbRSMW4MQUba-P0pPZl3NP7ibf/view?usp=drive_link"),
+            ("Perka BPS No.165 Tahun 2024 tentang Perubahan Perka No. 115 Tahun 2024 tentang SBKS", "https://drive.google.com/file/d/1j0LiLUTbBkUdE4hLt0E0gADP4WqbsnQ9/view?usp=drive_link"),
+            ("Perka BPS Nomor 5 Tahun 2024 tentang Kebijakan Akuntansi di Lingkungan BPS", "https://drive.google.com/file/d/1vyYiBCIL60r7ylemnc2z30B6w78GS3Ne/view?usp=drive_link"),
+            ("Perka BPS Nomor 6 Tahun 2024 tentang Pedoman Pelaksanaan Perjalanan Dinas Jabatan di Lingkungan BPS", "https://docs.google.com/document/d/11gMIU1Lt2UAfSLzCPE5h6hJNntmDSrFj/edit"),
+            ("Perka BPS Nomor 7 Tahun 2024 tentang Pedoman Transaksi Pembayaran Nontunai di Lingkungan BPS", "https://docs.google.com/document/d/1Y1NDVhAc0VlWNBL-yBFhg3ZYiqed5wcL/edit"),
+            ("Perka BPS Nomor 8 Tahun 2024 tentang Pedoman Administrasi Keuangan Kegiatan Sensus dan Survei di Lingkungan BPS", "https://docs.google.com/document/d/1CRiQSqd4nxxKZoZuPb_pzw57KjHHKTkx/edit"),
+        ],
+    },
+    "template": {
+        "title": "Template",
+        "subtitle": "Kumpulan format/template keuangan yang familiar dari INTERMILAN lama.",
+        "items": [
+            ("Template SPJ", "https://drive.google.com/drive/folders/1BxwAP32ahB1F2Gu59kuvM4iSBT6XUU8-"),
+            ("Blanko Ralat Setoran MPN G2 Billing", "https://docs.google.com/document/d/15S2CBii73ybvGUq2hWS5ChnRxJmrcrE8/edit"),
+            ("Blanko Ralat SPM SPAN", "https://docs.google.com/document/d/1kkN_X3lIYzGqP8arEkbdxm_I0UMspQ1b/edit"),
+            ("PENONAKTIFAN-SUPPLIER-TIPE3 (PEGAWAI)", "https://docs.google.com/document/d/1zWyQNd2jopZrA_EnkyRsuJNr7WF0kvdT/edit"),
+            ("PENGAKTIFAN-KEMBALI-SUPPLIER-TIPE3 (PEGAWAI)", "https://docs.google.com/document/d/1S5_aq4lEoGkM__LNCFGBEmNzdkN17Wpw/edit"),
+            ("FORM PENJELASAN-KETIDAKSESUAIAN-TUP", "https://docs.google.com/document/d/1ZRxMCcPSqgfrO_p7AEgF2lAj3nn5h79H/edit"),
+            ("FORM PERUBAHAN USER SAKTI", "https://docs.google.com/spreadsheets/d/1WSdGsRLxecplU4DGBWkL8q15DX2qrKQ-/edit?gid=736426447"),
+            ("FORMAT SK PENETAPAN USER SAKTI", "https://docs.google.com/document/d/1wIl9ZBGJA9LM19kanPAQrXT32Jur4IiS/edit"),
+            ("SURAT PERNYATAAN KETERLAMBATAN KONTRAK", "https://docs.google.com/document/d/1UbXeKAuoVbU1TvnU2Ne8npO8dE0VCYHM/edit"),
+            ("FORM PERUBAHAN-DATA-KONTRAK", "https://docs.google.com/document/d/1B7r6P7T5oruC9YjpUWd_O75f57Kj8yzC/edit"),
+            ("PENAMBAHAN-INFORMASI-PADA-SUPPLIER", "https://docs.google.com/document/d/19Z8T-aBFAa0yVunBVnq5ENPD0_wlBzoF/edit"),
+        ],
+    },
+    "panduan": {
+        "title": "Panduan Aplikasi",
+        "subtitle": "Petunjuk penggunaan aplikasi INTERMILAN.",
+        "items": [],
+    },
+}
 
 MOM_ROWS = [
     {"satker": "bps1300", "pct": "93.94%", "fa": 100, "bulan": 92, "sd": 90},
@@ -207,46 +252,55 @@ def dashboard(request):
     profile = get_profile(request.user)
     selected_year = request.GET.get("tahun", "2026").strip() or "2026"
     selected_month = request.GET.get("bulan", "1").strip() or "1"
-    selected_jenis_spm = request.GET.get("jenis_spm", "").strip()
+    selected_satker = request.GET.get("satker", "").strip()
     selected_month = selected_month if selected_month.isdigit() and 1 <= int(selected_month) <= 12 else "1"
     selected_year_int = int(selected_year) if selected_year.isdigit() else 2026
     selected_month_int = int(selected_month)
+
+    # Scoped querysets
     sp2d_qs = filter_by_satker(SP2DRaw.objects.all(), request.user)
     dk_qs = filter_by_satker(TransactionDetail.objects.all(), request.user)
     drpp_qs = filter_by_satker(DRPPUpload.objects.all(), request.user)
-    dk_chart_qs = TransactionDetail.objects.all()
-    sp2d_chart_qs = sp2d_qs if selected_year == "2026" else sp2d_qs.none()
-    dk_focus_qs = dk_chart_qs
-    if selected_month:
-        dk_focus_qs = dk_focus_qs.filter(bulan_sp2d=selected_month_int)
-    dk_table_qs = dk_qs.filter(bulan_sp2d=selected_month_int) if selected_month else dk_qs
-    if selected_jenis_spm:
-        dk_table_qs = dk_table_qs.filter(jenis_spm=selected_jenis_spm)
-    document_qs = DocumentUpload.objects.all()
-    if profile and profile.is_satker:
-        document_qs = document_qs.filter(transaction_detail__satker_code=profile.satker_code)
+
+    # Stats cards
     totals = dk_qs.aggregate(nilai_bruto=Sum("nilai_bruto"), nilai_netto=Sum("nilai_netto"))
-    focus_totals = dk_focus_qs.aggregate(nilai_netto=Sum("nilai_netto"))
-    summary_qs = MonitoringSummary.objects.filter(tahun=selected_year_int, bulan_number=selected_month_int)
-    summary_available = summary_qs.exists()
-    if summary_available:
-        mom_rows = build_mom_rows_from_summary(summary_qs)
-        summary_focus = summary_qs.aggregate(nilai=Sum("intermilan_bulan_ini"), refreshed=Max("last_refreshed_at"))
-        focus_value = summary_focus["nilai"] or 0
-        last_refreshed = summary_focus["refreshed"]
-    else:
-        mom_rows = build_mom_rows(dk_chart_qs, selected_month)
-        focus_value = focus_totals["nilai_netto"] or 0
-        last_refreshed = None
-    dashboard_rows = build_dashboard_rows(dk_table_qs)
+
+    # Build summary table
+    dashboard_summary_rows = build_dashboard_summary_rows(
+        dk_qs,
+        tahun=selected_year_int,
+        bulan=selected_month_int,
+        satker_filter=selected_satker if selected_satker else None,
+        user=request.user
+    )
+
+    # Count transactions without SP2D for warning
+    no_sp2d_count = dk_qs.filter(
+        bulan_sp2d=selected_month_int,
+        sp2d_raw__isnull=True
+    ).count()
+
     card_scope = build_dashboard_scope(request.user)
-    chart_scope = build_dashboard_chart_scope(request.user)
-    focus_month_label = month_name(selected_month_int)
     year_options = get_dashboard_year_options()
+    satker_options = get_satker_options_for_dashboard(dk_qs, user=request.user)
+
+    # Chart Data
+    dashboard_chart = {
+        "labels": [],
+        "fa16": [],
+        "intermilan_bulan": [],
+        "intermilan_kumulatif": []
+    }
+    for row in dashboard_summary_rows:
+        dashboard_chart["labels"].append(row["satker_code"])
+        dashboard_chart["fa16"].append(row.get("fa16_raw", 0))
+        dashboard_chart["intermilan_bulan"].append(row.get("intermilan_bulan_raw", 0))
+        dashboard_chart["intermilan_kumulatif"].append(row.get("intermilan_sd_raw", 0))
+
     context = common_context(request)
     context.update({
         "page_title": "Dashboard INTERMILAN",
-        "page_subtitle": "Pantau realisasi, transaksi, dan kelengkapan dokumen per satker.",
+        "page_subtitle": "Pantau realizesi, transaksi, dan kelengkapan dokumen per satker.",
         "stats": {
             "sp2d": sp2d_qs.count(),
             "perlu_detail": sp2d_qs.filter(status=SP2DRaw.Status.PERLU_DETAIL).count(),
@@ -254,34 +308,24 @@ def dashboard(request):
             "drpp": drpp_qs.count(),
             "nilai_bruto": totals["nilai_bruto"] or 0,
             "nilai_netto": totals["nilai_netto"] or 0,
-            "documents": document_qs.count() + DocumentDriveLink.objects.count(),
         },
-        "dashboard_filters": {"tahun": selected_year, "bulan": selected_month, "jenis_spm": selected_jenis_spm},
+        "dashboard_filters": {
+            "tahun": selected_year,
+            "bulan": selected_month,
+            "satker": selected_satker
+        },
         "year_options": year_options,
+        "satker_options": satker_options,
         "months": MONTH_OPTIONS,
-        "jenis_spm_options": get_dashboard_jenis_spm_options(dk_qs),
         "card_scope_label": card_scope["label"],
         "card_scope_note": card_scope["note"],
-        "scope_label": chart_scope["label"],
-        "scope_note": chart_scope["note"],
-        "data_window_note": "Chart utama membandingkan realisasi lintas satker pada bulan terpilih; label X-axis mengikuti kode bps1300, bps1301, dst.",
-        "fa16_note": (
-            "Sumber chart: MonitoringSummary hasil baseline Monitoring_Combine dan refresh data web. FA16 tidak dihitung dari D_K."
-            if summary_available
-            else "MonitoringSummary belum tersedia untuk periode ini; chart fallback menghitung Intermilan dari D_K dan FA16 tetap 0."
-        ),
-        "summary_source_label": "MonitoringSummary" if summary_available else "Fallback D_K",
-        "last_refreshed_label": format_datetime_id(last_refreshed) if last_refreshed else "Belum pernah refresh; memakai baseline/import terakhir.",
-        "focus_summary": {
-            "month": focus_month_label,
-            "transaction_count": dk_focus_qs.count() if selected_month else dk_chart_qs.count(),
-            "intermilan_value": format_id_number(focus_value),
-        },
-        "mom_rows": mom_rows,
-        "dashboard_columns": DASHBOARD_COLUMNS,
-        "dashboard_rows": dashboard_rows or DASHBOARD_TABLE_ROWS,
-        "dashboard_table_source": "D_K preview sesuai kolom Dashboard Excel",
-        "recent_sp2d": sp2d_chart_qs[:5],
+        # Summary table data
+        "dashboard_summary_rows": dashboard_summary_rows,
+        "dashboard_chart": dashboard_chart,
+        "no_sp2d_count": no_sp2d_count,
+        "dashboard_year": selected_year_int,
+        "dashboard_bulan": selected_month_int,
+        "dashboard_bulan_label": month_name(selected_month_int),
     })
     return render(request, "core/dashboard.html", context)
 
@@ -360,11 +404,47 @@ def monitoring(request):
 
 @login_required
 def master_akun(request):
+    active_tab = request.GET.get("tab", "referensi").strip()
+
+    # Referensi tab - list kode akun
     rows = list(MasterAkun.objects.filter(is_active=True).values_list("kode", "nama_akun", "kategori")[:100])
     if not rows:
         rows = MASTER_AKUN_ROWS
+
+    # Transaksi tab - summary per akun (SCOPED by permission)
+    transaksi_rows = []
+    if active_tab == "transaksi":
+        # SCOPED: Only count transactions user has permission to see
+        scoped_dk = filter_by_satker(TransactionDetail.objects.all(), request.user)
+        master_rows = MasterAkun.objects.filter(is_active=True)
+        summaries = {
+            item["akun"]: item
+            for item in scoped_dk.values("akun").annotate(total=Count("id"), nilai=Sum("nilai_netto"))
+        }
+        for master in master_rows[:100]:
+            summary = summaries.get(master.kode, {})
+            transaksi_rows.append({
+                "kode": master.kode,
+                "nama": master.nama_akun,
+                "kategori": master.kategori,
+                "total": summary.get("total", 0),
+                "nilai": summary.get("nilai", 0) or 0,
+                "checklist": 0,
+            })
+        if not transaksi_rows:
+            transaksi_rows = [
+                {"kode": kode, "nama": nama, "kategori": kategori, "total": 0, "nilai": 0, "checklist": 0}
+                for kode, nama, kategori in MASTER_AKUN_ROWS
+            ]
+
     context = common_context(request)
-    context.update({"page_title": "Master Akun", "page_subtitle": "Kelola referensi kode akun dan kategori transaksi.", "rows": rows})
+    context.update({
+        "page_title": "Akun Keuangan",
+        "page_subtitle": "Kelola referensi kode akun dan transaksi per akun.",
+        "rows": rows,
+        "transaksi_rows": transaksi_rows,
+        "active_tab": active_tab,
+    })
     return render(request, "core/master_akun.html", context)
 
 
@@ -898,9 +978,15 @@ def filter_monitoring_rows(rows, search):
 
 @login_required
 def static_reference(request, kind):
+    data = REFERENCE_LINKS.get(kind, {})
     titles = {"peraturan": "Peraturan", "template": "Template", "panduan": "Panduan Aplikasi"}
     context = common_context(request)
-    context.update({"page_title": titles.get(kind, "Referensi"), "page_subtitle": "Referensi pendukung penggunaan INTERMILAN.", "kind": kind})
+    context.update({
+        "page_title": data.get("title", titles.get(kind, "Referensi")),
+        "page_subtitle": data.get("subtitle", "Referensi pendukung penggunaan INTERMILAN."),
+        "kind": kind,
+        "reference_items": data.get("items", []),
+    })
     return render(request, "core/reference.html", context)
 
 
@@ -914,3 +1000,352 @@ def error_404(request, exception=None):
 
 def error_500(request):
     return render(request, "500.html", status=500)
+
+
+# =============================================================================
+# DASHBOARD SUMMARY FUNCTIONS
+# =============================================================================
+
+
+def build_dashboard_summary_rows(scoped_queryset, tahun, bulan, satker_filter=None, user=None):
+    """
+    Bangun ringkasan Dashboard per satker-bulan-tahun.
+
+    SEMUA query dibatasi oleh permission scope dari scoped_queryset dan user.
+
+    Args:
+        scoped_queryset: TransactionDetail queryset yang sudah discope berdasarkan permission
+        tahun: Tahun anggaran (dari sp2d_raw__tahun)
+        bulan: Bulan SP2D
+        satker_filter: Filter satker opsional
+        user: Objek user yang login
+
+    Returns:
+        List of dict dengan 12 kolom sesuai template Excel
+    """
+    main_filter = Q(bulan_sp2d=bulan)
+    # Use tanggal_spm__year for year filtering - authoritative source from SPM date.
+    # Also include NULL tanggal_spm rows when tahun is specified - these represent
+    # real transactions (e.g., satker 1301 has 98 transactions ALL with NULL dates).
+    # NULL tanggal_spm rows have created_at/updated_at in the current period.
+    if tahun:
+        main_filter &= Q(Q(tanggal_spm__year=tahun) | Q(tanggal_spm__isnull=True))
+
+    transaction_satkers = set(
+        scoped_queryset.exclude(satker_code="")
+        .filter(main_filter)
+        .values_list("satker_code", flat=True)
+        .distinct()
+    )
+
+    fa16_query = MonitoringSummary.objects.filter(bulan_number=bulan)
+    if tahun:
+        fa16_query = fa16_query.filter(tahun=tahun)
+
+    # 1. BUILD ALLOWED SATKER CODES FROM PERMISSION SCOPE
+    allowed_satker_codes = None
+    if user and not can_view_all_satker(user):
+        profile = get_profile(user)
+        if profile and profile.is_satker and profile.satker_code:
+            allowed_satker_codes = {profile.satker_code}
+            fa16_query = fa16_query.filter(satker_code=profile.satker_code)
+        else:
+            allowed_satker_codes = set()
+            fa16_query = fa16_query.none()
+
+    fa16_satkers = set(
+        fa16_query.exclude(satker_code="").values_list("satker_code", flat=True).distinct()
+    )
+
+    all_potential_satkers = transaction_satkers | fa16_satkers
+
+    if allowed_satker_codes is not None:
+        display_satkers = sorted(all_potential_satkers & allowed_satker_codes)
+    else:
+        display_satkers = sorted(all_potential_satkers)
+
+    if not display_satkers:
+        return []
+
+    if satker_filter:
+        if satker_filter not in display_satkers:
+            return []
+        display_satkers = [satker_filter]
+
+    # 2. QUERY 1: Main aggregates per satker (from scoped_queryset)
+
+    main_stats = {}
+    for item in scoped_queryset.filter(main_filter).values("satker_code").annotate(
+        total_transaksi=Count("id"),
+        intermilan_bulan=Sum("nilai_netto"),
+        diarsipkan=Count("id", filter=Q(status_detail=TransactionDetail.StatusDetail.DIARSIPKAN))
+    ):
+        main_stats[item["satker_code"]] = {
+            "total_transaksi": item["total_transaksi"] or 0,
+            "intermilan_bulan": item["intermilan_bulan"] or Decimal("0"),
+            "diarsipkan": item["diarsipkan"] or 0,
+        }
+
+    # 3. QUERY 2: Cumulative per satker (from scoped_queryset)
+    # Year filter needed here too - cumulative should only include current year
+    # Include NULL tanggal_spm rows (same logic as main_filter)
+    cumulative_filter = Q(bulan_sp2d__lte=bulan)
+    if tahun:
+        cumulative_filter &= Q(Q(tanggal_spm__year=tahun) | Q(tanggal_spm__isnull=True))
+
+    cumulative_stats = {}
+    for item in scoped_queryset.filter(cumulative_filter).values("satker_code").annotate(
+        nilai=Sum("nilai_netto")
+    ):
+        cumulative_stats[item["satker_code"]] = item["nilai"] or Decimal("0")
+
+    # 4. QUERY 3: ChecklistStatus SCOPED through transaction_detail_id__in
+    scoped_transaction_ids = scoped_queryset.filter(main_filter).values("id")
+
+    checklist_data = {}
+    for item in ChecklistStatus.objects.filter(
+        transaction_detail_id__in=scoped_transaction_ids,
+        wajib=True
+    ).values("transaction_detail__satker_code").annotate(
+        total=Count("id"),
+        ada=Count("id", filter=Q(status="ADA"))
+    ):
+        checklist_data[item["transaction_detail__satker_code"]] = {
+            "total": item["total"] or 0,
+            "ada": item["ada"] or 0,
+        }
+
+    # 5. QUERY 4: DocumentDriveLink SCOPED through transaction_detail_id__in
+    spj_data = {}
+    for item in DocumentDriveLink.objects.filter(
+        transaction_detail_id__in=scoped_transaction_ids
+    ).values("transaction_detail__satker_code").annotate(
+        transaksi_spj=Count("transaction_detail", distinct=True)
+    ):
+        spj_data[item["transaction_detail__satker_code"]] = item["transaksi_spj"] or 0
+
+    # 6. QUERY 5: FA16 SCOPED through allowed_satker_codes
+    fa16_data = {}
+    if display_satkers:
+        ms_query = MonitoringSummary.objects.filter(
+            satker_code__in=display_satkers,
+            bulan_number=bulan
+        )
+        if tahun:
+            ms_query = ms_query.filter(tahun=tahun)
+        for row in ms_query:
+            fa16_data[row.satker_code] = row.fa16_bulan_ini
+
+    # 7. WARNING: Transaksi tanpa SP2D SCOPED
+    no_sp2d_count = 0
+    if tahun and bulan:
+        no_sp2d_count = scoped_queryset.filter(
+            bulan_sp2d=bulan,
+            sp2d_raw__isnull=True
+        ).count()
+
+    # 8. BUILD ROWS
+    satker_names = get_satker_name_map(display_satkers)
+    rows = []
+
+    for satker in display_satkers:
+        stat = main_stats.get(satker, {})
+        total_transaksi = stat.get("total_transaksi", 0)
+        intermilan_bulan = stat.get("intermilan_bulan", Decimal("0"))
+        intermilan_sd = cumulative_stats.get(satker, Decimal("0"))
+        diarsipkan = stat.get("diarsipkan", 0)
+        fa16 = fa16_data.get(satker)
+
+        # Calculate % Kelengkapan using account-family policy
+        # Denominator = expected mandatory documents from policy
+        # Numerator = ADA rows whose document name MATCHES policy required list
+        # Legacy rows not in policy do NOT inflate the numerator
+        expected_required = get_expected_checklist_count(satker, tahun, bulan)
+        ada_count = get_checklist_ada_by_policy(satker, tahun, bulan) if expected_required > 0 else 0
+        if expected_required > 0 and ada_count > 0:
+            persen_kelengkapan = percent_safe(ada_count, expected_required)
+        elif expected_required > 0:
+            persen_kelengkapan = Decimal("0")
+        else:
+            persen_kelengkapan = None  # No expected documents means N/A
+
+        transaksi_spj = spj_data.get(satker, 0)
+        persen_spj = percent_safe(transaksi_spj, total_transaksi)
+
+        persen_arsip = percent_safe(diarsipkan, total_transaksi)
+
+        persen_realisasi = calculate_realisasi_percent_safe(intermilan_bulan, fa16)
+
+        percent_completed = calculate_percent_completed(
+            persen_realisasi, persen_kelengkapan, persen_spj, persen_arsip
+        )
+
+        rows.append({
+            "bps": satker_names.get(satker, f"bps{satker}"),
+            "satker_code": satker,
+            "bulan": month_name(bulan),
+            "bulan_number": bulan,
+            "tahun": tahun,
+            "fa16": format_id_number(fa16) if fa16 is not None else "—",
+            "intermilan_bulan": format_id_number(intermilan_bulan),
+            "intermilan_sd": format_id_number(intermilan_sd),
+            "persen_realisasi": format_percent_safe(persen_realisasi),
+            "persen_kelengkapan": format_percent_safe(persen_kelengkapan),
+            "persen_spj": format_percent_safe(persen_spj),
+            "persen_arsip": format_percent_safe(persen_arsip),
+            "percent_completed": format_percent_safe(percent_completed),
+            "fa16_raw": float(fa16) if fa16 is not None else 0,
+            "intermilan_bulan_raw": float(intermilan_bulan) if intermilan_bulan is not None else 0,
+            "intermilan_sd_raw": float(intermilan_sd) if intermilan_sd is not None else 0,
+        })
+
+    return rows
+
+
+def percent_safe(numerator, denominator):
+    """Return Decimal or None for zero denominator."""
+    if not denominator:
+        return None
+    return min(
+        (Decimal(numerator or 0) / Decimal(denominator)) * 100,
+        Decimal("100")
+    ).quantize(Decimal("0.01"))
+
+
+def calculate_realisasi_percent_safe(intermilan_value, fa16_value):
+    """Return percent or None if FA16 is None or zero."""
+    if fa16_value is None or fa16_value == 0:
+        return None
+    return min(
+        (Decimal(intermilan_value or 0) / Decimal(fa16_value)) * 100,
+        Decimal("100")
+    ).quantize(Decimal("0.01"))
+
+
+def calculate_percent_completed(persen_realisasi, persen_kelengkapan, persen_spj, persen_arsip):
+    """
+    Calculate % Completed based on Excel formula:
+
+    percent_completed = persen_realisasi * average(persen_kelengkapan, persen_spj, persen_arsip)
+
+    Only include components that are not None.
+    Return None if persen_realisasi is None or no components available.
+    """
+    if persen_realisasi is None:
+        return None
+
+    components = []
+    for val in [persen_kelengkapan, persen_spj, persen_arsip]:
+        if val is not None:
+            components.append(val)
+
+    if not components:
+        return None
+
+    avg = sum(components) / len(components)
+    result = (Decimal(persen_realisasi) * avg) / 100
+
+    return min(result, Decimal("100")).quantize(Decimal("0.01"))
+
+
+def format_percent_safe(value):
+    """Format percentage or return dash for None."""
+    if value is None:
+        return "—"
+    return format_percent_id(value)
+
+
+def get_expected_checklist_count(satker_code, tahun, bulan):
+    """
+    Calculate expected mandatory checklist count based on account-family policy.
+
+    Returns the total number of mandatory documents that SHOULD exist for all
+    transactions of this satker-month, based on account-family detection.
+    """
+    from apps.dk.models import TransactionDetail
+    transactions = TransactionDetail.objects.filter(satker_code=satker_code, bulan_sp2d=bulan)
+    if tahun:
+        transactions = transactions.filter(tanggal_spm__year=tahun)
+    total_required = 0
+    for t in transactions:
+        required_docs = get_required_documents(t.akun, t.jenis_spm)
+        total_required += len(required_docs)
+    return total_required
+
+
+def _normalize_doc_name(name):
+    """Normalize document name for policy matching."""
+    import re
+    text = str(name or "").upper().replace("_", " ")
+    text = re.sub(r"[^A-Z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _doc_matches_policy(doc_name, policy_docs):
+    """Check if a document name matches any policy document (substring/exact match)."""
+    normalized = _normalize_doc_name(doc_name)
+    for policy_doc in policy_docs:
+        pol_norm = _normalize_doc_name(policy_doc)
+        if (normalized in pol_norm or pol_norm in normalized or
+            normalized == pol_norm or
+            # Handle KW/Kuitansi variations
+            ('KUITANSI' in normalized and 'KUITANSI' in pol_norm) or
+            ('KW' in normalized and 'KUITANSI' in pol_norm) or
+            ('KUITANSI' in normalized and 'KW' in pol_norm)):
+            return True
+    return False
+
+
+def get_checklist_ada_by_policy(satker_code, tahun, bulan):
+    """
+    Count ADA checklist rows that match policy-required documents.
+
+    Returns dict: {satker_code: ada_count}
+    Only counts ADA rows whose document name matches the policy's required list.
+    """
+    from apps.dk.models import TransactionDetail
+    transactions = TransactionDetail.objects.filter(satker_code=satker_code, bulan_sp2d=bulan)
+    if tahun:
+        transactions = transactions.filter(
+            Q(tanggal_spm__year=tahun) | Q(tanggal_spm__isnull=True)
+        )
+
+    ada_count = 0
+    for t in transactions:
+        required_docs = get_required_documents(t.akun, t.jenis_spm)
+        for cs in t.checklist_statuses.filter(status="ADA"):
+            if _doc_matches_policy(cs.nama_dokumen, required_docs):
+                ada_count += 1
+    return ada_count
+
+
+def get_satker_options_for_dashboard(scoped_queryset, user=None):
+    """Get satker options from scoped queryset (permission aware)."""
+    satkers = set()
+
+    # From scoped_queryset (already permission filtered)
+    for item in scoped_queryset.exclude(satker_code="").values("satker_code").distinct():
+        if item["satker_code"]:
+            satkers.add((item["satker_code"], f"bps{item['satker_code']}"))
+
+    # Include FA16 satkers
+    fa16_query = MonitoringSummary.objects.all()
+    if user and not can_view_all_satker(user):
+        profile = get_profile(user)
+        if profile and profile.is_satker and profile.satker_code:
+            fa16_query = fa16_query.filter(satker_code=profile.satker_code)
+        else:
+            fa16_query = fa16_query.none()
+
+    for item in fa16_query.exclude(satker_code="").values("satker_code", "satker_label").distinct():
+        if item["satker_code"]:
+            satkers.add((item["satker_code"], item["satker_label"] or f"bps{item['satker_code']}"))
+
+    satker_names = get_satker_name_map([s[0] for s in satkers])
+    return sorted([
+        {
+            "satker_code": code,
+            "satker_name": satker_names.get(code, label)
+        }
+        for code, label in satkers
+    ], key=lambda x: x["satker_code"])

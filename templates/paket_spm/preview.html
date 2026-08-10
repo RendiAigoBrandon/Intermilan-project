@@ -2,7 +2,7 @@
 {% load intermilan_format %}
 
 {% block content %}
-<section class="card">
+<section class="card app-card">
   <div class="card-head">
     <div>
       <h2>Preview Upload DRPP</h2>
@@ -23,6 +23,25 @@
   <div class="note-box">
     Konteks Inbox SP2D: <b>{{ sp2d_context.label }}</b>.
     Jika commit berhasil, detail D_K baru akan terhubung ke SP2D raw ini.
+  </div>
+  {% endif %}
+
+  {% if ai_shadow_result.called %}
+  <div class="note-box warning">
+    <strong>Saran AI Lokal — Shadow Mode</strong>
+    <p class="muted">Saran AI tidak mengubah hasil parser dan tidak dapat mengaktifkan penyimpanan. Periksa dokumen sumber.</p>
+    <div class="table-wrap">
+      <table class="data-table">
+        <tbody>
+          <tr><td>Gross kandidat</td><td>Rp{{ ai_shadow_result.candidate.gross_candidate|default_if_none:""|id_number }}</td></tr>
+          <tr><td>Tax kandidat</td><td>Rp{{ ai_shadow_result.candidate.tax_candidate|default_if_none:""|id_number }}</td></tr>
+          <tr><td>Net kandidat</td><td>Rp{{ ai_shadow_result.candidate.net_candidate|default_if_none:""|id_number }}</td></tr>
+          <tr><td>OCR corrected</td><td>{{ ai_shadow_result.candidate.ocr_corrected|yesno:"Ya,Tidak,-" }}</td></tr>
+          <tr><td>Durasi</td><td>{{ ai_shadow_result.duration_ms }} ms</td></tr>
+          <tr><td>Status</td><td>{% if ai_shadow_result.success %}Saran tersedia, belum diterapkan{% else %}Shadow error: {{ ai_shadow_result.error|default:"tidak tersedia" }}{% endif %}</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
   {% endif %}
 

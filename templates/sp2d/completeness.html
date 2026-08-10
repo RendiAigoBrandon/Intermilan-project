@@ -3,13 +3,13 @@
 
 {% block content %}
 <section class="grid cards-4">
-  <div class="card metric"><span>Total Dicek</span><b>{{ summary.total }}</b><small>SP2D tampil</small></div>
-  <div class="card metric ok"><span>Lengkap</span><b>{{ summary.lengkap }}</b><small>Semua dokumen terdeteksi</small></div>
-  <div class="card metric"><span>Perlu Review</span><b>{{ summary.review }}</b><small>Sebagian bukti terdeteksi</small></div>
-  <div class="card metric warn"><span>Belum Lengkap</span><b>{{ summary.belum }}</b><small>Belum ada bukti cocok</small></div>
+  <div class="card metric app-card app-card--compact animate-card"><span>Total Dicek</span><b>{{ summary.total }}</b><small>SP2D tampil</small></div>
+  <div class="card metric ok app-card app-card--compact animate-card stagger-1"><span>Lengkap</span><b>{{ summary.lengkap }}</b><small>Semua dokumen terdeteksi</small></div>
+  <div class="card metric app-card app-card--compact animate-card stagger-2"><span>Perlu Review</span><b>{{ summary.review }}</b><small>Sebagian bukti terdeteksi</small></div>
+  <div class="card metric warn app-card app-card--compact animate-card stagger-3"><span>Belum Lengkap</span><b>{{ summary.belum }}</b><small>Belum ada bukti cocok</small></div>
 </section>
 
-<section class="card mt">
+<section class="card app-card mt">
   <div class="card-head">
     <div>
       <h2>Hasil Cek Kelengkapan</h2>

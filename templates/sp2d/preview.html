@@ -2,105 +2,166 @@
 {% load intermilan_format %}
 
 {% block content %}
-<section class="card upload-card-top">
+<section class="card app-card upload-card-top">
   <div class="card-head">
     <div>
-      <h2>Preview Data SP2D</h2>
-      <p class="muted">Tinjau data SP2D yang akan diimport sebelum disimpan ke database.</p>
+      <h2>Preview &amp; Lengkapi Data SP2D</h2>
+      <p class="muted">Tinjau hasil ekstrak dan lengkapi rincian D_K sebelum disimpan ke database.</p>
     </div>
   </div>
   
-  <div class="grid cards-4">
-    <div class="card soft metric"><span>Baru</span><b>{{ preview_stats.BARU }}</b><small>baris</small></div>
-    <div class="card soft metric"><span>Akan Diperbarui</span><b>{{ preview_stats.AKAN_DIPERBARUI }}</b><small>baris</small></div>
-    <div class="card soft metric"><span>Identik (Dilewati)</span><b>{{ preview_stats.IDENTIK_DILEWATI }}</b><small>baris</small></div>
-    <div class="card soft metric {% if preview_stats.KONFLIK > 0 %}danger{% endif %}"><span>Konflik</span><b>{{ preview_stats.KONFLIK }}</b><small>baris duplikat</small></div>
-  </div>
-
-  {% if can_commit %}
-    <div class="note-box success">File berhasil dibaca dan siap diimport.</div>
-  {% else %}
-    <div class="note-box danger">{{ parse_result.error|default:"File berhasil dibaca, tetapi tidak ada data SP2D valid yang ditemukan." }}</div>
+  {% if not can_commit %}
+    <div class="note-box danger">File berhasil dibaca, tetapi tidak ada data valid atau terjadi kesalahan format.</div>
   {% endif %}
 
-  <details class="note-box mt-small">
-    <summary><strong>Detail Teknis</strong></summary>
-    <div class="mt-small">
-      <p><strong>Sheet:</strong> {{ parse_result.sheet|default:"-" }}</p>
-      <p><strong>Header row:</strong> {{ parse_result.header_row|default:"-" }}</p>
-      <p><strong>Baris mentah:</strong> {{ raw_rows }}</p>
-      <p><strong>Baris valid:</strong> {{ total_rows }}</p>
-      <p><strong>Kolom asli:</strong> {{ columns|join:", " }}</p>
-      <p><strong>Mapping kolom:</strong></p>
-      {% for original, field in parse_result.mapping.items %}
-        <span class="badge blue">{{ original }} -> {{ field }}</span>
-      {% empty %}
-        <span class="muted">Tidak ada mapping kolom.</span>
-      {% endfor %}
-    </div>
-  </details>
-
-  <div class="note-box mt-small">
-    Menampilkan {{ preview_start_index }}–{{ preview_end_index }} dari {{ total_rows }} data.
-  </div>
-
-  <div class="table-wrap wide-table-wrap large mt-small">
-    <table class="data-table compact table-sp2d">
-      <thead>
-        <tr>
-          <th>No</th>
-          <th>Nama Satker</th>
-          <th>No SP2D</th>
-          <th>Tanggal SP2D</th>
-          <th>Nilai SPM</th>
-          <th>Potongan</th>
-          <th>Nilai SP2D</th>
-          <th>No Invoice</th>
-          <th>Jenis SPM</th>
-          <th>Klasifikasi</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in preview_rows %}
-        <tr class="{% if row.preview_status == 'GAGAL' or row.preview_status == 'KONFLIK' %}danger-row{% elif row.preview_status == 'IDENTIK_DILEWATI' %}warning-row{% elif row.preview_status == 'AKAN_DIPERBARUI' %}info-row{% else %}success-row{% endif %}">
-          <td>{{ forloop.counter0|add:preview_start_index }}</td>
-          <td>{% if row.satker_name %}{{ row.satker_name }}{% else %}{{ row.satker_code|default:"-" }}{% endif %}</td>
-          <td>{{ row.no_sp2d }}</td>
-          <td>{{ row.tgl_sp2d }}</td>
-          <td class="col-nominal">{{ row.nilai_spm|id_number }}</td>
-          <td class="col-nominal">{{ row.potongan|id_number }}</td>
-          <td>{{ row.nilai_sp2d|id_number }}</td>
-          <td>{{ row.nomor_invoice }}</td>
-          <td>{{ row.jenis_spm }}</td>
-          <td>
-            <span class="badge {% if row.preview_status == 'BARU' %}blue{% elif row.preview_status == 'AKAN_DIPERBARUI' %}orange{% elif row.preview_status == 'KONFLIK' %}red{% elif row.preview_status == 'GAGAL' %}red{% else %}gray{% endif %}">{{ row.preview_status }}</span>
-            {% if row.preview_reason %}
-            <br><small class="muted" style="display:block; margin-top:4px;">{{ row.preview_reason }}</small>
-            {% endif %}
-          </td>
-        </tr>
-        {% empty %}
-        <tr><td colspan="11" class="empty">File berhasil dibaca, tetapi tidak ada data SP2D valid yang ditemukan.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-  {% if preview_page_obj %}
-  <div class="pagination-wrap">
-    <div class="pagination-info">Menampilkan {{ preview_start_index }}–{{ preview_end_index }} dari {{ total_rows }} data</div>
-    <div class="pagination-controls">
-      {% if preview_page_obj.has_previous %}<a class="page-btn" href="?page={{ preview_page_obj.previous_page_number }}">Previous</a>{% else %}<span class="page-btn disabled">Previous</span>{% endif %}
-      <span class="page-btn active">{{ preview_page_obj.number }}</span>
-      {% if preview_page_obj.has_next %}<a class="page-btn" href="?page={{ preview_page_obj.next_page_number }}">Next</a>{% else %}<span class="page-btn disabled">Next</span>{% endif %}
-    </div>
-  </div>
-  {% endif %}
-
-  <form method="post" class="mt-small" style="display: flex; gap: 10px;">
+  <form method="post" id="sp2d-preview-form">
     {% csrf_token %}
-    <button type="submit" name="action" value="commit" class="btn primary" {% if not can_commit %}disabled{% else %}onclick="return confirm('Anda akan mengimport {{ total_rows }} data SP2D ke database. Lanjutkan?')"{% endif %}>Commit Import</button>
-    <button type="submit" name="action" value="cancel" class="btn ghost">Batal</button>
+    <div class="table-wrap wide-table-wrap large mt-small">
+      <table class="data-table compact form-table sp2d-preview-table">
+        <thead>
+          <tr>
+            <th>No</th>
+            <th>Satker Code</th>
+            <th>Nama Satker</th>
+            <th>No SP2D</th>
+            <th>Tahun</th>
+            <th>Bulan</th>
+            <th>No SPM</th>
+            <th>Tgl SPM</th>
+            <th>Jenis SPM</th>
+            <th>Cara Bayar</th>
+            <th>Akun</th>
+            <th>Deskripsi</th>
+            <th>Nilai Bruto</th>
+            <th>Nilai Netto</th>
+            <th>Potongan</th>
+            <th>No Kuitansi</th>
+            <th>No DRPP</th>
+            <th>Pembebanan</th>
+            <th>FP</th>
+            <th>PPh21</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preview_rows %}
+          <tr>
+            <td>{{ forloop.counter }}</td>
+            <td><input type="text" class="sp2d-preview-input" name="satker_code[]" value="{{ row.satker_code }}" required></td>
+            <td><input type="text" class="sp2d-preview-input" name="satker_name[]" value="{{ row.satker_name }}" readonly></td>
+            <td><input type="text" class="sp2d-preview-input" name="no_sp2d[]" value="{{ row.no_sp2d }}"></td>
+            <td><input type="number" class="sp2d-preview-input narrow" name="tahun[]" value="{{ row.tahun }}"></td>
+            <td><input type="number" class="sp2d-preview-input narrow" name="bulan_sp2d[]" value="{{ row.bulan_sp2d }}"></td>
+            <td><input type="text" class="sp2d-preview-input" name="nomor_spm[]" value="{{ row.nomor_spm }}"></td>
+            <td><input type="date" class="sp2d-preview-input" name="tgl_spm[]" value="{{ row.tgl_spm|date:'Y-m-d'|default:row.tgl_spm }}"></td>
+            <td><input type="text" class="sp2d-preview-input narrow" name="jenis_spm[]" value="{{ row.jenis_spm }}"></td>
+            <td><input type="text" class="sp2d-preview-input narrow" name="cara_pembayaran[]" value="{{ row.cara_pembayaran }}"></td>
+            <td><input type="text" class="sp2d-preview-input narrow" name="akun[]" value="{{ row.akun }}" placeholder="Biarkan kosong jika multi-akun..."></td>
+            <td><input type="text" class="sp2d-preview-input" name="deskripsi[]" value="{{ row.deskripsi }}"></td>
+            <td><input type="text" class="sp2d-preview-input nominal" name="nilai_bruto[]" value="{{ row.nilai_bruto|id_number|default:row.nilai_bruto }}" required></td>
+            <td><input type="text" class="sp2d-preview-input nominal" name="nilai_netto[]" value="{{ row.nilai_netto|id_number|default:row.nilai_netto }}" required></td>
+            <td><input type="text" class="sp2d-preview-input nominal" name="potongan[]" value="{{ row.potongan|id_number|default:row.potongan }}" required></td>
+            <td><input type="text" class="sp2d-preview-input" name="no_kuitansi[]" value="{{ row.no_kuitansi }}"></td>
+            <td><input type="text" class="sp2d-preview-input" name="no_drpp[]" value="{{ row.no_drpp }}"></td>
+            <td><input type="text" class="sp2d-preview-input" name="pembebanan[]" value="{{ row.pembebanan }}"></td>
+            <td><input type="text" class="sp2d-preview-input" name="fp[]" value="{{ row.fp }}"></td>
+            <td><input type="text" class="sp2d-preview-input nominal" name="pph21[]" value="{{ row.pph21|id_number|default:row.pph21 }}"></td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="20" class="empty">Tidak ada data untuk ditampilkan.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mt-small" style="display: flex; gap: 10px; padding: 16px;">
+      <button type="submit" name="action" value="commit" class="btn primary" {% if not can_commit %}disabled{% endif %}>Simpan ke D_K</button>
+      <button type="submit" name="action" value="cancel" class="btn ghost">Batal / Kembali ke Upload</button>
+    </div>
   </form>
 </section>
+
+<style>
+  /* Scoped CSS for SP2D Preview Table */
+  .sp2d-preview-table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+
+  /* Header Navy */
+  .sp2d-preview-table thead th {
+    background: #0B2545 !important;
+    color: #FFFFFF !important;
+    font-size: 12px;
+    font-weight: 700;
+    vertical-align: middle;
+    padding: 8px;
+    border-bottom: 2px solid #009FE3;
+  }
+
+  /* Table Cell Padding */
+  .sp2d-preview-table tbody td {
+    padding: 4px 5px !important;
+    vertical-align: middle;
+  }
+
+  /* Row Alternating */
+  .sp2d-preview-table tbody tr:nth-child(odd) {
+    background-color: #FFFFFF !important;
+  }
+  .sp2d-preview-table tbody tr:nth-child(even) {
+    background-color: #F8FAFC !important;
+  }
+
+  /* Editable Inputs */
+  .sp2d-preview-input {
+    background: #FFFFFF !important;
+    color: #172B4D !important;
+    border: 1px solid #CBD5E1 !important;
+    font-weight: normal;
+    opacity: 1;
+    height: 32px;
+    padding: 6px 8px;
+    font-size: 12px;
+    border-radius: 5px;
+    width: 100%;
+    min-width: 100px;
+    box-sizing: border-box;
+    transition: all 0.2s ease;
+  }
+  .sp2d-preview-input.narrow {
+    min-width: 60px;
+  }
+  .sp2d-preview-input.nominal {
+    text-align: right;
+  }
+
+  /* Readonly Inputs */
+  .sp2d-preview-input[readonly] {
+    background: #F3F6F9 !important;
+    color: #344054 !important;
+    border: 1px solid #D7E0EA !important;
+    opacity: 1;
+  }
+
+  /* Focus State */
+  .sp2d-preview-input:focus {
+    outline: none !important;
+    border-color: #009FE3 !important;
+    box-shadow: 0 0 0 2px rgba(0,159,227,.12) !important;
+    background: #FFFFFF !important;
+  }
+
+  /* Error State via pseudo-class and error-input class */
+  .sp2d-preview-input:invalid,
+  .sp2d-preview-input.error-input {
+    border-color: #D92D20 !important;
+    background: #FFF5F5 !important;
+  }
+  
+  /* Reset Date icon color if user agent applies it */
+  .sp2d-preview-input::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+    opacity: 0.5;
+  }
+</style>
 {% endblock %}

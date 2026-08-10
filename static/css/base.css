@@ -1,17 +1,35 @@
 :root {
-    --bps-blue: #0f4c81;
-    --bps-blue-dark: #093761;
-    --bps-blue-soft: #e9f2fb;
-    --bps-orange: #f28c13;
-    --bps-green: #63b72b;
-    --bg: #f4f8fb;
-    --card: #ffffff;
-    --text: #172033;
-    --muted: #6c7a89;
-    --border: #dbe7f1;
-    --shadow: 0 18px 40px rgba(16, 59, 97, 0.1);
-    --radius: 22px;
-    --font-sans: "Inter", Arial, Helvetica, sans-serif;
+    /* Official BPS Digital Ecosystem Palette (bps.go.id style) */
+    --bps-navy: #002B6A;
+    --bps-cerulean: #0093DD;
+    --bps-blue-vivid: #0048FF;
+    --bps-orange: #E27303;
+    --bps-green: #5DAB2C;
+
+    /* Backward compatibility mapping for existing legacy classes */
+    --bps-blue: #002B6A;
+    --bps-blue-dark: #001c47;
+    --bps-blue-soft: #eaf3fd;
+
+    /* Structural Design Tokens (Professional Government Dashboard) */
+    --bg: #F8FAFE;
+    --card: #FFFFFF;
+    --surface-soft: #F1F6FC;
+    --text: #1A2233;
+    --text-secondary: #3A485E;
+    --muted: #5C6D82;
+    --border: #CFDBEC;
+    --border-soft: #E3EBEE;
+    
+    /* Subtle structural shadows - never floating 'ghost card' drop-shadows */
+    --shadow: 0 2px 8px rgba(0, 43, 106, 0.05);
+    --shadow-sm: 0 1px 3px rgba(0, 43, 106, 0.06);
+    --shadow-md: 0 6px 16px rgba(0, 43, 106, 0.08);
+
+    /* Disciplined enterprise corner radiuses (replacing excessive 22px) */
+    --radius: 8px;
+    --radius-sm: 6px;
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 @font-face {
     font-family: "Inter";
@@ -41,8 +59,12 @@ html {
 body {
     min-height: 100vh;
     font-family: var(--font-sans);
-    background: radial-gradient(circle at top left, #e8f5ff, transparent 35%), var(--bg);
+    background: var(--bg);
     color: var(--text);
+    line-height: 1.5;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 html,
 body,
@@ -73,61 +95,106 @@ a,
 .excel-table {
     font-family: var(--font-sans);
 }
-a { color: var(--bps-blue); text-decoration: none; }
-a:hover { color: var(--bps-orange); }
-h1, h2, h3, p { margin: 0; }
-.eyebrow {
-    color: var(--bps-orange);
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 1.1px;
-    font-size: 12px;
-    margin-bottom: 6px;
+a { 
+    color: var(--bps-cerulean); 
+    text-decoration: none; 
+    transition: color 0.15s cubic-bezier(0.16, 1, 0.3, 1); 
 }
-.muted { color: var(--muted); }
+a:hover { 
+    color: var(--bps-blue-vivid); 
+    text-decoration: underline; 
+}
+h1, h2, h3, h4, h5, h6 { 
+    margin: 0; 
+    color: var(--bps-navy);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+}
+p { margin: 0; }
+.eyebrow {
+    color: var(--bps-cerulean);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 11px;
+    margin-bottom: 4px;
+}
+.muted { color: var(--muted); font-size: 13px; }
 label {
     display: block;
-    color: var(--bps-blue-dark);
-    font-weight: 800;
+    color: var(--bps-navy);
+    font-weight: 600;
+    font-size: 13px;
     line-height: 1.35;
+    margin-bottom: 5px;
 }
-input, select, textarea {
+input:not([type="checkbox"]):not([type="radio"]), select, textarea {
     width: 100%;
-    min-height: 44px;
-    margin-top: 7px;
-    padding: 10px 12px;
-    border: 1px solid #c9d9e8;
-    border-radius: 12px;
-    background: #fff;
+    min-height: 40px;
+    margin-top: 2px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: #ffffff;
     color: var(--text);
     font: inherit;
-    line-height: 1.35;
-    box-shadow: 0 1px 0 rgba(16, 59, 97, 0.03);
+    font-size: 14px;
+    line-height: 1.4;
+    transition: border-color 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+input[type="checkbox"], input[type="radio"] {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    min-height: 16px;
+    margin: 0;
+    cursor: pointer;
+    vertical-align: middle;
+    accent-color: var(--bps-cerulean);
 }
 input:focus, select:focus, textarea:focus {
     outline: none;
-    border-color: var(--bps-blue);
-    box-shadow: 0 0 0 3px rgba(15, 76, 129, 0.1);
+    border-color: var(--bps-cerulean);
+    box-shadow: 0 0 0 3px rgba(0, 147, 221, 0.15);
 }
 textarea { min-height: 92px; resize: vertical; }
 button, .btn, .primary-btn, .secondary-btn, .choose-btn {
-    border: 0;
-    border-radius: 14px;
-    padding: 12px 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: 9px 16px;
     font-size: 14px;
-    font-weight: 800;
+    font-weight: 600;
     cursor: pointer;
-    transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
+    line-height: 1.35;
+    text-decoration: none;
+    transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 }
-button:hover:not(:disabled), .btn:hover { transform: translateY(-1px); }
-button:disabled { opacity: 0.55; cursor: not-allowed; }
+button:hover:not(:disabled), .btn:hover { 
+    transform: translateY(-1px); 
+    text-decoration: none;
+}
+button:active:not(:disabled), .btn:active {
+    transform: translateY(0);
+}
+button:disabled, .btn:disabled { 
+    opacity: 0.6; 
+    cursor: not-allowed; 
+    transform: none !important;
+}
 
+/* DRPP Review Modules */
 .drpp-review-group {
     margin-top: 20px;
-    padding: 18px;
+    padding: 20px;
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: var(--radius);
     background: var(--card);
+    box-shadow: var(--shadow-sm);
 }
 .drpp-review-head,
 .drpp-group-actions,
@@ -138,42 +205,44 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
     gap: 12px;
     flex-wrap: wrap;
 }
-.drpp-review-head h3 { margin-bottom: 4px; }
+.drpp-review-head h3 { margin-bottom: 4px; font-size: 16px; font-weight: 700; color: var(--bps-navy); }
 .drpp-metrics {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 1px;
     margin: 16px 0;
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--radius-sm);
     background: var(--border);
 }
-.drpp-metrics div { padding: 10px 12px; background: var(--card); }
-.drpp-metrics dt { color: var(--muted); font-size: 12px; font-weight: 700; }
-.drpp-metrics dd { margin: 3px 0 0; color: var(--text); font-weight: 800; }
-.drpp-group-actions { margin-top: 14px; }
+.drpp-metrics div { padding: 10px 14px; background: var(--surface-soft); }
+.drpp-metrics dt { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+.drpp-metrics dd { margin: 4px 0 0; color: var(--bps-navy); font-size: 16px; font-weight: 700; }
+.drpp-group-actions { margin-top: 16px; }
 .preview-field { vertical-align: top; }
 .preview-field-review {
-    background: rgba(245, 158, 11, 0.08);
-    box-shadow: inset 0 3px 0 #f59e0b;
+    background: rgba(226, 115, 3, 0.08);
+    box-shadow: inset 0 2px 0 var(--bps-orange);
 }
 .table-output {
     display: block;
     min-width: 180px;
-    padding: 11px 12px;
+    padding: 10px 12px;
     overflow-wrap: anywhere;
-    font-weight: 700;
+    font-weight: 600;
+    color: var(--text);
 }
 .field-review-badge {
     display: inline-block;
     margin-top: 6px;
-    padding: 3px 7px;
-    border-radius: 999px;
-    background: #fff3cd;
-    color: #7a4b00;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(226, 115, 3, 0.12);
+    color: #a65200;
+    border: 1px solid rgba(226, 115, 3, 0.25);
     font-size: 11px;
-    font-weight: 800;
+    font-weight: 600;
     white-space: nowrap;
 }
 .drpp-footer-actions {
@@ -181,6 +250,6 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
     border-top: 1px solid var(--border);
 }
 @media (max-width: 720px) {
-    .drpp-review-group { padding: 12px; }
+    .drpp-review-group { padding: 14px; }
     .drpp-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

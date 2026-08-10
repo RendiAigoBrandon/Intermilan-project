@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import zipfile
@@ -18,6 +19,8 @@ from apps.documents.services.checklist import mark_checklist_present
 from apps.documents.services.google_drive import archive_file_link
 from apps.paket_spm.models import PaketSPMUpload
 from apps.sp2d.models import SP2DRaw
+
+logger = logging.getLogger("paket_spm")
 
 
 STATUS_LENGKAP = "Lengkap"
@@ -707,6 +710,30 @@ def find_matching_sp2d(meta):
     return query.first()
 
 
+def resolve_satker_from_existing_dk(nomor_spm_body, tahun):
+    """Find authoritative satker from existing D_K records by normalized SPM body and year.
+
+    Returns:
+        satker_code (str)      : exactly one unique satker found
+        None                  : no D_K record found (caller keeps existing safe-fail behaviour)
+        ''                    : ambiguous — multiple distinct satker values exist
+    """
+    if not nomor_spm_body or not tahun:
+        return None
+    matches = list(
+        TransactionDetail.objects.filter(
+            nomor_spm__istartswith=nomor_spm_body,
+            tanggal_spm__year=tahun,
+        ).values_list("satker_code", flat=True).distinct()
+    )
+    if not matches:
+        return None
+    non_empty = [s for s in matches if s]
+    if len(non_empty) == 1:
+        return non_empty[0]
+    return ""  # ambiguous
+
+
 def find_duplicate_package(meta, original_filename="", current_paket_id=None):
     query = PaketSPMUpload.objects.all()
     if current_paket_id:
@@ -1226,8 +1253,9 @@ def _apply_matched_spm_to_parsed(parsed, matched_transaction):
     global_jenis_spm = matched_transaction.get("jenis_spm")
     global_cara_pembayaran = matched_transaction.get("cara_pembayaran")
     global_bulan_sp2d = matched_transaction.get("bulan_sp2d")
+    global_satker_code = clean_optional(matched_transaction.get("satker_code"))
 
-    # Only fallback to global matched_transaction if this package actually HAS an SPM 
+    # Only fallback to global matched_transaction if this package actually HAS an SPM
     # (meaning the whole package is bound to one SPM document)
     package_has_spm_doc = bool(parsed.get("spm"))
 
@@ -1241,6 +1269,9 @@ def _apply_matched_spm_to_parsed(parsed, matched_transaction):
         if global_jenis_spm: meta["jenis_spm"] = global_jenis_spm
         if global_cara_pembayaran: meta["cara_pembayaran"] = global_cara_pembayaran
         if global_bulan_sp2d: meta["bulan_sp2d"] = global_bulan_sp2d
+        # Propagate satker from matched SPM — required for DRPP commit validation
+        if global_satker_code and not meta.get("satker_code"):
+            meta["satker_code"] = global_satker_code
 
     for drpp in parsed.get("drpps") or []:
         if not drpp:
@@ -1248,8 +1279,16 @@ def _apply_matched_spm_to_parsed(parsed, matched_transaction):
         drpp_meta = drpp.setdefault("metadata", {})
         
         drpp_row = None
-        for item in drpp.get("items") or []:
-            key = (normalize_key(item.get("akun")), normalize_key(short_document_number(item.get("no_bukti"))))
+        drpp_no = normalize_key(drpp_meta.get("nomor_drpp"))
+        items_to_check = list(drpp.get("items") or [])
+        if drpp_no:
+            items_to_check.extend(
+                item for item in (parsed.get("kw_items") or [])
+                if normalize_key(item.get("no_drpp")) == drpp_no
+            )
+            
+        for item in items_to_check:
+            key = (normalize_key(item.get("akun")), normalize_key(short_document_number(item.get("no_bukti") or item.get("no_kuitansi"))))
             if key in item_to_row:
                 drpp_row = item_to_row[key]
                 break
@@ -1926,44 +1965,87 @@ def link_followup_document(paket, transactions, user=None, parsed=None, document
     if DocumentDriveLink.objects.filter(catatan__icontains=package_marker, jenis_dokumen="DRPP/KW").exists():
         return {"status": "exists", "links": [], "archive_status": ""}
     source_path = _package_source_path(paket)
+    logger.info(f"[ARCHIVE] source_path={source_path} exists={os.path.exists(source_path) if source_path else False}")
     if not source_path:
         return {"status": "missing_source", "links": [], "archive_status": ""}
     meta = package_metadata(parsed or paket.parsed_data or {})
     first = transaction_list[0]
-    drive_result, first_link = archive_file_link(
-        source_path,
-        user=user,
-        jenis_dokumen="DRPP/KW",
-        nama_file=paket.original_filename,
-        satker_code=first.satker_code,
-        nomor_spm=first.nomor_spm,
-        no_drpp=str(meta.get("nomor_drpp") or first.no_drpp or "")[:100],
-        no_kuitansi=first.no_kuitansi,
-        catatan_extra=(
-            "source=Paket SPM followup; "
-            f"paket_spm_id={paket.id}; "
-            f"document_status={document_status or '-'}"
-        ),
-        transaction_detail=first,
+    catatan_extra = (
+        f"source=Paket SPM followup; "
+        f"paket_spm_id={paket.id}; "
+        f"document_status={document_status or '-'}"
     )
-    if drive_result["status"] not in {"uploaded", "local_archived"}:
-        raise ValueError(drive_result["error_message"] or "File DRPP/KW gagal disimpan ke arsip permanen.")
-    links = [first_link]
-    for tx in transaction_list[1:]:
-        links.append(DocumentDriveLink.objects.create(
-            transaction_detail=tx,
-            satker_code=tx.satker_code,
-            nomor_spm=tx.nomor_spm,
-            no_kuitansi=tx.no_kuitansi,
-            no_drpp=tx.no_drpp,
+    # D_K links are created INSIDE the transaction so they are atomic with D_K itself.
+    # Drive archive is OUTSIDE — Drive failure must NEVER rollback a successful D_K commit.
+    from django.db import transaction as db_transaction
+    with db_transaction.atomic():
+        first_link = DocumentDriveLink.objects.create(
+            transaction_detail=first,
+            satker_code=first.satker_code,
+            nomor_spm=first.nomor_spm,
+            no_kuitansi=first.no_kuitansi,
+            no_drpp=str(meta.get("nomor_drpp") or first.no_drpp or "")[:100],
             jenis_dokumen="DRPP/KW",
             nama_file=paket.original_filename,
-            google_drive_url=first_link.google_drive_url,
-            status=first_link.status,
-            catatan=(first_link.catatan + f"; linked_from_document_id={first_link.id}")[:2000],
+            google_drive_url="",
+            status=DocumentDriveLink.Status.PERLU_DICEK,
+            catatan=f"{catatan_extra}; [DRIVE ARCHIVE] pending",
             created_by=user,
-        ))
-    return {"status": "created", "links": links, "archive_status": drive_result["status"]}
+        )
+        links = [first_link]
+        for tx in transaction_list[1:]:
+            links.append(DocumentDriveLink.objects.create(
+                transaction_detail=tx,
+                satker_code=tx.satker_code,
+                nomor_spm=tx.nomor_spm,
+                no_kuitansi=tx.no_kuitansi,
+                no_drpp=tx.no_drpp,
+                jenis_dokumen="DRPP/KW",
+                nama_file=paket.original_filename,
+                google_drive_url="",
+                status=DocumentDriveLink.Status.PERLU_DICEK,
+                catatan=f"{catatan_extra}; linked_from_document_id={first_link.id}; [DRIVE ARCHIVE] pending",
+                created_by=user,
+            ))
+
+    # Drive archive OUTSIDE transaction — failures must NOT rollback D_K
+    logger.info("[DRIVE ARCHIVE] start source_path=%s", source_path)
+    try:
+        # archive_file_link updates existing_link in-place (or finds preexisting Drive URL link)
+        # and returns the link object so we can sync remaining links below
+        drive_result, first_link, is_reused = archive_file_link(
+            source_path,
+            user=user,
+            jenis_dokumen="DRPP/KW",
+            nama_file=paket.original_filename,
+            satker_code=first.satker_code,
+            nomor_spm=first.nomor_spm,
+            no_drpp=str(meta.get("nomor_drpp") or first.no_drpp or "")[:100],
+            no_kuitansi=first.no_kuitansi,
+            catatan_extra=catatan_extra,
+            transaction_detail=first,
+            existing_link=first_link,  # skip dedup — placeholder already created
+        )
+        logger.info(
+            "[DRIVE ARCHIVE] result=%s is_reused=%s drive_url=%s error=%s",
+            drive_result["status"],
+            is_reused,
+            bool(drive_result.get("web_view_link")),
+            drive_result.get("error_message", "")[:100],
+        )
+        # Update remaining links (not the first — archive_file_link already updated it)
+        for link in links[1:]:
+            link.google_drive_url = first_link.google_drive_url
+            link.status = first_link.status
+            link.save(update_fields=["google_drive_url", "status"])
+    except Exception as exc:
+        logger.warning(
+            "[DRIVE ARCHIVE] FAILED for paket_id=%s — D_K link created with PERLU_DICEK status. "
+            "Exception: %s. Admin should retry Drive upload or check OAuth authorization.",
+            paket.id, exc
+        )
+        # D_K link already saved with PERLU_DICEK — observable, not silently failed
+    return {"status": "created", "links": links, "archive_status": drive_result.get("status") if 'drive_result' in dir() else "pending"}
 
 
 def merge_followup_into_existing_dk(parsed, paket, user=None, document_status=STATUS_LENGKAP):
@@ -2063,48 +2145,91 @@ def link_paket_spm_source_document(
 
     first_transaction = missing_transactions[0]
     meta = package_metadata(parsed or paket.parsed_data or {})
-    drive_result, first_link = archive_file_link(
-        source_path,
-        user=user,
-        jenis_dokumen="SPM",
-        nama_file=paket.original_filename,
-        satker_code=paket.satker_code,
-        nomor_spm=paket.nomor_spm,
-        no_drpp=str(meta.get("nomor_drpp") or "")[:100],
-        no_kuitansi=first_transaction.no_kuitansi,
-        catatan_extra=(
-            "source=Paket SPM; "
-            f"paket_spm_id={paket.id}; "
-            + ("existing_dk=true; " if existing_dk else "transaction_origin=Paket SPM OCR; ")
-            + f"document_status={document_status or '-'}"
-        ),
-        transaction_detail=first_transaction,
+    catatan_extra = (
+        f"source=Paket SPM; "
+        f"paket_spm_id={paket.id}; "
+        + ("existing_dk=true; " if existing_dk else "transaction_origin=Paket SPM OCR; ")
+        + f"document_status={document_status or '-'}"
     )
-    if drive_result["status"] not in {"uploaded", "local_archived"}:
-        raise ValueError(drive_result["error_message"] or "File sumber Paket SPM gagal disimpan ke arsip permanen.")
-
-    links = [first_link]
-    mark_checklist_present(first_transaction, "SPM", user)
-    refresh_transaction_document_status(first_transaction, verified_document_type="SPM")
-    for transaction in missing_transactions[1:]:
-        link = DocumentDriveLink.objects.create(
-            transaction_detail=transaction,
-            satker_code=paket.satker_code or transaction.satker_code,
-            nomor_spm=paket.nomor_spm or transaction.nomor_spm,
-            no_kuitansi=transaction.no_kuitansi,
-            no_drpp=first_link.no_drpp,
+    # D_K link created INSIDE transaction so D_K/DocumentLink atomic.
+    # Drive archive OUTSIDE transaction — Drive failure must NOT rollback D_K.
+    from django.db import transaction as db_transaction
+    with db_transaction.atomic():
+        first_link = DocumentDriveLink.objects.create(
+            transaction_detail=first_transaction,
+            satker_code=paket.satker_code,
+            nomor_spm=paket.nomor_spm,
+            no_kuitansi=first_transaction.no_kuitansi,
+            no_drpp=str(meta.get("nomor_drpp") or "")[:100],
             jenis_dokumen="SPM",
             nama_file=paket.original_filename,
-            google_drive_url=first_link.google_drive_url,
-            status=first_link.status,
-            catatan=(first_link.catatan + f"; linked_from_document_id={first_link.id}")[:2000],
+            google_drive_url="",
+            status=DocumentDriveLink.Status.PERLU_DICEK,
+            catatan=f"{catatan_extra}; [DRIVE ARCHIVE] pending",
             created_by=user,
         )
-        links.append(link)
-        mark_checklist_present(transaction, "SPM", user)
-        refresh_transaction_document_status(transaction, verified_document_type="SPM")
+        links = [first_link]
+        mark_checklist_present(first_transaction, "SPM", user)
+        refresh_transaction_document_status(first_transaction, verified_document_type="SPM")
+        for transaction in missing_transactions[1:]:
+            link = DocumentDriveLink.objects.create(
+                transaction_detail=transaction,
+                satker_code=paket.satker_code or transaction.satker_code,
+                nomor_spm=paket.nomor_spm or transaction.nomor_spm,
+                no_kuitansi=transaction.no_kuitansi,
+                no_drpp=first_link.no_drpp,
+                jenis_dokumen="SPM",
+                nama_file=paket.original_filename,
+                google_drive_url="",
+                status=DocumentDriveLink.Status.PERLU_DICEK,
+                catatan=f"{catatan_extra}; linked_from_document_id={first_link.id}; [DRIVE ARCHIVE] pending",
+                created_by=user,
+            )
+            links.append(link)
+            mark_checklist_present(transaction, "SPM", user)
+            refresh_transaction_document_status(transaction, verified_document_type="SPM")
 
-    return {"status": "created", "links": links, "archive_status": drive_result["status"]}
+    # Drive archive OUTSIDE transaction — failures must NOT rollback D_K
+    logger.info("[DRIVE ARCHIVE] link_paket_spm_source_document start paket_id=%s path=%s", paket.id, source_path)
+    try:
+        drive_result, _, is_reused = archive_file_link(
+            source_path,
+            user=user,
+            jenis_dokumen="SPM",
+            nama_file=paket.original_filename,
+            satker_code=paket.satker_code,
+            nomor_spm=paket.nomor_spm,
+            no_drpp=str(meta.get("nomor_drpp") or "")[:100],
+            no_kuitansi=first_transaction.no_kuitansi,
+            catatan_extra=catatan_extra,
+            transaction_detail=first_transaction,
+        )
+        logger.info(
+            "[DRIVE ARCHIVE] link_paket_spm_source_document result=%s is_reused=%s drive_url=%s",
+            drive_result["status"], is_reused, bool(drive_result.get("web_view_link")),
+        )
+        if drive_result["status"] == "uploaded":
+            first_link.status = DocumentDriveLink.Status.AKTIF
+        elif is_reused:
+            first_link.status = DocumentDriveLink.Status.AKTIF
+        else:
+            first_link.status = DocumentDriveLink.Status.PERLU_DICEK
+        first_link.google_drive_url = drive_result["web_view_link"] or first_link.google_drive_url
+        first_link.catatan = f"{catatan_extra}; drive_result={drive_result['status']}"
+        if drive_result.get("error_message"):
+            first_link.catatan += f"; error={drive_result['error_message']}"
+        first_link.save(update_fields=["google_drive_url", "status", "catatan"])
+        for link in links[1:]:
+            link.google_drive_url = first_link.google_drive_url
+            link.status = first_link.status
+            link.save(update_fields=["google_drive_url", "status"])
+    except Exception as exc:
+        logger.warning(
+            "[DRIVE ARCHIVE] FAILED for link_paket_spm_source_document paket_id=%s — D_K link saved with PERLU_DICEK. "
+            "Exception: %s. Admin should check OAuth authorization and retry.",
+            paket.id, exc
+        )
+    return {"status": "created", "links": links, "archive_status": drive_result.get("status") if 'drive_result' in dir() else "pending"}
 
 
 def link_existing_package_documents(paket, transactions, user=None, parsed=None, document_status=""):
@@ -2155,43 +2280,85 @@ def link_existing_package_documents(paket, transactions, user=None, parsed=None,
 
         first = missing[0]
         meta = package_metadata(parsed or paket.parsed_data or {})
-        drive_result, first_link = archive_file_link(
-            source_path,
-            user=user,
-            jenis_dokumen=checklist_type,
-            nama_file=paket.original_filename,
-            satker_code=first.satker_code,
-            nomor_spm=first.nomor_spm,
-            no_drpp=str(meta.get("nomor_drpp") or first.no_drpp or "")[:100],
-            no_kuitansi=first.no_kuitansi,
-            catatan_extra=(
-                f"source=Paket SPM existing D_K; paket_spm_id={paket.id}; "
-                f"document_status={document_status or '-'}"
-            ),
-            transaction_detail=first,
+        catatan_extra = (
+            f"source=Paket SPM existing D_K; paket_spm_id={paket.id}; "
+            f"document_status={document_status or '-'}"
         )
-        if drive_result["status"] not in {"uploaded", "local_archived"}:
-            raise ValueError(drive_result["error_message"] or "File sumber Paket SPM gagal disimpan ke arsip permanen.")
-        links.append(first_link)
-        archive_status = drive_result["status"]
-        mark_checklist_present(first, checklist_type, user)
-        refresh_transaction_document_status(first, verified_document_type=checklist_type)
-        for tx in missing[1:]:
-            link = DocumentDriveLink.objects.create(
-                transaction_detail=tx,
-                satker_code=tx.satker_code,
-                nomor_spm=tx.nomor_spm,
-                no_kuitansi=tx.no_kuitansi,
-                no_drpp=tx.no_drpp,
+        # D_K link created INSIDE transaction.
+        # Drive archive OUTSIDE transaction — Drive failure must NOT rollback D_K.
+        from django.db import transaction as db_transaction
+        with db_transaction.atomic():
+            first_link = DocumentDriveLink.objects.create(
+                transaction_detail=first,
+                satker_code=first.satker_code,
+                nomor_spm=first.nomor_spm,
+                no_kuitansi=first.no_kuitansi,
+                no_drpp=str(meta.get("nomor_drpp") or first.no_drpp or "")[:100],
                 jenis_dokumen=checklist_type,
                 nama_file=paket.original_filename,
-                google_drive_url=first_link.google_drive_url,
-                status=first_link.status,
-                catatan=(first_link.catatan + f"; linked_from_document_id={first_link.id}")[:2000],
+                google_drive_url="",
+                status=DocumentDriveLink.Status.PERLU_DICEK,
+                catatan=f"{catatan_extra}; [DRIVE ARCHIVE] pending",
                 created_by=user,
             )
-            links.append(link)
-            mark_checklist_present(tx, checklist_type, user)
-            refresh_transaction_document_status(tx, verified_document_type=checklist_type)
+            links.append(first_link)
+            mark_checklist_present(first, checklist_type, user)
+            refresh_transaction_document_status(first, verified_document_type=checklist_type)
+            for tx in missing[1:]:
+                link = DocumentDriveLink.objects.create(
+                    transaction_detail=tx,
+                    satker_code=tx.satker_code,
+                    nomor_spm=tx.nomor_spm,
+                    no_kuitansi=tx.no_kuitansi,
+                    no_drpp=tx.no_drpp,
+                    jenis_dokumen=checklist_type,
+                    nama_file=paket.original_filename,
+                    google_drive_url="",
+                    status=DocumentDriveLink.Status.PERLU_DICEK,
+                    catatan=f"{catatan_extra}; linked_from_document_id={first_link.id}; [DRIVE ARCHIVE] pending",
+                    created_by=user,
+                )
+                links.append(link)
+                mark_checklist_present(tx, checklist_type, user)
+                refresh_transaction_document_status(tx, verified_document_type=checklist_type)
+
+        # Drive archive OUTSIDE transaction — failures must NOT rollback D_K
+        logger.info("[DRIVE ARCHIVE] link_existing_package_documents start paket_id=%s doc_type=%s", paket.id, checklist_type)
+        try:
+            drive_result, _, is_reused = archive_file_link(
+                source_path,
+                user=user,
+                jenis_dokumen=checklist_type,
+                nama_file=paket.original_filename,
+                satker_code=first.satker_code,
+                nomor_spm=first.nomor_spm,
+                no_drpp=str(meta.get("nomor_drpp") or first.no_drpp or "")[:100],
+                no_kuitansi=first.no_kuitansi,
+                catatan_extra=catatan_extra,
+                transaction_detail=first,
+            )
+            logger.info(
+                "[DRIVE ARCHIVE] link_existing_package_documents result=%s is_reused=%s",
+                drive_result["status"], is_reused,
+            )
+            if drive_result["status"] == "uploaded":
+                first_link.status = DocumentDriveLink.Status.AKTIF
+            elif is_reused:
+                first_link.status = DocumentDriveLink.Status.AKTIF
+            else:
+                first_link.status = DocumentDriveLink.Status.PERLU_DICEK
+            first_link.google_drive_url = drive_result["web_view_link"] or first_link.google_drive_url
+            first_link.catatan = f"{catatan_extra}; drive_result={drive_result['status']}"
+            if drive_result.get("error_message"):
+                first_link.catatan += f"; error={drive_result['error_message']}"
+            first_link.save(update_fields=["google_drive_url", "status", "catatan"])
+            archive_status = drive_result["status"]
+        except Exception as exc:
+            logger.warning(
+                "[DRIVE ARCHIVE] FAILED for link_existing_package_documents paket_id=%s doc_type=%s — D_K link saved with PERLU_DICEK. "
+                "Exception: %s. Admin should check OAuth authorization.",
+                paket.id, checklist_type, exc
+            )
+            archive_status = "failed"
 
     return {"status": "created" if links else "exists", "links": links, "archive_status": archive_status}

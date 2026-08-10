@@ -1,5 +1,80 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
+
+{% load intermilan_format %}
 
 {% block content %}
-<section class="card"><div class="card-head"><h2>Master Akun</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th class="col-no">No</th><th class="col-akun">Kode Akun</th><th>Nama Akun</th><th>Kategori Otomatis</th></tr></thead><tbody>{% for kode,nama,kategori in rows %}<tr><td class="col-no">{{ forloop.counter }}</td><td class="col-akun"><b>{{ kode }}</b></td><td>{{ nama }}</td><td>{{ kategori }}</td></tr>{% endfor %}</tbody></table></div><div class="pagination-wrap"><div class="pagination-info">Menampilkan 1-20 dari 52 data • 20 data/halaman</div><div class="pagination-controls"><span class="page-btn disabled">Previous</span><span class="page-btn active">1</span><span class="page-btn">2</span><span class="page-btn">3</span><span class="page-btn">Next</span></div></div></section>
+<section class="card app-card">
+  <div class="tabs-container">
+    <div class="tabs-nav">
+      <a href="{% url 'core:master_akun' %}?tab=referensi" class="tab-link {% if active_tab == 'referensi' %}active{% endif %}">
+        Referensi Akun
+      </a>
+      <a href="{% url 'core:master_akun' %}?tab=transaksi" class="tab-link {% if active_tab == 'transaksi' %}active{% endif %}">
+        Transaksi per Akun
+      </a>
+    </div>
+  </div>
+
+  {% if active_tab == 'referensi' %}
+  <div class="tab-content">
+    <p class="muted mb-small">Daftar kode akun referensi dan kategorinya.</p>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th class="col-no">No</th>
+            <th class="col-akun">Kode Akun</th>
+            <th>Nama Akun</th>
+            <th>Kategori</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for kode,nama,kategori in rows %}
+          <tr>
+            <td class="col-no">{{ forloop.counter }}</td>
+            <td class="col-akun"><b>{{ kode }}</b></td>
+            <td>{{ nama }}</td>
+            <td>{{ kategori }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="tab-content">
+    <p class="muted mb-small">Ringkasan transaksi dan progres dokumen berdasarkan kode akun.</p>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th class="col-akun">Kode Akun</th>
+            <th>Nama Akun</th>
+            <th>Kategori</th>
+            <th class="col-nominal text-right">Total Transaksi</th>
+            <th class="col-nominal text-right">Total Nilai</th>
+            <th class="col-percent text-center">% Checklist</th>
+            <th class="col-action">Aksi</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in transaksi_rows %}
+          <tr>
+            <td class="col-akun"><b>{{ row.kode }}</b></td>
+            <td>{{ row.nama }}</td>
+            <td>{{ row.kategori }}</td>
+            <td class="col-nominal text-right">{{ row.total }}</td>
+            <td class="col-nominal text-right">Rp {{ row.nilai|id_number }}</td>
+            <td class="col-percent text-center">{{ row.checklist }}%</td>
+            <td class="col-action">
+              <a href="{% url 'dk:transaction_list' %}?akun={{ row.kode|urlencode }}">Lihat D_K</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</section>
 {% endblock %}

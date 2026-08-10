@@ -26,6 +26,7 @@ media/tmp/
 media/archive/
 media/uploads/*
 !media/uploads/.gitkeep
+media/drive_tokens/
 
 # === Django Collected Static ===
 staticfiles/

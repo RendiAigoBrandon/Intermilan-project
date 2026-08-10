@@ -868,7 +868,7 @@ class DRPPViewSecurityTest(TestCase):
         }
         session.save()
         with mock.patch("apps.drpp.views.commit_drpp_rows", return_value={"ok": True, "batch": batch, "document_upload": stored}), mock.patch(
-            "apps.drpp.views.archive_file_link", side_effect=RuntimeError("drive offline")
+            "apps.drpp.views.archive_file_with_dedup", side_effect=RuntimeError("drive offline")
         ):
             response = self.client.post(self.preview_url, {"action": "commit"}, follow=True)
         self.assertContains(response, "Pengarsipan Drive tertunda")

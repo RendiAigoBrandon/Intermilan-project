@@ -3,7 +3,7 @@
 
 {% block content %}
 <section class="grid two-col">
-  <div class="card soft">
+  <div class="card soft app-card app-card--summary animate-card">
     <h2>Ringkasan Transaksi</h2>
     <dl class="info-list">
       <dt>Satker</dt><dd>{{ transaction.satker_code|dash }}</dd>
@@ -24,7 +24,7 @@
     </div>
     <a class="btn ghost mt-small" href="{% url 'dk:transaction_list' %}">Kembali ke D_K</a>
   </div>
-  <div class="card">
+  <div class="card app-card app-card--upload animate-card stagger-1">
     <h2>Upload / Link Dokumen</h2>
     <form class="form-grid mt-small js-upload-progress-form" method="post" enctype="multipart/form-data">
       {% csrf_token %}
@@ -73,7 +73,7 @@
   </div>
 </section>
 
-<section class="card mt">
+<section class="card app-card mt">
   <div class="card-head"><h2>Dokumen Sudah Tersimpan</h2><span class="muted">Daftar file dan tautan pendukung transaksi.</span></div>
   <div class="table-wrap">
     <table class="data-table compact table-documents">

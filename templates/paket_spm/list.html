@@ -1,67 +1,59 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="card">
-  <div class="card-head">
+<section class="card app-card app-card--upload animate-card upload-card-top" style="text-align: left;">
+  <div class="card-head" style="margin-bottom: 4px;">
     <div>
-      <h2>Upload DRPP dan Kuitansi</h2>
-      <p class="muted">Unggah satu paket DRPP beserta seluruh kuitansi yang terkait. Sistem akan mencocokkan data dengan SP2D dan menampilkan hasil sebelum disimpan ke D_K.</p>
+      <span class="eyebrow" style="margin: 0; display: inline-block;">Form Unggah Paket DRPP & Kuitansi</span>
     </div>
     <div class="page-actions"><a class="btn ghost" href="{% url 'dk:transaction_list' %}">Lihat D_K</a></div>
   </div>
 
   {% if sp2d_context %}
-  <div class="note-box">
+  <div class="note-box mt-small">
     Melengkapi Inbox SP2D: <b>{{ sp2d_context.label }}</b>.
     Setelah commit berhasil, D_K akan terhubung ke SP2D raw ini.
   </div>
   {% endif %}
 
   {% if not ocr_environment.tesseract_binary_available %}
-  <div class="note-box">
+  <div class="note-box mt-small">
     <b>OCR PDF scan belum siap.</b> Tesseract tidak ditemukan. Instal Tesseract lalu isi
     <code>OCR_TESSERACT_CMD</code> di <code>.env</code> atau tambahkan aplikasinya ke PATH.
     PDF hasil scan dapat terbaca kosong sampai konfigurasi ini selesai.
   </div>
   {% endif %}
 
-  <form class="form-grid" method="post" enctype="multipart/form-data">
+  <form class="upload-form-stack mt js-drpp-upload-form" method="post" enctype="multipart/form-data" data-loading-title="Sedang memproses DRPP dan kuitansi" data-loading-description="Dokumen sedang dibaca dan diproses dengan OCR. Proses ini dapat memerlukan beberapa saat.">
     {% csrf_token %}
     {% if sp2d_context %}<input type="hidden" name="sp2d_raw_id" value="{{ sp2d_context.sp2d_raw_id }}">{% endif %}
 
     <div class="form-field file-field full">
-      <label>DRPP dan kuitansi</label>
       <div class="upload-dropzone js-upload-dropzone">
-        <strong>Pilih File / Folder</strong>
-        <span>Pilih ZIP, beberapa PDF, atau folder berisi seluruh DRPP beserta kuitansinya.</span>
+        <strong>Pilih File / Folder Dokumen</strong>
+        <span>Pilih file ZIP, beberapa PDF, atau folder berisi seluruh DRPP beserta kuitansi pendukungnya.</span>
         <input class="form-control js-upload-files" type="file" name="file_paket" multiple accept=".pdf,.zip,application/zip,application/pdf">
       </div>
       <input class="js-folder-files" type="file" name="document_files" multiple webkitdirectory directory hidden>
       <p class="muted mt-small">Isi halaman menjadi sumber utama; nama file hanya petunjuk. Untuk memilih folder, klik area upload sambil menahan <b>Shift</b> atau jatuhkan folder jika browser mendukung.</p>
     </div>
 
-    <div class="note-box full js-upload-progress" hidden>
-      <strong class="js-upload-progress-title">File sedang diupload...</strong>
-      <div class="progress mt-small"><span class="js-upload-progress-bar" style="width:12%"></span></div>
-      <p class="muted js-upload-progress-text">Menunggu upload</p>
-      <p class="muted js-upload-progress-count">Memproses 0 dari 0 file</p>
-    </div>
-
-    <div class="form-actions">
-      {% if can_upload_document %}
-      <button class="primary-btn" type="submit">Baca DRPP &amp; Buat Preview</button>
-      {% else %}
-      <button class="btn ghost" type="button" disabled>Read Only</button>
-      {% endif %}
+    <div class="upload-action-footer">
+      <div class="footer-note">
+        Seluruh DRPP dalam satu paket akan diproses oleh sistem. Batas maksimal ukuran ZIP: <b>{{ max_zip_size_mb|default:2048 }} MB</b>.
+      </div>
+      <div class="footer-buttons">
+        {% if can_upload_document %}
+        <button class="primary-btn" type="submit">Baca DRPP &amp; Buat Preview</button>
+        {% else %}
+        <button class="btn ghost" type="button" disabled>Read Only</button>
+        {% endif %}
+      </div>
     </div>
   </form>
-
-  <div class="note-box">
-    Seluruh DRPP dalam satu paket akan diproses. Batas ZIP {{ max_zip_size_mb|default:2048 }} MB.
-  </div>
 </section>
 
-<section class="card mt">
+<section class="card app-card mt">
   <div class="card-head">
     <div>
       <h2>Preview D_K per DRPP</h2>
@@ -106,40 +98,5 @@
     });
   });
 
-  document.querySelectorAll("form[enctype='multipart/form-data']").forEach(function (form) {
-    form.addEventListener("submit", function () {
-      var box = form.querySelector(".js-upload-progress");
-      if (!box) return;
-      var title = box.querySelector(".js-upload-progress-title");
-      var text = box.querySelector(".js-upload-progress-text");
-      var bar = box.querySelector(".js-upload-progress-bar");
-      var count = box.querySelector(".js-upload-progress-count");
-      var selected = 0;
-      form.querySelectorAll("input[type='file']").forEach(function (input) {
-        selected += input.files ? input.files.length : 0;
-      });
-      var steps = [
-        ["Membaca file", "Membuat manifest PDF", "12%"],
-        ["Mengelompokkan DRPP", "Memetakan seluruh nomor DRPP", "26%"],
-        ["Mendeteksi halaman duplikat", "Membuat indeks halaman resolusi rendah", "40%"],
-        ["Membaca DRPP", "Membaca ringkasan dan Detail COA", "56%"],
-        ["Mencocokkan kuitansi", "Memverifikasi halaman kandidat", "70%"],
-        ["Mencari SPM", "Mencari parent di SP2D atau D_K", "84%"],
-        ["Menyusun preview", "Merekonsiliasi setiap DRPP", "96%"]
-      ];
-      box.hidden = false;
-      var i = 0;
-      function tick() {
-        var step = steps[Math.min(i, steps.length - 1)];
-        title.textContent = step[0];
-        text.textContent = step[1];
-        bar.style.width = step[2];
-        if (count) count.textContent = "Memproses " + Math.min(i + 1, Math.max(selected, 1)) + " dari " + Math.max(selected, 1) + " file";
-        i += 1;
-        if (i < steps.length) window.setTimeout(tick, 1200);
-      }
-      tick();
-    });
-  });
 </script>
 {% endblock %}

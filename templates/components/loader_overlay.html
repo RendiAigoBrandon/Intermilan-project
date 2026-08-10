@@ -1,0 +1,40 @@
+<!-- Reusable INTERMILAN Gooey Dots Loading Overlay -->
+<div id="intermilanGlobalLoader" class="intermilan-loader-overlay" role="status" aria-live="polite" hidden>
+  <div class="loader-card">
+    <!-- SVG Filter for Gooey Effect (Hidden in DOM) -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="position: absolute; width: 0; height: 0;" aria-hidden="true">
+      <defs>
+        <filter id="gooeyDotsFilter">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur" />
+          <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9" result="goo" />
+          <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+        </filter>
+      </defs>
+    </svg>
+
+    <!-- Gooey Dots Visual -->
+    <div class="gooey-dots-wrapper" aria-hidden="true">
+      <div class="gooey-dot dot-blue"></div>
+      <div class="gooey-dot dot-orange"></div>
+      <div class="gooey-dot dot-green"></div>
+    </div>
+
+    <!-- Status Content -->
+    <div class="loader-content">
+      <span class="loader-badge">Memproses Dokumen</span>
+      <h3 class="loader-title js-loader-title">Sedang memproses data...</h3>
+      <p class="loader-desc js-loader-desc">Mohon tunggu beberapa saat, sistem sedang memverifikasi dan membaca data Anda.</p>
+      
+      <!-- Selected file indicator -->
+      <div class="loader-files-info js-loader-files-info" hidden>
+        <svg class="file-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/>
+        </svg>
+        <span class="js-loader-files-text">1 file terpilih</span>
+      </div>
+    </div>
+    
+    <!-- Screen Reader Fallback -->
+    <span class="sr-only">Proses pengolahan data sedang berlangsung. Harap tidak menutup halaman atau menekan tombol kembali.</span>
+  </div>
+</div>

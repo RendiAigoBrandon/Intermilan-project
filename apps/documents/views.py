@@ -23,7 +23,11 @@ from apps.core.parsers import (
     parse_paket_spm_zip,
     parse_spm_pdf,
 )
-from apps.core.views import CHECKLIST_ROWS, UPLOAD_COLUMNS, build_pagination_window
+from apps.core.document_policy import (
+    get_required_documents_for_akun_family,
+    normalize_akun_family,
+)
+from apps.core.views import UPLOAD_COLUMNS, build_pagination_window
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
 from apps.drpp.models import DRPPItem, DRPPUpload
@@ -182,10 +186,39 @@ def checklist_detail(request, transaction_id):
             return redirect("documents:checklist_detail", transaction_id=transaction.pk)
 
     statuses = list(ChecklistStatus.objects.filter(transaction_detail=transaction).order_by("nama_dokumen"))
-    checklist_rows = statuses or [
-        {"nama_dokumen": name, "wajib": index != len(CHECKLIST_ROWS), "status": ChecklistStatus.Status.BELUM}
-        for index, name in enumerate(CHECKLIST_ROWS, start=1)
-    ]
+
+    if not statuses:
+        # Generate and persist account-family-specific checklist rows
+        # This ensures completion% is accurate and save works correctly
+        akun_family = normalize_akun_family(transaction.akun, transaction.jenis_spm)
+        required_docs = get_required_documents_for_akun_family(akun_family)
+        if required_docs:
+            ChecklistStatus.objects.bulk_create([
+                ChecklistStatus(
+                    transaction_detail=transaction,
+                    nama_dokumen=name,
+                    wajib=True,
+                    status=ChecklistStatus.Status.BELUM,
+                )
+                for name in required_docs
+            ], ignore_conflicts=True)
+            statuses = list(ChecklistStatus.objects.filter(transaction_detail=transaction).order_by("nama_dokumen"))
+        else:
+            # Fallback: use ChecklistTemplate
+            templates = list(ChecklistTemplate.objects.filter(is_active=True).order_by("urutan", "nama_dokumen")[:100])
+            if templates:
+                ChecklistStatus.objects.bulk_create([
+                    ChecklistStatus(
+                        transaction_detail=transaction,
+                        nama_dokumen=t.nama_dokumen,
+                        wajib=t.wajib,
+                        status=ChecklistStatus.Status.BELUM,
+                    )
+                    for t in templates
+                ], ignore_conflicts=True)
+                statuses = list(ChecklistStatus.objects.filter(transaction_detail=transaction).order_by("nama_dokumen"))
+
+    checklist_rows = statuses
     uploads = DocumentUpload.objects.filter(transaction_detail=transaction).select_related("uploaded_by")[:20]
     drive_links = DocumentDriveLink.objects.filter(transaction_detail=transaction).select_related("created_by")[:50]
     attach_satker_names([transaction])
@@ -313,7 +346,7 @@ def process_single_document_file(request, transaction, document_type, upload_fil
                     transaction.sp2d_raw = matched_sp2d
                     transaction.save(update_fields=["sp2d_raw", "updated_at"])
 
-            drive_result, main_link = archive_file_link(
+            drive_result, main_link, is_reused = archive_file_link(
                 tmp_path,
                 user=request.user,
                 jenis_dokumen=document_type,

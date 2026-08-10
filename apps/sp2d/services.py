@@ -136,8 +136,11 @@ def _is_identical(existing_obj, row_data, tahun):
         if isinstance(new_val, Decimal) or isinstance(old_val, Decimal):
             if Decimal(str(new_val or 0)) != Decimal(str(old_val or 0)):
                 return False
-        elif str(new_val) != str(old_val):
-            return False
+        else:
+            nv_str = "" if new_val is None else str(new_val)
+            ov_str = "" if old_val is None else str(old_val)
+            if nv_str != ov_str:
+                return False
             
     return True
 
@@ -356,6 +359,12 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
                     if nv != ov:
                         setattr(record, field, new_val)
                         changed = True
+                elif field in ["tgl_sp2d", "tanggal_invoice", "tanggal_selesai_sp2d"]:
+                    from apps.core.parsers import parse_date
+                    nv_date = parse_date(new_val) if new_val else None
+                    if getattr(record, field) != nv_date:
+                        setattr(record, field, nv_date)
+                        changed = True
                 elif getattr(record, field) != new_val:
                     setattr(record, field, new_val)
                     changed = True
@@ -458,11 +467,13 @@ def reconcile_sp2d_with_dk(sp2d_record, user):
         satker_code=sp2d_record.satker_code,
         nomor_spm=sp2d_record.nomor_spm_extracted,
     ).exclude(status_detail=TransactionDetail.StatusDetail.DIARSIPKAN))
-    
-    # Filter by tahun exact
+
+    # Filter by tahun exact. Include NULL tanggal_spm rows — legacy/local-dev data
+    # may not have SPM dates, and the dashboard includes these rows too.
+    # NULL rows are included under any year filter (no better year source available).
     dk_items = [
-        item for item in dk_items 
-        if item.tanggal_spm and item.tanggal_spm.year == sp2d_record.tahun
+        item for item in dk_items
+        if item.tanggal_spm is None or item.tanggal_spm.year == sp2d_record.tahun
     ]
     
     total_bruto = sum(item.nilai_bruto for item in dk_items)

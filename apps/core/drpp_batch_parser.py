@@ -423,7 +423,9 @@ def _candidate_for_probe(page):
             getattr(settings, "DRPP_BATCH_SPM_IDENTITY_SCAN_PAGES", 12)
         )
     if page.get("type_hint") == "DRPP_SUMMARY":
-        return page["page_number"] <= 4
+        return page["page_number"] <= int(
+            getattr(settings, "DRPP_BATCH_DRPP_SUMMARY_SCAN_PAGES", 12)
+        )
     return page.get("primary_for_drpp", True) and page["page_number"] <= 2
 
 

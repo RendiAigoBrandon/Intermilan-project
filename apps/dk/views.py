@@ -40,6 +40,7 @@ def transaction_list(request):
         "kelengkapan": request.GET.get("kelengkapan", "").strip(),
         "page_size": request.GET.get("page_size", "").strip(),
         "archive_status": request.GET.get("archive_status", "aktif").strip(),
+        "tahun": request.GET.get("tahun", "").strip(),
     }
     
     if filters["archive_status"] == "arsip":
@@ -85,6 +86,10 @@ def transaction_list(request):
         queryset = queryset.filter(checklist_total__gt=0, checklist_ada__gte=F("checklist_total"))
     elif filters["kelengkapan"] == "belum":
         queryset = queryset.exclude(checklist_total__gt=0, checklist_ada__gte=F("checklist_total"))
+    if filters["tahun"]:
+        tahun_filter = filters["tahun"]
+        if tahun_filter.isdigit():
+            queryset = queryset.filter(sp2d_raw__tahun=int(tahun_filter))
 
     filtered_total = queryset.count()
     page_size = normalize_page_size(filters["page_size"])
@@ -179,9 +184,22 @@ def transaction_list(request):
             "sp2d_start": sp2d_page_obj.start_index() if sp2d_paginator.count else 0,
             "sp2d_end": sp2d_page_obj.end_index() if sp2d_paginator.count else 0,
             "sp2d_status_filter": sp2d_status_filter,
+            "tahun_options": get_tahun_options(),
         }
     )
     return render(request, "dk/list.html", context)
+
+
+def get_tahun_options():
+    """Get distinct tahun from SP2DRaw for filter dropdown."""
+    from django.db.models import Q
+    years = list(
+        SP2DRaw.objects.exclude(Q(tahun__isnull=True) | Q(tahun=0))
+        .values_list("tahun", flat=True)
+        .distinct()
+        .order_by("-tahun")
+    )
+    return years
 
 
 def normalize_page_size(value):

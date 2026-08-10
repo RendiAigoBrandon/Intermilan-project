@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="card">
+<section class="card app-card">
   <div class="card-head">
     <div>
       <h2>Ringkasan Audit</h2>
@@ -17,14 +17,14 @@
     </div>
   </div>
   <div class="grid cards-4">
-    <div class="card soft metric"><span>SP2D Batch</span><b>{{ audit_totals.sp2d_batch }}</b><small>Batch import</small></div>
-    <div class="card soft metric"><span>SP2D Raw</span><b>{{ audit_totals.sp2d }}</b><small>Data mentah SP2D</small></div>
-    <div class="card soft metric"><span>D_K</span><b>{{ audit_totals.dk }}</b><small>TransactionDetail</small></div>
-    <div class="card soft metric"><span>Master Akun</span><b>{{ audit_totals.master_akun }}</b><small>Referensi akun</small></div>
-    <div class="card soft metric"><span>Checklist Template</span><b>{{ audit_totals.checklist_template }}</b><small>Template dokumen</small></div>
-    <div class="card soft metric"><span>Checklist Status</span><b>{{ audit_totals.checklist_status }}</b><small>Status transaksi</small></div>
-    <div class="card soft metric"><span>DocumentDriveLink</span><b>{{ audit_totals.document_links }}</b><small>Metadata link</small></div>
-    <div class="card soft metric ok"><span>Status</span><b>Read-only</b><small>Tidak ada cleanup</small></div>
+    <div class="card soft metric app-card app-card--compact animate-card"><span>SP2D Batch</span><b>{{ audit_totals.sp2d_batch }}</b><small>Batch import</small></div>
+    <div class="card soft metric app-card app-card--compact animate-card stagger-1"><span>SP2D Raw</span><b>{{ audit_totals.sp2d }}</b><small>Data mentah SP2D</small></div>
+    <div class="card soft metric app-card app-card--compact animate-card stagger-2"><span>D_K</span><b>{{ audit_totals.dk }}</b><small>TransactionDetail</small></div>
+    <div class="card soft metric app-card app-card--compact animate-card stagger-3"><span>Master Akun</span><b>{{ audit_totals.master_akun }}</b><small>Referensi akun</small></div>
+    <div class="card soft metric app-card app-card--compact animate-card"><span>Checklist Template</span><b>{{ audit_totals.checklist_template }}</b><small>Template dokumen</small></div>
+    <div class="card soft metric app-card app-card--compact animate-card stagger-1"><span>Checklist Status</span><b>{{ audit_totals.checklist_status }}</b><small>Status transaksi</small></div>
+    <div class="card soft metric app-card app-card--compact animate-card stagger-2"><span>DocumentDriveLink</span><b>{{ audit_totals.document_links }}</b><small>Metadata link</small></div>
+    <div class="card soft metric ok app-card app-card--compact animate-card stagger-3"><span>Status</span><b>Read-only</b><small>Tidak ada cleanup</small></div>
   </div>
   <div class="note-box">DRPP upload/item/match: {{ audit_totals.drpp_upload }} / {{ audit_totals.drpp_item }} / {{ audit_totals.drpp_match }}.</div>
   {% if audit_is_clean %}

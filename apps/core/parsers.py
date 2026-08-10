@@ -2214,6 +2214,9 @@ def _parse_drpp_layout_table_rows(words, lines, page_number=1):
             line_text = normalize_text(" ".join(word["text"] for word in line["words"]))
             if re.search(r"\bTOTAL\b", line_text, re.I):
                 break
+            # Stop chunking when hitting totals section labels (Jumlah SPP, Jumlah s.d., etc.)
+            if re.search(r"\bJUMLAH\b", line_text.upper()):
+                break
             chunk.append(line)
         if chunk:
             chunks.append({"prefix": prefix, "account_word": account_word, "lines": chunk})

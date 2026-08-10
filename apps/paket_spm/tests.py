@@ -1562,7 +1562,7 @@ class PaketSPMRegressionTests(TestCase):
 
         attempts = []
 
-        def fake_tesseract_page_text(_pytesseract, image):
+        def fake_tesseract_page_text(_pytesseract, image, **kwargs):
             attempts.append((image.name, image.rotation))
             expected_rotation = {"header": 0, "detail": 270}[image.name]
             if image.rotation == expected_rotation:
@@ -1605,7 +1605,7 @@ class PaketSPMRegressionTests(TestCase):
 
         calls = []
 
-        def fake_tesseract_page_text(_pytesseract, image):
+        def fake_tesseract_page_text(_pytesseract, image, **kwargs):
             calls.append(image.rotation)
             text = "SURAT PERINTAH MEMBAYAR 00100T TOTAL PEMBAYARAN JUMLAH PENGELUARAN POTONGAN KPPN"
             return text, 90.0, [], [{"text": "SURAT", "confidence": 90, "left": 1, "top": 1, "width": 10, "height": 10}]

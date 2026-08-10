@@ -1,32 +1,137 @@
-﻿{% load static %}
+{% load static %}
 <!doctype html>
 <html lang="id">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Login INTERMILAN</title>
-  <link rel="stylesheet" href="{% static 'css/base.css' %}?v=4">
-  <link rel="stylesheet" href="{% static 'css/components.css' %}?v=4">
-  <link rel="stylesheet" href="{% static 'css/pages.css' %}?v=4">
+  <title>Login | INTERMILAN BPS Provinsi Sumatera Barat</title>
+  <link rel="stylesheet" href="{% static 'css/base.css' %}?v=30_bps">
+  <link rel="stylesheet" href="{% static 'css/components.css' %}?v=30_bps">
+  <link rel="stylesheet" href="{% static 'css/pages.css' %}?v=30_bps">
 </head>
 <body class="login-page">
   <main class="login-shell">
-    <section class="login-card">
-      <img src="{% static 'img/bps-logo-new.png' %}" alt="BPS" class="login-logo">
-      <p class="eyebrow">BPS Provinsi Sumatera Barat</p>
-      <h1>INTERMILAN</h1>
-      <p class="login-subtitle">Web internal untuk memindahkan workbook INTERMILAN dan KK_13xx ke alur kerja terpusat.</p>
-      {% if form.errors %}<div class="login-error">Username atau password tidak sesuai.</div>{% endif %}
-      <form method="post" class="login-form">
-        {% csrf_token %}
-        <label for="{{ form.username.id_for_label }}">Username</label>
-        {{ form.username }}
-        <label for="{{ form.password.id_for_label }}">Password</label>
-        {{ form.password }}
-        <input type="hidden" name="next" value="{{ next }}">
-        <button type="submit" class="primary-btn">Login</button>
-      </form>
-    </section>
+    <div class="login-card-split">
+      <!-- Left Column: Form & Authentication -->
+      <section class="login-form-area">
+        <div class="card-spotlight-glow" aria-hidden="true"></div>
+        <div class="login-logo-wrap">
+          <img src="{% static 'img/bps-logo-new.png' %}" alt="Logo BPS" class="login-logo">
+        </div>
+        <span class="eyebrow">BPS Provinsi Sumatera Barat</span>
+        <h1>INTERMILAN</h1>
+        
+        {% if form.errors %}
+        <div class="login-error" role="alert">Username atau password yang Anda masukkan tidak sesuai.</div>
+        {% endif %}
+        
+        <form method="post" class="login-form">
+          {% csrf_token %}
+          <div class="form-field-item">
+            <label for="{{ form.username.id_for_label }}">Username</label>
+            <div class="input-wrapper">
+              {{ form.username }}
+            </div>
+          </div>
+          
+          <div class="form-field-item">
+            <label for="{{ form.password.id_for_label }}">Password</label>
+            <div class="password-wrapper">
+              {{ form.password }}
+              <button type="button" class="password-toggle-btn" aria-label="Tampilkan atau sembunyikan password" title="Lihat Password">
+                <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                  <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                </svg>
+                <svg class="eye-closed" style="display: none;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                  <path d="M11.83 9L15 12.16V12a3 3 0 00-3-3h-.17zm-4.3.8l1.55 1.55c-.05.21-.08.42-.08.65 0 1.66 1.34 3 3 3 .22 0 .43-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.42-.08.65 0 1.66 1.34 3 3 3 .22 0 .43-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/>
+                  <path d="M12 4.5c4.75 0 8.77 2.89 10.5 7.11-.64 1.57-1.64 2.95-2.88 4.02l1.45 1.45C22.61 15.55 23.63 13.88 24 12c-1.73-4.39-6-7.5-11-7.5-2.21 0-4.26.65-6.02 1.76l1.49 1.49C9.53 4.88 10.74 4.5 12 4.5z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          
+          <input type="hidden" name="next" value="{{ next }}">
+          <button type="submit" class="primary-btn">Login ke Sistem</button>
+        </form>
+      </section>
+
+      <!-- Right Column: BPS Architectural Showcase -->
+      <section class="login-visual-area" aria-hidden="true">
+        <div class="login-visual-content">
+          <div class="visual-tag">
+            <span>Official Portal</span>
+          </div>
+          <h2>Monitoring Keuangan Presisi, Akuntabel, dan Terintegrasi</h2>
+          <p>Mendukung transformasi digitalisasi pelaporan dan rekonsiliasi keuangan di seluruh Satuan Kerja BPS Provinsi Sumatera Barat dengan standar keandalan tinggi.</p>
+        </div>
+      </section>
+    </div>
   </main>
+
+  <!-- Interactive Password Toggle & 21st.dev Glow Script -->
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+      // 1. Interactive Password Eye Toggle
+      var btn = document.querySelector(".password-toggle-btn");
+      var passInput = document.querySelector(".password-wrapper input[type='password'], .password-wrapper input[type='text']");
+      if (btn && passInput) {
+        var eyeOpen = btn.querySelector(".eye-open");
+        var eyeClosed = btn.querySelector(".eye-closed");
+        btn.addEventListener("click", function() {
+          var isPassword = passInput.getAttribute("type") === "password";
+          passInput.setAttribute("type", isPassword ? "text" : "password");
+          if (isPassword) {
+            passInput.classList.add("js-pw-toggled");
+            if (eyeOpen) eyeOpen.style.display = "none";
+            if (eyeClosed) eyeClosed.style.display = "block";
+            btn.setAttribute("title", "Sembunyikan Password");
+          } else {
+            passInput.classList.remove("js-pw-toggled");
+            if (eyeOpen) eyeOpen.style.display = "block";
+            if (eyeClosed) eyeClosed.style.display = "none";
+            btn.setAttribute("title", "Lihat Password");
+          }
+        });
+      }
+
+      // 2. Card Spotlight Ambient Glow (Mouse Tracking)
+      var formArea = document.querySelector(".login-form-area");
+      var spotlight = document.querySelector(".card-spotlight-glow");
+      if (formArea && spotlight) {
+        formArea.addEventListener("mousemove", function(e) {
+          var rect = formArea.getBoundingClientRect();
+          var x = e.clientX - rect.left;
+          var y = e.clientY - rect.top;
+          spotlight.style.transform = "translate(" + (x - 250) + "px, " + (y - 250) + "px)";
+          spotlight.style.opacity = "1";
+        });
+        formArea.addEventListener("mouseleave", function() {
+          spotlight.style.opacity = "0";
+        });
+      }
+
+      // 3. Input Border Beam Glow (Mouse Tracking on Top & Bottom)
+      var glowWrappers = document.querySelectorAll(".input-wrapper, .password-wrapper");
+      glowWrappers.forEach(function(wrapper) {
+        var topBeam = document.createElement("div");
+        topBeam.className = "input-glow-line glow-top";
+        var bottomBeam = document.createElement("div");
+        bottomBeam.className = "input-glow-line glow-bottom";
+        wrapper.appendChild(topBeam);
+        wrapper.appendChild(bottomBeam);
+
+        wrapper.addEventListener("mousemove", function(e) {
+          var rect = wrapper.getBoundingClientRect();
+          var x = e.clientX - rect.left;
+          topBeam.style.background = "radial-gradient(45px circle at " + x + "px 0px, var(--bps-cerulean) 0%, var(--bps-blue-vivid) 45%, transparent 80%)";
+          bottomBeam.style.background = "radial-gradient(45px circle at " + x + "px 2px, var(--bps-cerulean) 0%, var(--bps-blue-vivid) 45%, transparent 80%)";
+          wrapper.classList.add("is-hover-glow");
+        });
+        wrapper.addEventListener("mouseleave", function() {
+          wrapper.classList.remove("is-hover-glow");
+        });
+      });
+    });
+  </script>
 </body>
 </html>

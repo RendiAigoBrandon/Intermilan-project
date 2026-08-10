@@ -67,94 +67,13 @@ def sp2d_list(request):
         }
         return redirect("sp2d:preview")
 
-    # Header Rows (SP2DRaw)
-    rows = filter_by_satker(
-        SP2DRaw.objects.select_related("import_batch", "created_by")
-        .annotate(
-            dk_count=Count(
-                "transaction_details", 
-                filter=~Q(transaction_details__status_detail=TransactionDetail.StatusDetail.DIARSIPKAN), 
-                distinct=True
-            )
-        ), 
-        request.user
-    )
-    
-    # Batch Rows (SP2DImportBatch)
-    if can_view_all_satker(request.user):
-        batch_qs = SP2DImportBatch.objects.all()
-    else:
-        user_satker = get_user_satker_code(request.user)
-        batch_qs = SP2DImportBatch.objects.filter(raw_rows__satker_code=user_satker).distinct()
-
-    search = request.GET.get("q", "").strip()
-    status = request.GET.get("status", "").strip()
-    satker = request.GET.get("satker", "").strip()
-    bulan = request.GET.get("bulan", "").strip()
-    
-    if search:
-        rows = rows.filter(
-            Q(no_sp2d__icontains=search)
-            | Q(nomor_invoice__icontains=search)
-            | Q(nomor_spm_extracted__icontains=search)
-            | Q(deskripsi__icontains=search)
-            | Q(satker_code__icontains=search)
-            | Q(satker_name__icontains=search)
-        )
-    if status == "sudah":
-        rows = rows.filter(status=SP2DRaw.Status.COCOK)
-    elif status == "belum":
-        rows = rows.exclude(status=SP2DRaw.Status.COCOK)
-    if satker:
-        rows = rows.filter(satker_code=satker)
-    if bulan:
-        rows = rows.filter(Q(bulan_sp2d=bulan) | Q(tgl_sp2d__month=bulan) | Q(tanggal_invoice__month=bulan))
-
-    page_size = normalize_page_size(request.GET.get("page_size"))
-    paginator = Paginator(rows.order_by("-created_at", "id"), page_size)
-    page_obj = paginator.get_page(request.GET.get("page"))
-    
-    batch_paginator = Paginator(batch_qs, 10)
-    batch_page_obj = batch_paginator.get_page(request.GET.get("batch_page"))
-    batch_rows = list(batch_page_obj.object_list)
-    
-    month_dict = dict(MONTH_OPTIONS)
-    for batch in batch_rows:
-        batch.bulan_name = month_dict.get(batch.bulan, str(batch.bulan)) if batch.bulan else "-"
-    
-    header_rows = list(page_obj.object_list)
-    for row in header_rows:
-        row.status_detail_label = "Sudah Ada D_K" if row.status == SP2DRaw.Status.COCOK else "Belum Lengkap"
-        row.can_edit_sp2d = can_edit_satker(request.user, row.satker_code)
-        row.bulan_name = month_dict.get(row.bulan_sp2d, str(row.bulan_sp2d)) if row.bulan_sp2d else "-"
-        
-    base_query = request.GET.copy()
-    base_query.pop("page", None)
-    
-    batch_query = request.GET.copy()
-    batch_query.pop("batch_page", None)
-
     context = permission_context(request.user)
     context.update(
         {
             "page_title": "Upload SP2D",
-            "page_subtitle": "Data mentah SP2D dan riwayat import.",
-            "header_rows": header_rows,
-            "batch_rows": batch_rows,
-            "filters": {"q": search, "status": status, "satker": satker, "bulan": bulan},
+            "page_subtitle": "Upload file Excel Daftar SP2D",
             "months": MONTH_OPTIONS,
-            "satker_options": get_satker_options(request.user),
-            "page_obj": page_obj,
-            "paginator": paginator,
-            "page_size": page_size,
-            "page_size_options": (20, 50, 100),
-            "page_start": page_obj.start_index() if paginator.count else 0,
-            "page_end": page_obj.end_index() if paginator.count else 0,
-            "base_querystring": base_query.urlencode(),
-            "batch_base_querystring": batch_query.urlencode(),
-            "pagination_window": build_pagination_window(page_obj),
-            "batch_paginator": batch_paginator,
-            "batch_page_obj": batch_page_obj,
+            "satker_options": get_satker_options(request.user) if 'get_satker_options' in globals() else [],
         }
     )
     return render(request, "sp2d/list.html", context)
@@ -200,12 +119,37 @@ def parse_money_input(value, fallback=Decimal("0")):
         return fallback or Decimal("0")
 
 
+from apps.core.document_policy import (
+    get_required_documents_for_akun_family,
+    normalize_akun_family,
+    AkunFamily,
+)
+
+
 def generate_checklist_for_detail(detail, user, has_sp2d=False):
-    templates = list(ChecklistTemplate.objects.filter(is_active=True).order_by("urutan", "nama_dokumen")[:100])
-    if templates:
-        rows = [(template.nama_dokumen, template.wajib) for template in templates]
+    """
+    Buat baris ChecklistStatus untuk transaksi ini berdasarkan keluarga Akun.
+
+    Prioritas:
+    1. Gunakan account-family-specific docs (dari AKUN_FAMILY_REQUIRED_DOCS)
+    2. Jika tidak ada rules untuk keluarga ini, fallback ke ChecklistTemplate
+    3. Jika tidak ada template aktif, fallback ke CHECKLIST_ROWS
+    """
+    # Ambil dokumen berdasarkan account family
+    akun_family = normalize_akun_family(detail.akun, detail.jenis_spm)
+    required_docs = get_required_documents_for_akun_family(akun_family)
+
+    if required_docs:
+        # Account-family-specific documents take priority
+        rows = [(name, True) for name in required_docs]
     else:
-        rows = [(name, index != len(CHECKLIST_ROWS)) for index, name in enumerate(CHECKLIST_ROWS, start=1)]
+        # Fallback: use ChecklistTemplate or CHECKLIST_ROWS
+        templates = list(ChecklistTemplate.objects.filter(is_active=True).order_by("urutan", "nama_dokumen")[:100])
+        if templates:
+            rows = [(template.nama_dokumen, template.wajib) for template in templates]
+        else:
+            rows = [(name, True) for name in CHECKLIST_ROWS]
+
     for nama_dokumen, wajib in rows:
         default_status = (
             ChecklistStatus.Status.ADA
@@ -243,92 +187,222 @@ def sp2d_preview(request):
             messages.info(request, "Upload dibatalkan.")
             return redirect("sp2d:list")
         elif action == "commit":
-            try:
-                parse_result = parse_sp2d_excel_file(file_path)
-                if not parse_result["ok"]:
-                    messages.error(request, parse_result["error"] or "Preview tidak valid.")
-                    return redirect("sp2d:preview")
-                mapped_rows = parse_result["rows"]
+            # 1. Read POST array data
+            satker_codes = request.POST.getlist("satker_code[]")
+            satker_names = request.POST.getlist("satker_name[]")
+            no_sp2ds = request.POST.getlist("no_sp2d[]")
+            tahuns = request.POST.getlist("tahun[]")
+            bulan_sp2ds = request.POST.getlist("bulan_sp2d[]")
+            nomor_spms = request.POST.getlist("nomor_spm[]")
+            tgl_spms = request.POST.getlist("tgl_spm[]")
+            jenis_spms = request.POST.getlist("jenis_spm[]")
+            cara_pembayarans = request.POST.getlist("cara_pembayaran[]")
+            akuns = request.POST.getlist("akun[]")
+            deskripsis = request.POST.getlist("deskripsi[]")
+            nilai_brutos = request.POST.getlist("nilai_bruto[]")
+            nilai_nettos = request.POST.getlist("nilai_netto[]")
+            potongans = request.POST.getlist("potongan[]")
+            no_kuitansis = request.POST.getlist("no_kuitansi[]")
+            no_drpps = request.POST.getlist("no_drpp[]")
+            pembebanans = request.POST.getlist("pembebanan[]")
+            fps = request.POST.getlist("fp[]")
+            pph21s = request.POST.getlist("pph21[]")
+
+            # Validate counts match
+            num_rows = len(satker_codes)
+            if not num_rows:
+                messages.error(request, "Tidak ada data untuk disimpan.")
+                return redirect("sp2d:preview")
+
+            mapped_rows = []
+            errors = []
+            for i in range(num_rows):
+                row = {
+                    "satker_code": satker_codes[i] if i < len(satker_codes) else "",
+                    "satker_name": satker_names[i] if i < len(satker_names) else "",
+                    "no_sp2d": no_sp2ds[i] if i < len(no_sp2ds) else "",
+                    "tahun": tahuns[i] if i < len(tahuns) else "",
+                    "bulan_sp2d": bulan_sp2ds[i] if i < len(bulan_sp2ds) else "",
+                    "nomor_spm": nomor_spms[i] if i < len(nomor_spms) else "",
+                    "tgl_spm": tgl_spms[i] if i < len(tgl_spms) else "",
+                    "jenis_spm": jenis_spms[i] if i < len(jenis_spms) else "",
+                    "cara_pembayaran": cara_pembayarans[i] if i < len(cara_pembayarans) else "",
+                    "akun": akuns[i] if i < len(akuns) else "",
+                    "deskripsi": deskripsis[i] if i < len(deskripsis) else "",
+                    "nilai_bruto": parse_money_input(nilai_brutos[i] if i < len(nilai_brutos) else "0"),
+                    "nilai_netto": parse_money_input(nilai_nettos[i] if i < len(nilai_nettos) else "0"),
+                    "potongan": parse_money_input(potongans[i] if i < len(potongans) else "0"),
+                    "no_kuitansi": no_kuitansis[i] if i < len(no_kuitansis) else "",
+                    "no_drpp": no_drpps[i] if i < len(no_drpps) else "",
+                    "pembebanan": pembebanans[i] if i < len(pembebanans) else "",
+                    "fp": fps[i] if i < len(fps) else "",
+                    "pph21": parse_money_input(pph21s[i] if i < len(pph21s) else "0"),
+                    
+                    # For legacy compatibility with commit_sp2d_rows
+                    "nilai_spm": parse_money_input(nilai_brutos[i] if i < len(nilai_brutos) else "0"),
+                    "nilai_sp2d": parse_money_input(nilai_nettos[i] if i < len(nilai_nettos) else "0"),
+                    "nomor_spm_extracted": nomor_spms[i] if i < len(nomor_spms) else "",
+                    "nomor_invoice": nomor_spms[i] if i < len(nomor_spms) else "",
+                    "tgl_sp2d": tgl_spms[i] if i < len(tgl_spms) else "",
+                    "tanggal_invoice": tgl_spms[i] if i < len(tgl_spms) else "",
+                    "mata_uang": cara_pembayarans[i] if i < len(cara_pembayarans) else "",
+                    "jenis_sp2d": jenis_spms[i] if i < len(jenis_spms) else "",
+                }
                 
+                # Check permission
+                if not can_edit_satker(request.user, row["satker_code"]):
+                    errors.append(f"Baris {i+1}: Anda tidak memiliki akses ke satker {row['satker_code']}")
+                    
+                mapped_rows.append(row)
+
+            if errors:
+                for error in errors:
+                    messages.error(request, error)
+                # Re-render form with posted data to preserve edits
+                context = permission_context(request.user)
+                context.update({
+                    "page_title": "Preview Import SP2D",
+                    "preview_rows": mapped_rows,
+                    "import_data": import_data,
+                    "can_commit": True,
+                })
+                return render(request, "sp2d/preview.html", context)
+
+            try:
                 tahun = int(import_data['tahun']) if str(import_data['tahun']).isdigit() else None
                 bulan = parse_month(import_data["bulan"])
 
                 with transaction.atomic():
-                    parser_failed_rows = max(parse_result["raw_rows"] - len(mapped_rows), 0)
+                    # Create batch
                     batch = SP2DImportBatch.objects.create(
                         filename=os.path.basename(file_path),
                         original_filename=import_data['original_filename'],
                         tahun=tahun,
                         bulan=bulan,
-                        total_rows=parse_result["raw_rows"],
-                        failed_rows=parser_failed_rows,
+                        total_rows=num_rows,
+                        failed_rows=0,
                         status=SP2DImportBatch.Status.PROCESSING,
                         uploaded_by=request.user,
-                        notes=f"Sheet {parse_result['sheet']}, header row {parse_result['header_row']}",
+                        notes="Direct D_K save",
                     )
-                    # Normalize inputs before commit
-                    for row_data in mapped_rows:
-                        inferred_code, inferred_name = infer_satker_from_name(row_data.get("satker_name", ""))
-                        row_data["satker_code"] = str(row_data.get("satker_code") or inferred_code or "")[:32]
-                        row_data["satker_name"] = str(inferred_name or row_data.get("satker_name", ""))[:255]
-                        row_data["no_sp2d"] = str(row_data.get('no_sp2d', ''))[:100]
-                        row_data["mata_uang"] = str(row_data.get('mata_uang', ''))[:20]
-                        row_data["nomor_invoice"] = str(row_data.get('nomor_invoice', ''))[:100]
-                        row_data["jenis_spm"] = str(row_data.get('jenis_spm', ''))[:100]
-                        row_data["jenis_sp2d"] = str(row_data.get('jenis_sp2d', ''))[:100]
-                        row_data["deskripsi"] = str(row_data.get('deskripsi', ''))
-                        row_data["nomor_spm_extracted"] = str(row_data.get('nomor_spm_extracted', ''))[:100]
                     
+                    # Call legacy commit to handle SP2DRaw deduplication
                     commit_sp2d_rows(batch, mapped_rows, request.user, filename=import_data['original_filename'])
-                drive_result, _ = archive_file_link(
-                    file_path,
-                    user=request.user,
-                    jenis_dokumen="SP2D_EXCEL",
-                    nama_file=import_data["original_filename"],
-                    satker_code=str(mapped_rows[0].get("satker_code", "")) if mapped_rows else "",
-                    catatan_extra=f"source=SP2D; rows={len(mapped_rows)}; sheet={parse_result['sheet']}",
-                )
+                    
+                    # Fetch created SP2DRaw items for this batch to link them
+                    raw_records = list(SP2DRaw.objects.filter(last_import_batch=batch))
+                    
+                    # Save D_K (TransactionDetail)
+                    for i, row in enumerate(mapped_rows):
+                        tgl_spm = parse_date(row["tgl_spm"]) if row["tgl_spm"] else None
+                        bln_sp2d = int(row["bulan_sp2d"]) if str(row["bulan_sp2d"]).isdigit() else bulan
+                        
+                        # Find corresponding raw record by fallback matching
+                        sp2d_raw = None
+                        if raw_records:
+                            # Try exact match by no_sp2d
+                            sp2d_raw = next((r for r in raw_records if r.no_sp2d == row["no_sp2d"]), None)
+                            if not sp2d_raw:
+                                sp2d_raw = next((r for r in raw_records if r.nomor_spm_extracted == row["nomor_spm"]), None)
+                                
+                        if sp2d_raw:
+                            detail, created = TransactionDetail.objects.update_or_create(
+                                sp2d_raw=sp2d_raw,
+                                defaults={
+                                    "satker_code": row["satker_code"],
+                                    "akun": row["akun"],
+                                    "bulan_sp2d": bln_sp2d,
+                                    "cara_pembayaran": row["cara_pembayaran"],
+                                    "nomor_spm": row["nomor_spm"],
+                                    "tanggal_spm": tgl_spm,
+                                    "jenis_spm": row["jenis_spm"],
+                                    "no_kuitansi": row["no_kuitansi"],
+                                    "no_drpp": row["no_drpp"],
+                                    "deskripsi": row["deskripsi"],
+                                    "nilai_bruto": row["nilai_bruto"],
+                                    "nilai_netto": row["nilai_netto"],
+                                    "pembebanan": row["pembebanan"],
+                                    "fp": row["fp"],
+                                    "pph21": row["pph21"],
+                                    "created_by": request.user,
+                                    "status_detail": TransactionDetail.StatusDetail.DRAFT
+                                }
+                            )
+                        else:
+                            detail = TransactionDetail.objects.create(
+                                sp2d_raw=sp2d_raw,
+                            satker_code=row["satker_code"],
+                            akun=row["akun"],
+                            bulan_sp2d=bln_sp2d,
+                            cara_pembayaran=row["cara_pembayaran"],
+                            nomor_spm=row["nomor_spm"],
+                            tanggal_spm=tgl_spm,
+                            jenis_spm=row["jenis_spm"],
+                            no_kuitansi=row["no_kuitansi"],
+                            no_drpp=row["no_drpp"],
+                            deskripsi=row["deskripsi"],
+                            nilai_bruto=row["nilai_bruto"],
+                            nilai_netto=row["nilai_netto"],
+                            pembebanan=row["pembebanan"],
+                            fp=row["fp"],
+                            pph21=row["pph21"],
+                            created_by=request.user,
+                            status_detail=TransactionDetail.StatusDetail.DRAFT
+                        )
+                        generate_checklist_for_detail(detail, request.user, has_sp2d=True)
                 
                 try:
                     os.remove(file_path)
-                except OSError as exc:
-                    messages.warning(request, f"Import berhasil, tetapi file sementara belum bisa dihapus: {exc}")
+                except OSError:
+                    pass
                 del request.session['sp2d_import']
                 
-                if drive_result["status"] == "uploaded":
-                    messages.success(request, f"Berhasil memproses import data SP2D secara idempoten dan mengarsipkan file ke Google Drive.")
-                else:
-                    messages.warning(request, f"Berhasil memproses import data SP2D secara idempoten. {drive_result['error_message']}")
-                return redirect("sp2d:list")
+                messages.success(request, "Data SP2D berhasil disimpan ke D_K.")
+                return redirect("dk:transaction_list")
                 
             except Exception as e:
-                messages.error(request, f"Gagal memproses file: {str(e)}")
-                return redirect("sp2d:preview")
+                messages.error(request, f"Gagal menyimpan data: {str(e)}")
+                # Render back to preview on failure
+                context = permission_context(request.user)
+                context.update({
+                    "page_title": "Preview Import SP2D",
+                    "preview_rows": mapped_rows,
+                    "import_data": import_data,
+                    "can_commit": True,
+                })
+                return render(request, "sp2d/preview.html", context)
 
+    # Initial GET processing
     try:
         parse_result = parse_sp2d_excel_file(file_path)
         tahun = import_data.get('tahun')
-        all_preview_rows = classify_sp2d_rows(tahun, parse_result["rows"])
+        bulan = import_data.get('bulan')
         
-        preview_stats = {
-            "BARU": sum(1 for r in all_preview_rows if r.get("preview_status") == "BARU"),
-            "AKAN_DIPERBARUI": sum(1 for r in all_preview_rows if r.get("preview_status") == "AKAN_DIPERBARUI"),
-            "IDENTIK_DILEWATI": sum(1 for r in all_preview_rows if r.get("preview_status") == "IDENTIK_DILEWATI"),
-            "KONFLIK": sum(1 for r in all_preview_rows if r.get("preview_status") == "KONFLIK"),
-            "GAGAL": sum(1 for r in all_preview_rows if r.get("preview_status") == "GAGAL"),
-        }
-        
-        if parse_result["valid_rows"] <= 100:
-            preview_rows = all_preview_rows
-            preview_page_obj = None
-            preview_start_index = 1 if preview_rows else 0
-            preview_end_index = len(preview_rows)
-        else:
-            preview_paginator = Paginator(all_preview_rows, 25)
-            preview_page_obj = preview_paginator.get_page(request.GET.get("page"))
-            preview_rows = list(preview_page_obj.object_list)
-            preview_start_index = preview_page_obj.start_index()
-            preview_end_index = preview_page_obj.end_index()
+        # We don't need complex stats anymore, just map to the new format
+        mapped_rows = []
+        for row in parse_result["rows"]:
+            mapped_rows.append({
+                "satker_code": row.get("satker_code", ""),
+                "satker_name": row.get("satker_name", ""),
+                "no_sp2d": row.get("no_sp2d", ""),
+                "tahun": tahun,
+                "bulan_sp2d": bulan,
+                "nomor_spm": row.get("nomor_spm_extracted", ""),
+                "tgl_spm": row.get("tgl_sp2d") or row.get("tanggal_invoice", ""),
+                "jenis_spm": row.get("jenis_spm", ""),
+                "cara_pembayaran": row.get("mata_uang", ""),
+                "akun": "", # To be filled by user
+                "deskripsi": row.get("deskripsi", ""),
+                "nilai_bruto": row.get("nilai_spm", 0),
+                "nilai_netto": row.get("nilai_sp2d", 0),
+                "potongan": row.get("potongan", 0),
+                "no_kuitansi": "",
+                "no_drpp": "",
+                "pembebanan": "",
+                "fp": "",
+                "pph21": 0,
+            })
+            
     except Exception as e:
         messages.error(request, f"Gagal membaca file Excel: {str(e)}")
         return redirect("sp2d:list")
@@ -337,15 +411,7 @@ def sp2d_preview(request):
     context.update({
         "page_title": "Preview Import SP2D",
         "page_subtitle": f"File: {import_data['original_filename']} ({parse_result['valid_rows']} baris valid)",
-        "columns": parse_result["columns"],
-        "preview_rows": preview_rows,
-        "preview_page_obj": preview_page_obj,
-        "preview_start_index": preview_start_index,
-        "preview_end_index": preview_end_index,
-        "total_rows": parse_result["valid_rows"],
-        "raw_rows": parse_result["raw_rows"],
-        "parse_result": parse_result,
-        "preview_stats": preview_stats,
+        "preview_rows": mapped_rows,
         "import_data": import_data,
         "can_commit": parse_result["ok"],
     })

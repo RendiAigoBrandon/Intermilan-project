@@ -17,7 +17,7 @@ from apps.accounts.access import (
     permission_context,
 )
 from apps.core.views import build_pagination_window, normalize_page_size
-from apps.documents.services.google_drive import archive_file_link
+from apps.documents.services.google_drive_dedup import archive_file_with_dedup
 from apps.documents.models import DocumentDriveLink
 
 from .models import DRPPItem, DRPPUpload, DRPPImportBatch
@@ -259,10 +259,10 @@ def drpp_preview(request):
                 return redirect("drpp:list")
                 
             batch = result["batch"]
-            
-            # Archive File
+
+            # Archive File with Duplicate Protection
             try:
-                drive_result, _ = archive_file_link(
+                drive_result, _, is_reused = archive_file_with_dedup(
                     result["document_upload"].file.path,
                     user=request.user,
                     jenis_dokumen="DRPP_BATCH",
@@ -271,7 +271,8 @@ def drpp_preview(request):
                     catatan_extra=f"Batch={batch.pk}",
                 )
             except Exception as exc:
-                drive_result = {"status": "failed", "error_message": str(exc)}
+                drive_result = {"status": "failed", "error_message": str(exc), "is_duplicate": False}
+                is_reused = False
                 DocumentDriveLink.objects.create(
                     satker_code=batch.satker_code,
                     jenis_dokumen="DRPP_BATCH",
@@ -283,12 +284,14 @@ def drpp_preview(request):
                 )
             finally:
                 _discard_preview(request, preview_state)
-            
+
             msg = (f"Berhasil commit. Baru: {batch.created_rows}, "
                    f"Update: {batch.updated_rows}, Skip: {batch.skipped_rows}, "
                    f"Review/Conflict/Failed: {batch.review_rows+batch.conflict_rows+batch.failed_rows}")
             if drive_result["status"] == "uploaded":
-                messages.success(request, msg + ". File diarsipkan ke Drive.")
+                messages.success(request, msg + ". File diarsipkan ke Google Drive.")
+            elif drive_result.get("is_duplicate") or is_reused:
+                messages.info(request, msg + ". File sudah ada di Google Drive (tidak di-upload ulang).")
             else:
                 messages.warning(request, msg + f". Pengarsipan Drive tertunda: {drive_result.get('error_message')}")
                 
