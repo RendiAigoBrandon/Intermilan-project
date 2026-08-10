@@ -25,6 +25,7 @@ from apps.core.parsers import (
     _group_tsv_words_by_line,
     _to_tsv_word,
     normalize_text,
+    parse_drpp_items_from_tsv_rows,
 )
 from apps.core.parsers import parse_paket_spm_zip
 
