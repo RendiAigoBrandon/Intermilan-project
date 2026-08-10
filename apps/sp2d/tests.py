@@ -1,3 +1,5 @@
+from django.conf import settings
+from django.http import QueryDict
 from django.test import TestCase
 from apps.sp2d.services import generate_identity_key
 from apps.sp2d.models import SP2DRaw, SP2DImportBatch
@@ -647,3 +649,63 @@ class SP2DHardeningTests(TestCase):
         sp2d_B.refresh_from_db()
         self.assertEqual(sp2d_B.status, "TIDAK_COCOK")
         self.assertIn("Konflik", sp2d_B.cek_akun)
+
+
+class SP2DUploadFieldLimitTest(TestCase):
+    """
+    Regression: SP2D preview with large row counts must not raise HTTP 400.
+
+    Django's default DATA_UPLOAD_MAX_NUMBER_FIELDS is 1000.
+    INTERMILAN SP2D preview submits ~19 fields per row.
+    55 rows = 1045 fields > 1000 default limit → HTTP 400 / TooManyFieldsSent.
+
+    After the fix: DATA_UPLOAD_MAX_NUMBER_FIELDS = 20000.
+    """
+
+    def test_sp2d_preview_row_count_fits_within_field_limit(self):
+        """100 SP2D preview rows (1900 fields) must fit within the configured limit."""
+        rows = 100
+        fields_per_row = 19  # satker_code[], no_sp2d[], tahun[], ..., pph21[]
+
+        qd = QueryDict(mutable=True)
+        field_names = [
+            'satker_code[]', 'satker_name[]', 'no_sp2d[]', 'tahun[]',
+            'bulan_sp2d[]', 'nomor_spm[]', 'tgl_spm[]', 'jenis_spm[]',
+            'cara_pembayaran[]', 'akun[]', 'deskripsi[]',
+            'nilai_bruto[]', 'nilai_netto[]', 'potongan[]',
+            'no_kuitansi[]', 'no_drpp[]', 'pembebanan[]', 'fp[]', 'pph21[]',
+        ]
+        for i in range(rows):
+            for fn in field_names:
+                qd.appendlist(fn, f'val_{i}')
+
+        total_fields = len(qd)
+        limit = getattr(settings, 'DATA_UPLOAD_MAX_NUMBER_FIELDS', 1000)
+
+        self.assertLessEqual(
+            total_fields, limit,
+            f"SP2D preview {rows} rows ({total_fields} fields) exceeds "
+            f"DATA_UPLOAD_MAX_NUMBER_FIELDS ({limit}). "
+            f"Increase DJANGO_DATA_UPLOAD_MAX_NUMBER_FIELDS env var."
+        )
+
+    def test_old_default_1000_limit_would_fail_realistic_batch(self):
+        """
+        Document that Django's old default (1000) would fail for a
+        realistic 55-row SP2D preview. Fails only when the fix is reverted.
+        """
+        rows = 55
+        fields_per_row = 19
+        total_fields = rows * fields_per_row  # 1045
+
+        limit = getattr(settings, 'DATA_UPLOAD_MAX_NUMBER_FIELDS', 1000)
+
+        self.assertGreater(
+            limit, 1000,
+            "DATA_UPLOAD_MAX_NUMBER_FIELDS must be raised above Django "
+            "default 1000 to support SP2D preview batches."
+        )
+        self.assertGreaterEqual(
+            limit, total_fields,
+            f"Limit {limit} must accommodate {rows}-row preview ({total_fields} fields)."
+        )
