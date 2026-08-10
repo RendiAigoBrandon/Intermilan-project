@@ -650,6 +650,86 @@ class SP2DHardeningTests(TestCase):
         self.assertEqual(sp2d_B.status, "TIDAK_COCOK")
         self.assertIn("Konflik", sp2d_B.cek_akun)
 
+    def test_preview_formatted_nominals_saved_correctly(self):
+        """
+        Regression: SP2D preview displays formatted Indonesian thousands
+        (e.g. '37.017.826'). After POST, parse_money_input must convert
+        these to the correct Decimal values — not zero.
+        """
+        self.client.login(username="test_upload", password="password")
+        excel_data = self._create_mock_excel([
+            ["123456", "Satker Money", "SP2D-MONEY-01", "2026-01-15",
+             37017826, 737926, 36279900, "INV/001/2026", "LS", "Test Money"],
+        ])
+        uploaded = SimpleUploadedFile(
+            "money.xlsx", excel_data,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        self.client.post(reverse("sp2d:list"), {
+            "tahun": "2026", "bulan": "1", "file_sp2d": uploaded
+        })
+
+        # Simulate preview form POST with Indonesian-formatted nominals
+        # (as rendered by intermilan_format.id_number: 37017826 -> '37.017.826')
+        resp = self.client.post(reverse("sp2d:preview"), {
+            "action": "commit",
+            "satker_code[]": ["123456"],
+            "satker_name[]": ["Satker Money"],
+            "no_sp2d[]": ["SP2D-MONEY-01"],
+            "tahun[]": ["2026"],
+            "bulan_sp2d[]": ["1"],
+            "nomor_spm[]": [""],
+            "tgl_spm[]": [""],
+            "jenis_spm[]": ["LS"],
+            "cara_pembayaran[]": [""],
+            "akun[]": ["521111"],
+            "deskripsi[]": ["Test Money"],
+            # Indonesian thousand-separated format (dot as thousands separator)
+            "nilai_bruto[]": ["37.017.826"],
+            "nilai_netto[]": ["36.279.900"],
+            "potongan[]": ["737.926"],
+            "no_kuitansi[]": [""],
+            "no_drpp[]": [""],
+            "pembebanan[]": [""],
+            "fp[]": [""],
+            "pph21[]": ["0"],
+        })
+        self.assertEqual(resp.status_code, 302, f"Expected redirect, got {resp.status_code}")
+
+        # Verify TransactionDetail has correct non-zero values
+        from apps.dk.models import TransactionDetail
+        detail = TransactionDetail.objects.filter(satker_code="123456").first()
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.nilai_bruto, Decimal("37017826"))
+        self.assertEqual(detail.nilai_netto, Decimal("36279900"))
+
+
+class SP2DMoneyInputTest(TestCase):
+    """Regression: parse_money_input must handle Indonesian thousand-separated formats."""
+
+    def test_parse_money_input_indonesian_dots_only(self):
+        """
+        '37.017.826' -> 37017826, not zero.
+        Indonesian thousands-only format (dot separator, no comma) was silently
+        returning Decimal('0') before the fix.
+        """
+        from apps.sp2d.views import parse_money_input
+        self.assertEqual(parse_money_input("37.017.826"), Decimal("37017826"))
+        self.assertEqual(parse_money_input("36.279.900"), Decimal("36279900"))
+        self.assertEqual(parse_money_input("737.926"), Decimal("737926"))
+
+    def test_parse_money_input_indonesian_with_decimal(self):
+        """'1.234,56' -> 1234.56"""
+        from apps.sp2d.views import parse_money_input
+        self.assertEqual(parse_money_input("1.234,56"), Decimal("1234.56"))
+
+    def test_parse_money_input_plain_and_empty(self):
+        """Plain integers and empty/null values return 0."""
+        from apps.sp2d.views import parse_money_input
+        self.assertEqual(parse_money_input("1234"), Decimal("1234"))
+        self.assertEqual(parse_money_input(""), Decimal("0"))
+        self.assertEqual(parse_money_input(None), Decimal("0"))
+
 
 class SP2DUploadFieldLimitTest(TestCase):
     """

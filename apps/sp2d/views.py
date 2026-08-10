@@ -15,7 +15,7 @@ from apps.accounts.access import (
     can_upload_document, filter_by_satker, permission_context, can_import_data,
     can_view_all_satker, get_user_satker_code, can_edit_satker
 )
-from apps.core.parsers import parse_month, parse_sp2d_excel_file
+from apps.core.parsers import parse_decimal, parse_month, parse_sp2d_excel_file
 from apps.core.satker import infer_satker_from_name
 from apps.core.views import CHECKLIST_ROWS, MONTH_OPTIONS, build_pagination_window, normalize_page_size
 from apps.documents.models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink
@@ -105,18 +105,12 @@ def sp2d_inbox_detail(request, pk):
 
 
 def parse_money_input(value, fallback=Decimal("0")):
-    text = str(value or "").strip()
-    if not text:
+    result = parse_decimal(value)
+    if result == Decimal("0"):
+        # Preserve fallback only for genuinely zero/null input, not for parse failures.
+        # parse_decimal already returns Decimal("0") on failure.
         return fallback or Decimal("0")
-    text = text.replace("Rp", "").replace(" ", "")
-    if "," in text and "." in text:
-        text = text.replace(".", "").replace(",", ".")
-    elif "," in text:
-        text = text.replace(",", ".")
-    try:
-        return Decimal(text)
-    except Exception:
-        return fallback or Decimal("0")
+    return result
 
 
 from apps.core.document_policy import (
