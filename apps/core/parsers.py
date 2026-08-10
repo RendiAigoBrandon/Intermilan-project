@@ -1929,11 +1929,13 @@ def _normalize_ocr_kw_number(value):
     # Handle space before slash (e.g., '0034 1/KW/...')
     text = re.sub(r"(\d)\s*/\s*KW", r"\1/KW", text)
     parts = [part.strip() for part in normalize_text(text).upper().split("/")]
-    if len(parts) < 4 or parts[1] != "KW":
+    # Accept KW or KWW (OCR repeated-letter noise in structural marker).
+    if len(parts) < 4 or not re.match(r"KW+$", parts[1]):
         return ""
     for index in (0, 2, 3):
         parts[index] = re.sub(r"\s+", "", parts[index])
         parts[index] = parts[index].replace("O", "0").replace("I", "1").replace("L", "1")
+    parts[1] = "KW"  # normalize KWW -> KW for canonical output
     normalized = "/".join(parts[:4])
     return normalized if re.fullmatch(r"\d{3,6}/KW/\d{5,9}/20\d{2}", normalized) else ""
 
@@ -1966,6 +1968,14 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
         line_words = sorted(lines[i]["words"], key=lambda item: item["left"])
         text = normalize_text(" ".join(word["text"] for word in line_words))
         kw_match = kw_re.search(text)
+        # If no match, KWW OCR noise (single-line token) may be obscuring a valid
+        # receipt. Normalize only when a numeric receipt prefix is present to avoid
+        # false-positives on random prose containing KWW.
+        if not kw_match and re.match(r"^[0-9OIL]{3,6}\s*/", text):
+            # Collapse repeated Ws in KW/WWW/... pattern to canonical KW.
+            # E.g. KWW -> KW, KW -> unchanged (K(W+) matches KW with 1+ Ws).
+            text = re.sub(r"\bK(W+)\b", "KW", text)
+            kw_match = kw_re.search(text)
 
         # Multiline KW reconstruction: if no complete match on this line,
         # check whether this line + next line together form a valid KW number.
@@ -1977,6 +1987,8 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
             if prefix_ok and suffix_ok:
                 # Merge current line text with next line for KW detection.
                 merged_text = normalize_text(f"{text} {next_text}")
+                # Normalize KWW/KWWW OCR noise to KW before regex search.
+                merged_text = re.sub(r"(\d)K{1,3}(?=/)", r"\1KW", merged_text)
                 kw_match = kw_re.search(merged_text)
                 if kw_match:
                     # Absorb next line into this row so its content is used as continuation.
@@ -2445,7 +2457,7 @@ def parse_drpp_financial_table_rows(raw_words, page_number=1):
     charge_left, charge_right = boundaries[3], boundaries[4]
     tax_left = boundaries[4]
     kw_pattern = re.compile(
-        r"([0-9OIL]{3,6})\s*/\s*KW\s*/\s*([0-9OIL]{2,9}(?:\s+[0-9OIL]{2,7})?)\s*/\s*(20[0-9OIL]{2})",
+        r"([0-9OIL]{3,6})\s*/\s*(KW{1,3})\s*/\s*([0-9OIL]{2,9}(?:\s+[0-9OIL]{2,7})?)\s*/\s*(20[0-9OIL]{2})",
         re.IGNORECASE,
     )
     amount_pattern = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?")
@@ -2476,9 +2488,9 @@ def parse_drpp_financial_table_rows(raw_words, page_number=1):
             part.replace("O", "0").replace("I", "1").replace("L", "1")
             for part in (
                 kw_match.group(1),
-                "KW",
-                re.sub(r"\s+", "", kw_match.group(2)),
-                kw_match.group(3),
+                kw_match.group(2)[0] + "W",  # normalize KWW/KWWW -> KW
+                re.sub(r"\s+", "", kw_match.group(3)),
+                kw_match.group(4),
             )
         )
         account_match = re.search(r"\b(5\d{5})\b", line_text)
