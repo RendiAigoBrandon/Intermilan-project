@@ -1948,20 +1948,45 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
     """
     words = [word for word in (_to_tsv_word(raw_word) for raw_word in (raw_words or [])) if word]
     lines = _group_tsv_words_by_line(words)
+    # Regex for complete single-line KW kuitansi number.
     kw_re = re.compile(
         # Fixed: handles "0034 1/KW/..." (space before slash) and "00313KW/..." (missing slash before KW)
         r"[0-9OIL]{3,6}(?:[\s]*[0-9OIL]*)?[\s]*/?[\s]*KW[\s/]*[0-9OIL\s]{5,12}[\s/]*20[0-9OIL]{2}",
         re.IGNORECASE,
     )
+    # Partial patterns for multiline reconstruction: OCR sometimes splits
+    # kuitansi across two lines (e.g. "00166" on line N, "/KW/019937/2026" on line N+1).
+    kw_prefix_re = re.compile(r"^[0-9OIL]{3,6}$")  # e.g. "00166" — bare numeric prefix
+    kw_suffix_re = re.compile(r"^\s*/?\s*KW\s*/\s*[0-9OIL\s]{5,12}\s*/\s*20[0-9OIL]{2}", re.IGNORECASE)  # e.g. "/KW/019937/2026"
     amount_re = re.compile(r"\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?")
     small_amount_re = re.compile(r"\b\d{1,3}\b")
     row_starts = []
-    for index, line in enumerate(lines):
-        line_words = sorted(line["words"], key=lambda item: item["left"])
+    i = 0
+    while i < len(lines):
+        line_words = sorted(lines[i]["words"], key=lambda item: item["left"])
         text = normalize_text(" ".join(word["text"] for word in line_words))
         kw_match = kw_re.search(text)
+
+        # Multiline KW reconstruction: if no complete match on this line,
+        # check whether this line + next line together form a valid KW number.
+        if not kw_match and i + 1 < len(lines):
+            prefix_ok = bool(kw_prefix_re.search(text.strip()))
+            next_line_words = sorted(lines[i + 1]["words"], key=lambda item: item["left"])
+            next_text = normalize_text(" ".join(word["text"] for word in next_line_words))
+            suffix_ok = bool(kw_suffix_re.search(next_text))
+            if prefix_ok and suffix_ok:
+                # Merge current line text with next line for KW detection.
+                merged_text = normalize_text(f"{text} {next_text}")
+                kw_match = kw_re.search(merged_text)
+                if kw_match:
+                    # Absorb next line into this row so its content is used as continuation.
+                    line_words = line_words + next_line_words
+                    text = merged_text
+                    i += 1  # skip the next line — it's now part of the current row
+
         if kw_match:
-            row_starts.append((index, line_words, text))
+            row_starts.append((i, line_words, text))
+        i += 1
 
     items = []
     for row_index, (line_index, line_words, text) in enumerate(row_starts):
