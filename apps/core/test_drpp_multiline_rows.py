@@ -477,3 +477,84 @@ class DRPPKWWRecoveryTest(SimpleTestCase):
         self.assertEqual(sum(amount_map), Decimal("3423800"),
             f"Combined sum should be 3423800, got {sum(amount_map)}")
 
+    def test_case_g_kww_with_leading_ocr_noise(self):
+        """
+        Case G — real stored production TSV has leading OCR row noise
+        ('a 2') before the receipt number. The KWW recovery must still
+        find and normalize the receipt candidate anywhere in the line.
+
+        Real production line:
+        a 2 00188/KWW/019937/2026 Boy Azef 001858539201000 524111 2,423,800
+        """
+        raw_words = [
+            # Leading OCR noise tokens
+            {"text": "a",     "left": 10,  "top": 10,  "width": 20,  "height": 12, "confidence": 60},
+            {"text": "2",     "left": 32,  "top": 10,  "width": 20,  "height": 12, "confidence": 60},
+            # Receipt number tokens (KWW OCR noise)
+            {"text": "00188", "left": 54,  "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 106, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KWW",   "left": 116, "top": 10,  "width": 24,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 142, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937","left": 152, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 204, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",  "left": 214, "top": 10,  "width": 35,  "height": 12, "confidence": 90},
+            # Description / NPWP continuation line
+            {"text": "Boy",   "left": 10,  "top": 22,  "width": 30,  "height": 12, "confidence": 80},
+            {"text": "Azef",  "left": 42,  "top": 22,  "width": 40,  "height": 12, "confidence": 80},
+            {"text": "001858539201000", "left": 84, "top": 22, "width": 120, "height": 12, "confidence": 90},
+            # Account and amount
+            {"text": "524111", "left": 250, "top": 22, "width": 50,  "height": 12, "confidence": 90},
+            {"text": "2,423,800", "left": 500, "top": 22, "width": 80, "height": 12, "confidence": 90},
+        ]
+        items = parse_drpp_items_from_tsv_rows(raw_words)
+        self.assertEqual(len(items), 1,
+            f"Case G: expected 1 row, got {len(items)}: {[i['no_bukti'] for i in items]}")
+        self.assertEqual(items[0]["no_bukti"], "00188/KW/019937/2026",
+            f"KWW must normalize to KW. Got: {items[0]['no_bukti']}")
+        self.assertEqual(items[0]["akun"], "524111")
+        self.assertEqual(items[0]["jumlah"], Decimal("2423800"))
+
+    def test_case_h_leading_noise_with_standard_kw_first(self):
+        """
+        Case H — real production pattern with TWO rows: standard KW first,
+        KWW with leading noise second. Combined sum = 3,423,800.
+        """
+        raw_words = [
+            # Row 1: standard KW (clean)
+            {"text": "a",     "left": 10,  "top": 10,  "width": 20,  "height": 12, "confidence": 60},
+            {"text": "1",     "left": 32,  "top": 10,  "width": 20,  "height": 12, "confidence": 60},
+            {"text": "00166", "left": 54,  "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 106, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KW",    "left": 116, "top": 10,  "width": 20,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 138, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937","left": 148, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 200, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",  "left": 210, "top": 10,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "521115", "left": 250, "top": 10, "width": 50,  "height": 12, "confidence": 90},
+            {"text": "1.000.000", "left": 500, "top": 10, "width": 80, "height": 12, "confidence": 90},
+            # Row 2: KWW with leading OCR noise
+            {"text": "a",     "left": 10,  "top": 60,  "width": 20,  "height": 12, "confidence": 60},
+            {"text": "2",     "left": 32,  "top": 60,  "width": 20,  "height": 12, "confidence": 60},
+            {"text": "00188", "left": 54,  "top": 60,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 106, "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KWW",   "left": 116, "top": 60,  "width": 24,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 142, "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937","left": 152, "top": 60,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",     "left": 204, "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",  "left": 214, "top": 60,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "524111", "left": 250, "top": 60, "width": 50,  "height": 12, "confidence": 90},
+            {"text": "2,423,800", "left": 500, "top": 60, "width": 80, "height": 12, "confidence": 90},
+        ]
+        items = parse_drpp_items_from_tsv_rows(raw_words)
+        self.assertEqual(len(items), 2,
+            f"Case H: expected 2 rows, got {len(items)}")
+        akun_set = {i["akun"] for i in items}
+        amount_sum = sum(i["jumlah"] for i in items)
+        self.assertIn("521115", akun_set)
+        self.assertIn("524111", akun_set)
+        self.assertEqual(amount_sum, Decimal("3423800"),
+            f"Combined sum should be 3423800, got {amount_sum}")
+        kw_map = {i["no_bukti"] for i in items}
+        self.assertIn("00188/KW/019937/2026", kw_map,
+            f"Second row must normalize KWW to KW. Got: {kw_map}")
+

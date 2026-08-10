@@ -1969,13 +1969,21 @@ def parse_drpp_items_from_tsv_rows(raw_words, page_number=1, confidence_threshol
         text = normalize_text(" ".join(word["text"] for word in line_words))
         kw_match = kw_re.search(text)
         # If no match, KWW OCR noise (single-line token) may be obscuring a valid
-        # receipt. Normalize only when a numeric receipt prefix is present to avoid
-        # false-positives on random prose containing KWW.
-        if not kw_match and re.match(r"^[0-9OIL]{3,6}\s*/", text):
-            # Collapse repeated Ws in KW/WWW/... pattern to canonical KW.
-            # E.g. KWW -> KW, KW -> unchanged (K(W+) matches KW with 1+ Ws).
-            text = re.sub(r"\bK(W+)\b", "KW", text)
-            kw_match = kw_re.search(text)
+        # receipt. Scan for a complete bounded receipt candidate anywhere in the line
+        # (not just at start — real TSV rows may have leading OCR noise like "a 2").
+        # Conservative: only fires when a structurally complete receipt is found.
+        # Note: K(W+) requires Ws followed immediately by /, avoiding greedy-K pitfall.
+        if not kw_match:
+            candidate_re = re.compile(
+                r"(\b[0-9]{3,6}\s*/\s*K(W+)\s*/\s*[0-9]{5,12}\s*/\s*20[0-9]{2}\b)",
+                re.IGNORECASE,
+            )
+            cand = candidate_re.search(text)
+            if cand:
+                # Normalize KWW -> KW: replace the matched Ws with a single W.
+                # cand.group(2) contains the Ws (WW or more), cand.start(2) is absolute.
+                text = text[: cand.start(2)] + "W" + text[cand.end(2):]
+                kw_match = kw_re.search(text)
 
         # Multiline KW reconstruction: if no complete match on this line,
         # check whether this line + next line together form a valid KW number.
