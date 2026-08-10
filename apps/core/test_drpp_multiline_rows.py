@@ -307,3 +307,173 @@ class DRPPMultilineRowTest(SimpleTestCase):
         self.assertIn("524111", akun_set)
         self.assertEqual(amount_sum, Decimal("3423800"),
             f"Row sum should be 3423800, got {amount_sum}")
+
+
+class DRPPKWWRecoveryTest(SimpleTestCase):
+    """Regression: OCR noise 'KWW' in receipt marker must be tolerated."""
+
+    def test_case_a_standard_kw_is_unchanged(self):
+        """
+        Case A — standard /KW/ receipt is parsed normally.
+        00166/KW/019937/2026 -> unchanged.
+        """
+        raw_words = [
+            {"text": "00166",   "left": 10,  "top": 10,  "width": 60,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 72,  "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KW",     "left": 82,  "top": 10,  "width": 20,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 104, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937",  "left": 114, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 166, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",    "left": 176, "top": 10,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "521115",  "left": 250, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "1.000.000","left": 500, "top": 10,  "width": 80,  "height": 12, "confidence": 90},
+        ]
+        items = parse_drpp_items_from_tsv_rows(raw_words)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["no_bukti"], "00166/KW/019937/2026")
+        self.assertEqual(items[0]["akun"], "521115")
+        self.assertEqual(items[0]["jumlah"], Decimal("1000000"))
+
+    def test_case_b_kww_is_normalized_to_kw(self):
+        """
+        Case B — /KWW/ OCR noise normalized to /KW/.
+        00188/KWW/019937/2026 -> 00188/KW/019937/2026.
+        """
+        raw_words = [
+            {"text": "00188",   "left": 10,  "top": 10,  "width": 60,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 72,  "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KWW",    "left": 82,  "top": 10,  "width": 20,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 104, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937",  "left": 114, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 166, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",    "left": 176, "top": 10,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "524111",  "left": 250, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "2.423.800","left": 500, "top": 10,  "width": 80,  "height": 12, "confidence": 90},
+        ]
+        items = parse_drpp_items_from_tsv_rows(raw_words)
+        self.assertEqual(len(items), 1, f"Case B: expected 1 row, got {len(items)}")
+        self.assertEqual(items[0]["no_bukti"], "00188/KW/019937/2026",
+            f"Should normalize KWW to KW, got: {items[0]['no_bukti']}")
+        self.assertEqual(items[0]["akun"], "524111")
+        self.assertEqual(items[0]["jumlah"], Decimal("2423800"))
+
+    def test_case_c_kww_with_ocr_spacing(self):
+        """
+        Case C — /KWW/ with OCR spacing variations still normalizes correctly.
+        """
+        raw_words = [
+            {"text": "00188",   "left": 10,  "top": 10,  "width": 60,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 72,  "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": " KWW",   "left": 82,  "top": 10,  "width": 30,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 114, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937",  "left": 124, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 176, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",    "left": 186, "top": 10,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "524111",  "left": 250, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "2.423.800","left": 500, "top": 10,  "width": 80,  "height": 12, "confidence": 90},
+        ]
+        items = parse_drpp_items_from_tsv_rows(raw_words)
+        self.assertEqual(len(items), 1, f"Case C: expected 1 row, got {len(items)}")
+        self.assertEqual(items[0]["no_bukti"], "00188/KW/019937/2026")
+
+    def test_case_d_random_prose_kww_not_receipt(self):
+        """
+        Case D — 'KWW' in random prose must NOT become a receipt number.
+        The normalization is scoped: it only fires when surrounded by valid
+        receipt number structure (prefix + marker + satker# + year).
+        """
+        raw_words = [
+            # Not a valid receipt — no numeric prefix before KWW
+            {"text": "KWW",     "left": 10,  "top": 10,  "width": 30,  "height": 12, "confidence": 80},
+            {"text": "ini",    "left": 42,  "top": 10,  "width": 30,  "height": 12, "confidence": 80},
+            {"text": "bukan",  "left": 74,  "top": 10,  "width": 40,  "height": 12, "confidence": 80},
+            {"text": "kwitansi", "left": 116, "top": 10, "width": 60,  "height": 12, "confidence": 80},
+        ]
+        items = parse_drpp_items_from_tsv_rows(raw_words)
+        # No valid receipt pattern → no items emitted
+        self.assertEqual(len(items), 0,
+            f"Case D: KWW in prose should not emit rows. Got: {items}")
+
+    def test_case_e_multiple_kww_rows(self):
+        """
+        Case F — multiple rows, one with standard KW, one with KWW.
+        Both rows must be emitted independently.
+        """
+        raw_words = [
+            # Row 1: standard /KW/
+            {"text": "00166",   "left": 10,  "top": 10,  "width": 60,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 72,  "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KW",     "left": 82,  "top": 10,  "width": 20,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 104, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937",  "left": 114, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 166, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",    "left": 176, "top": 10,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "521115",  "left": 250, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "1.000.000","left": 500, "top": 10,  "width": 80,  "height": 12, "confidence": 90},
+            # Row 2: KWW
+            {"text": "00188",   "left": 10,  "top": 60,  "width": 60,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 72,  "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KWW",    "left": 82,  "top": 60,  "width": 20,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 104, "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937",  "left": 114, "top": 60,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 166, "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",    "left": 176, "top": 60,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "524111",  "left": 250, "top": 60,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "2.423.800","left": 500, "top": 60,  "width": 80,  "height": 12, "confidence": 90},
+        ]
+        items = parse_drpp_items_from_tsv_rows(raw_words)
+        self.assertEqual(len(items), 2,
+            f"Case E: expected 2 rows, got {len(items)}")
+        akun_set = {i["akun"] for i in items}
+        amount_sum = sum(i["jumlah"] for i in items)
+        self.assertIn("521115", akun_set)
+        self.assertIn("524111", akun_set)
+        self.assertEqual(amount_sum, Decimal("3423800"),
+            f"Combined sum should be 3423800, got {amount_sum}")
+
+    def test_real_stored_production_kww_00188(self):
+        """
+        Real production: '00188/KWW/019937/2026' with account 524111 and
+        amount 2,423,800. After KWW normalization, the row must be emitted
+        with canonical KW and correct values.
+
+        Combined with standard row 00166: sum = 3,423,800.
+        """
+        raw_words = [
+            # Standard row: 00166/KW/019937/2026
+            {"text": "00166",   "left": 10,  "top": 10,  "width": 60,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 72,  "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KW",     "left": 82,  "top": 10,  "width": 20,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 104, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937",  "left": 114, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 166, "top": 10,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",    "left": 176, "top": 10,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "521115",  "left": 250, "top": 10,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "1.000.000","left": 500, "top": 10,  "width": 80,  "height": 12, "confidence": 90},
+            # KWW row: 00188/KWW/019937/2026
+            {"text": "00188",   "left": 10,  "top": 60,  "width": 60,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 72,  "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "KWW",    "left": 82,  "top": 60,  "width": 20,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 104, "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "019937",  "left": 114, "top": 60,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "/",       "left": 166, "top": 60,  "width": 8,   "height": 12, "confidence": 90},
+            {"text": "2026",    "left": 176, "top": 60,  "width": 35,  "height": 12, "confidence": 90},
+            {"text": "524111",  "left": 250, "top": 60,  "width": 50,  "height": 12, "confidence": 90},
+            {"text": "2,423,800","left": 500,"top": 60,  "width": 80,  "height": 12, "confidence": 90},
+        ]
+        items = parse_drpp_items_from_tsv_rows(raw_words)
+        self.assertEqual(len(items), 2,
+            f"Real KWW: expected 2 rows, got {len(items)}")
+        akun_map = {i["akun"] for i in items}
+        amount_map = {i["jumlah"] for i in items}
+        kw_map = {i["no_bukti"] for i in items}
+        self.assertIn("521115", akun_map, "Standard KW row should have akun 521115")
+        self.assertIn("524111", akun_map, "KWW row should have akun 524111")
+        self.assertIn("00188/KW/019937/2026", kw_map,
+            f"KWW row must normalize to KW. Got: {kw_map}")
+        self.assertIn(Decimal("1000000"), amount_map)
+        self.assertIn(Decimal("2423800"), amount_map,
+            f"Amount 2,423,800 should be parsed. Got amounts: {amount_map}")
+        self.assertEqual(sum(amount_map), Decimal("3423800"),
+            f"Combined sum should be 3423800, got {sum(amount_map)}")
+
