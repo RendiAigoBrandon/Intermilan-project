@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.db import transaction, IntegrityError
 from django.db.models import Sum
 
+from apps.core.satker import resolve_sp2d_satker, normalize_satker_code
+
 from apps.sp2d.models import SP2DRaw, SP2DImportBatch
 from apps.dk.models import TransactionDetail, TransactionChangeLog
 
@@ -96,9 +98,35 @@ def build_identity_result(satker, sp2d_no, invoice_no, spm_no, tgl_sp2d, tgl_inv
     }
 
 def prepare_sp2d_rows(batch_tahun, raw_rows):
+    """
+    Prepare SP2D rows for import.
+
+    Applies satker resolution to resolve missing satker codes from names,
+    and validates that explicit codes are consistent with name evidence.
+    """
     prepared = []
     for row in raw_rows:
         r = row.copy()
+
+        # Apply satker resolution: resolve missing satker_code from name evidence
+        resolution = resolve_sp2d_satker(
+            satker_code_input=r.get("satker_code", ""),
+            satker_name_input=r.get("satker_name", ""),
+            unit_code_input=r.get("unit_code", ""),
+        )
+
+        if resolution.resolved:
+            # Use resolved values
+            if not r.get("satker_code") and resolution.satker_code:
+                r["satker_code"] = resolution.satker_code
+            if not r.get("satker_name") and resolution.satker_name:
+                r["satker_name"] = resolution.satker_name
+            if not r.get("unit_code") and resolution.unit_code:
+                r["unit_code"] = resolution.unit_code
+        elif resolution.status == "ERROR_CONFLICT":
+            # Mark conflict but allow user to review
+            r["satker_resolution_error"] = resolution.error_message
+
         r["batch_tahun"] = resolve_sp2d_year(r, batch_tahun)
         ident = build_identity_result(
             satker=r.get("satker_code"),
@@ -309,6 +337,12 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
 
     for row in prepared_rows:
         key = row["identity_key"]
+
+        # Check for satker resolution conflict (explicit code vs name mismatch)
+        if row.get("satker_resolution_error"):
+            conflict_count += 1
+            continue
+
         if row["identity_status"] == "GAGAL":
             failed_count += 1
             continue

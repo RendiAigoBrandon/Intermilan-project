@@ -47,6 +47,13 @@ class TransactionDetail(models.Model):
         on_delete=models.SET_NULL,
         related_name="transaction_details",
     )
+    transaction_package = models.ForeignKey(
+        "core.TransactionPackage",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="transaction_details",
+    )
     satker_code = models.CharField(max_length=32, blank=True)
     akun = models.CharField(max_length=32)
     kategori = models.CharField(max_length=100, blank=True)

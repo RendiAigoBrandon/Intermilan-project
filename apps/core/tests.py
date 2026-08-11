@@ -1611,3 +1611,403 @@ class CoreAccessTests(TestCase):
         self.assertLessEqual(pct, Decimal("100"), "Cannot exceed 100%")
 
 
+# =============================================================================
+# UNIT CODE -> SATKER CODE MAPPING TESTS
+# =============================================================================
+
+from apps.core.satker import (
+    UNIT_CODE_TO_SATKER_CODE,
+    get_official_satker_code,
+    get_unit_code_from_satker,
+    is_known_unit_code,
+    is_known_satker_code,
+    normalize_satker_code,
+)
+from apps.core.models import SatkerMaster
+
+
+class UnitToSatkerMappingTests(TestCase):
+    """Tests for the unit_code -> satker_code mapping."""
+
+    def test_unit_1300_maps_to_019937(self):
+        """BPS Provinsi Sumatera Barat: unit 1300 -> satker 019937."""
+        self.assertEqual(get_official_satker_code("1300"), "019937")
+        self.assertEqual(get_official_satker_code(1300), "019937")
+
+    def test_unit_1301_maps_to_636977(self):
+        """BPS Kabupaten Kepulauan Mentawai: unit 1301 -> satker 636977."""
+        self.assertEqual(get_official_satker_code("1301"), "636977")
+
+    def test_unit_1307_maps_to_428041(self):
+        """BPS Kabupaten Agam: unit 1307 -> satker 428041."""
+        self.assertEqual(get_official_satker_code("1307"), "428041")
+
+    def test_unit_1376_maps_to_428032(self):
+        """BPS Kota Payakumbuh: unit 1376 -> satker 428032."""
+        self.assertEqual(get_official_satker_code("1376"), "428032")
+
+    def test_leading_zeros_preserved(self):
+        """Leading zeros in satker_code are preserved."""
+        satker = get_official_satker_code("1300")
+        self.assertEqual(satker, "019937")
+        self.assertIsInstance(satker, str)
+        self.assertTrue(satker.startswith("0"))
+
+    def test_reverse_mapping_works(self):
+        """satker_code -> unit_code reverse mapping works."""
+        self.assertEqual(get_unit_code_from_satker("019937"), "1300")
+        self.assertEqual(get_unit_code_from_satker("428041"), "1307")
+        self.assertEqual(get_unit_code_from_satker("428032"), "1376")
+
+    def test_kk_filename_format(self):
+        """KK_1300.xlsx format is correctly parsed."""
+        self.assertEqual(get_official_satker_code("KK_1300.xlsx"), "019937")
+        self.assertEqual(get_official_satker_code("KK_1307.xlsx"), "428041")
+
+    def test_bps_prefix_format(self):
+        """bps1300 format is correctly parsed."""
+        self.assertEqual(get_official_satker_code("bps1300"), "019937")
+        self.assertEqual(get_official_satker_code("BPS1307"), "428041")
+
+    def test_excel_number_format(self):
+        """1300.0 format from Excel is correctly parsed."""
+        self.assertEqual(get_official_satker_code("1300.0"), "019937")
+        self.assertEqual(get_official_satker_code("1307.0"), "428041")
+
+    def test_unknown_unit_returns_none(self):
+        """Unknown unit_code returns None."""
+        self.assertIsNone(get_official_satker_code("9999"))
+        self.assertIsNone(get_official_satker_code("0000"))
+        self.assertIsNone(get_official_satker_code(""))
+
+    def test_unknown_satker_returns_none(self):
+        """Unknown satker_code returns None."""
+        self.assertIsNone(get_unit_code_from_satker("999999"))
+        self.assertIsNone(get_unit_code_from_satker("000000"))
+
+    def test_is_known_unit_code(self):
+        """is_known_unit_code works correctly."""
+        self.assertTrue(is_known_unit_code("1300"))
+        self.assertTrue(is_known_unit_code(1300))
+        self.assertTrue(is_known_unit_code("KK_1300.xlsx"))
+        self.assertFalse(is_known_unit_code("9999"))
+
+    def test_is_known_satker_code(self):
+        """is_known_satker_code works correctly."""
+        self.assertTrue(is_known_satker_code("019937"))
+        self.assertTrue(is_known_satker_code("428041"))
+        self.assertFalse(is_known_satker_code("999999"))
+
+    def test_unit_code_to_satker_code_mapping_complete(self):
+        """UNIT_CODE_TO_SATKER_CODE contains all expected entries."""
+        expected_units = {
+            "1300", "1301", "1302", "1303", "1304", "1305", "1306", "1307",
+            "1308", "1309", "1310", "1311", "1312", "1371", "1372", "1373",
+            "1374", "1375", "1376", "1377"
+        }
+        self.assertEqual(set(UNIT_CODE_TO_SATKER_CODE.keys()), expected_units)
+        self.assertEqual(len(UNIT_CODE_TO_SATKER_CODE), 20)
+
+    def test_all_satker_codes_are_6_digits(self):
+        """All satker_codes in mapping are 6 digits."""
+        for unit_code, satker_code in UNIT_CODE_TO_SATKER_CODE.items():
+            with self.subTest(unit_code=unit_code, satker_code=satker_code):
+                self.assertEqual(len(satker_code), 6)
+
+    def test_all_unit_codes_are_4_digits(self):
+        """All unit_codes in mapping are 4 digits."""
+        for unit_code in UNIT_CODE_TO_SATKER_CODE.keys():
+            with self.subTest(unit_code=unit_code):
+                self.assertEqual(len(unit_code), 4)
+                self.assertTrue(unit_code.isdigit())
+
+    def test_no_duplicate_satker_codes(self):
+        """All satker_codes are unique."""
+        satker_codes = list(UNIT_CODE_TO_SATKER_CODE.values())
+        self.assertEqual(len(satker_codes), len(set(satker_codes)))
+
+
+class SatkerMasterModelTests(TestCase):
+    """Tests for the SatkerMaster model."""
+
+    def setUp(self):
+        # Ensure seed data is available
+        SatkerMaster.objects.get_or_create(
+            unit_code="1300",
+            defaults={"nama_satker": "BPS Provinsi Sumatera Barat", "satker_code": "019937"}
+        )
+        SatkerMaster.objects.get_or_create(
+            unit_code="1307",
+            defaults={"nama_satker": "BPS Kabupaten Agam", "satker_code": "428041"}
+        )
+
+    def test_satker_master_get_satker_code_for_unit(self):
+        """SatkerMaster.get_satker_code_for_unit works correctly."""
+        self.assertEqual(SatkerMaster.get_satker_code_for_unit("1300"), "019937")
+        self.assertEqual(SatkerMaster.get_satker_code_for_unit(1300), "019937")
+        self.assertEqual(SatkerMaster.get_satker_code_for_unit("1307"), "428041")
+
+    def test_satker_master_get_unit_code_for_satker(self):
+        """SatkerMaster.get_unit_code_for_satker works correctly."""
+        self.assertEqual(SatkerMaster.get_unit_code_for_satker("019937"), "1300")
+        self.assertEqual(SatkerMaster.get_unit_code_for_satker("428041"), "1307")
+
+    def test_satker_master_unknown_returns_none(self):
+        """Unknown unit/satker returns None from model methods."""
+        self.assertIsNone(SatkerMaster.get_satker_code_for_unit("9999"))
+        self.assertIsNone(SatkerMaster.get_unit_code_for_satker("999999"))
+
+    def test_satker_master_str_representation(self):
+        """SatkerMaster string representation includes all fields."""
+        satker = SatkerMaster.objects.get(unit_code="1300")
+        self.assertIn("1300", str(satker))
+        self.assertIn("019937", str(satker))
+        self.assertIn("Sumatera", str(satker))
+
+
+class NormalizeSatkerCodeTests(TestCase):
+    """Tests for normalize_satker_code function."""
+
+    def test_strips_kk_prefix(self):
+        """KK_ prefix is stripped."""
+        self.assertEqual(normalize_satker_code("KK_1300"), "1300")
+        self.assertEqual(normalize_satker_code("KK_1300.xlsx"), "1300.xlsx")
+
+    def test_strips_bps_prefix(self):
+        """bps prefix is stripped."""
+        self.assertEqual(normalize_satker_code("bps1300"), "1300")
+        self.assertEqual(normalize_satker_code("BPS1300"), "1300")
+
+    def test_strips_dot_zero_suffix(self):
+        """.0 suffix from Excel is stripped."""
+        self.assertEqual(normalize_satker_code("1300.0"), "1300")
+        self.assertEqual(normalize_satker_code("1307.0"), "1307")
+
+    def test_combined_normalization(self):
+        """Multiple normalizations work together."""
+        self.assertEqual(normalize_satker_code("KK_1300.0"), "1300")
+        self.assertEqual(normalize_satker_code("bps1300.0"), "1300")
+
+
+# =============================================================================
+# SP2D SATKER RESOLUTION TESTS
+# =============================================================================
+
+from apps.core.satker import (
+    resolve_sp2d_satker,
+    resolve_sp2d_satker_safe,
+    infer_satker_from_name,
+    normalize_satker_name,
+)
+
+
+class SP2DSatkerResolutionTests(TestCase):
+    """Tests for SP2D satker resolution from document data."""
+
+    def test_case1_explicit_official_code_accepted(self):
+        """
+        CASE 1: SP2D with explicit 6-digit satker code is accepted.
+
+        Input: satker_code=019937, name=BPS Provinsi Sumatera Barat
+        Expected: satker_code=019937, unit_code=1300, status=OK
+        """
+        result = resolve_sp2d_satker(
+            satker_code_input="019937",
+            satker_name_input="BPS Provinsi Sumatera Barat"
+        )
+        self.assertTrue(result.resolved)
+        self.assertEqual(result.satker_code, "019937")
+        self.assertEqual(result.unit_code, "1300")
+        self.assertEqual(result.status, "OK")
+
+    def test_case2_code_missing_name_known_resolves(self):
+        """
+        CASE 2: SP2D with blank satker_code but known name resolves correctly.
+
+        Input: satker_code="", name="BPS Provinsi Sumatera Barat"
+        Expected: satker_code=019937, unit_code=1300, status=OK
+
+        This is the critical fallback case for SP2D documents that may have
+        the official satker code blank but the full name present.
+        """
+        result = resolve_sp2d_satker(
+            satker_code_input="",
+            satker_name_input="BPS Provinsi Sumatera Barat"
+        )
+        self.assertTrue(result.resolved)
+        self.assertEqual(result.satker_code, "019937")
+        self.assertEqual(result.unit_code, "1300")
+        self.assertEqual(result.status, "OK")
+
+    def test_case3_known_unit_code_resolves_to_official(self):
+        """
+        CASE 3: SP2D with unit_code=1300 but missing official satker_code resolves.
+
+        Input: unit_code="1300", satker_code=""
+        Expected: satker_code=019937, unit_code=1300, status=OK
+        """
+        result = resolve_sp2d_satker(
+            satker_code_input="",
+            satker_name_input="",
+            unit_code_input="1300"
+        )
+        self.assertTrue(result.resolved)
+        self.assertEqual(result.satker_code, "019937")
+        self.assertEqual(result.unit_code, "1300")
+        self.assertEqual(result.status, "OK")
+
+    def test_case4_conflicting_evidence_blocked(self):
+        """
+        CASE 4: SP2D with conflicting evidence is BLOCKED.
+
+        Input: name="BPS Provinsi Sumatera Barat" (expects 019937)
+               satker_code="428041" (BPS Kabupaten Agam)
+
+        Expected: status=ERROR_CONFLICT, resolved=False
+
+        The system must NOT silently choose one over the other.
+        """
+        result = resolve_sp2d_satker(
+            satker_code_input="428041",
+            satker_name_input="BPS Provinsi Sumatera Barat"
+        )
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.status, "ERROR_CONFLICT")
+        self.assertIn("Konflik", result.error_message)
+        self.assertIn("019937", result.error_message)
+        self.assertIn("428041", result.error_message)
+
+    def test_case5_unknown_satker_returns_error(self):
+        """
+        CASE 5: Unknown satker name/code returns error.
+
+        Input: name="Unknown BPS Office", satker_code=""
+        Expected: status=ERROR_MISSING, resolved=False
+        """
+        result = resolve_sp2d_satker(
+            satker_code_input="",
+            satker_name_input="Unknown BPS Office"
+        )
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.status, "ERROR_MISSING")
+
+    def test_case6_multi_satker_same_spm_stay_separate(self):
+        """
+        CASE 6: Same SPM number in different satkers creates different packages.
+
+        Input: Two different satkers with same nomor_spm
+        Expected: Different satker_codes, different packages
+
+        This tests the multi-satker safety: the system must not conflate
+        transactions from different satkers just because they have the same SPM number.
+        """
+        result_sumbar = resolve_sp2d_satker(
+            satker_code_input="019937",
+            satker_name_input="BPS Provinsi Sumatera Barat"
+        )
+        result_agam = resolve_sp2d_satker(
+            satker_code_input="428041",
+            satker_name_input="BPS Kabupaten Agam"
+        )
+
+        # Verify they are different satkers
+        self.assertNotEqual(result_sumbar.satker_code, result_agam.satker_code)
+        self.assertEqual(result_sumbar.satker_code, "019937")
+        self.assertEqual(result_agam.satker_code, "428041")
+
+        # Verify they would create different TransactionPackages
+        self.assertNotEqual(
+            f"{result_sumbar.satker_code}|2026|00100T",
+            f"{result_agam.satker_code}|2026|00100T"
+        )
+
+    def test_name_inference_from_bps_province(self):
+        """Test that BPS Provinsi Sumatera Barat is correctly inferred."""
+        unit_code, satker_name = infer_satker_from_name("BPS Provinsi Sumatera Barat")
+        self.assertEqual(unit_code, "1300")
+        self.assertEqual(satker_name, "BPS Provinsi Sumatera Barat")
+
+    def test_name_inference_from_bps_kabupaten(self):
+        """Test that BPS Kabupaten Agam is correctly inferred."""
+        unit_code, satker_name = infer_satker_from_name("BPS Kabupaten Agam")
+        self.assertEqual(unit_code, "1307")
+        self.assertEqual(satker_name, "BPS Kabupaten Agam")
+
+    def test_name_inference_from_bps_kota(self):
+        """Test that BPS Kota Padang is correctly inferred."""
+        unit_code, satker_name = infer_satker_from_name("BPS Kota Padang")
+        self.assertEqual(unit_code, "1371")
+        self.assertEqual(satker_name, "BPS Kota Padang")
+
+    def test_normalize_satker_name_preserves_full_bps_names(self):
+        """Full BPS names should not be stripped."""
+        self.assertEqual(
+            normalize_satker_name("BPS Provinsi Sumatera Barat"),
+            "BPS Provinsi Sumatera Barat"
+        )
+        self.assertEqual(
+            normalize_satker_name("BPS Kabupaten Agam"),
+            "BPS Kabupaten Agam"
+        )
+        self.assertEqual(
+            normalize_satker_name("BPS Kota Payakumbuh"),
+            "BPS Kota Payakumbuh"
+        )
+
+    def test_normalize_satker_name_strips_bps_with_code(self):
+        """'bps1300' style entries should be stripped (they're codes, not names)."""
+        self.assertEqual(normalize_satker_name("bps1300"), "")
+        self.assertEqual(normalize_satker_name("BPS1300"), "")
+
+    def test_resolve_sp2d_satker_safe_returns_tuple(self):
+        """Test the safe wrapper that returns tuple."""
+        unit_code, satker_code, error = resolve_sp2d_satker_safe(
+            satker_code_input="019937"
+        )
+        self.assertEqual(unit_code, "1300")
+        self.assertEqual(satker_code, "019937")
+        self.assertEqual(error, "")
+
+        # Error case
+        unit_code, satker_code, error = resolve_sp2d_satker_safe(
+            satker_name_input="Unknown BPS Office"
+        )
+        self.assertEqual(unit_code, "")
+        self.assertEqual(satker_code, "")
+        self.assertNotEqual(error, "")
+
+    def test_all_20_units_resolve_correctly(self):
+        """All 20 unit codes should resolve to their official satker codes."""
+        expected_mappings = {
+            "1300": "019937",
+            "1301": "636977",
+            "1302": "427981",
+            "1303": "019979",
+            "1304": "019983",
+            "1305": "019990",
+            "1306": "019958",
+            "1307": "428041",
+            "1308": "428063",
+            "1309": "428057",
+            "1310": "667193",
+            "1311": "667172",
+            "1312": "667189",
+            "1371": "019941",
+            "1372": "019962",
+            "1373": "428001",
+            "1374": "427990",
+            "1375": "428026",
+            "1376": "428032",
+            "1377": "668512",
+        }
+
+        for unit_code, expected_satker in expected_mappings.items():
+            with self.subTest(unit_code=unit_code):
+                result = resolve_sp2d_satker(unit_code_input=unit_code)
+                self.assertTrue(result.resolved, f"Unit {unit_code} should resolve")
+                self.assertEqual(result.satker_code, expected_satker,
+                    f"Unit {unit_code} should map to {expected_satker}")
+                self.assertEqual(result.unit_code, unit_code,
+                    f"Unit {unit_code} should preserve its unit_code")
+
+

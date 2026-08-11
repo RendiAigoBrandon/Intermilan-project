@@ -397,6 +397,7 @@
     max-width: 100%;
     overflow-x: auto;
     overflow-y: hidden;
+    overscroll-behavior-y: auto;
     scrollbar-gutter: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
