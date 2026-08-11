@@ -11,6 +11,7 @@ from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import transaction
+from django.db.models import Q
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from PIL import Image
@@ -47,7 +48,7 @@ from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
 from apps.documents.models import ChecklistStatus, DocumentDriveLink
 from apps.paket_spm.fixtures_test import FIXTURE_00074T_PAGES
-from apps.paket_spm.models import PaketSPMUpload
+from apps.paket_spm.models import PaketSPMPreviewItem, PaketSPMUpload
 from apps.paket_spm.services import build_package_decision, build_transaction_rows_from_package, link_existing_package_documents, link_paket_spm_source_document, merge_followup_into_existing_dk
 
 
@@ -85,8 +86,29 @@ class PaketSPMRegressionTests(TestCase):
             role=Profile.Role.SATKER,
             satker_code="1300",
         )
+        # Clean up test data from previous runs to ensure test isolation
+        # Only clean Paket SPM-related test data, preserve real baseline data
+        DocumentDriveLink.objects.filter(
+            Q(catatan__icontains="source=Paket SPM") |
+            Q(jenis_dokumen__in=["PAKET_SPM_ZIP", "SPM"])
+        ).delete()
+        TransactionDetail.objects.filter(pembebanan="Paket SPM OCR").delete()
+        PaketSPMPreviewItem.objects.filter(
+            matched_transaction__in=TransactionDetail.objects.filter(pembebanan="Paket SPM OCR")
+        ).delete()
+        PaketSPMUpload.objects.all().delete()
 
     def tearDown(self):
+        # Clean up test data after each test
+        DocumentDriveLink.objects.filter(
+            Q(catatan__icontains="source=Paket SPM") |
+            Q(jenis_dokumen__in=["PAKET_SPM_ZIP", "SPM"])
+        ).delete()
+        TransactionDetail.objects.filter(pembebanan="Paket SPM OCR").delete()
+        PaketSPMPreviewItem.objects.filter(
+            matched_transaction__in=TransactionDetail.objects.filter(pembebanan="Paket SPM OCR")
+        ).delete()
+        PaketSPMUpload.objects.all().delete()
         self.media_settings.disable()
         self.media_tmp.cleanup()
 
@@ -173,7 +195,16 @@ class PaketSPMRegressionTests(TestCase):
         paket = paket or self.paket_for(parsed, with_file=True)
         with transaction.atomic():
             rows = build_transaction_rows_from_package(parsed, paket, self.user, document_status="Lengkap", save=True)
-            link_paket_spm_source_document(paket, rows, user=self.user, parsed=parsed, document_status="Lengkap")
+            # Mock Drive archive to succeed without real credentials
+            success_result = (
+                {"status": "uploaded", "web_view_link": "https://drive.google.com/file/d/test123",
+                 "file_id": "test123", "local_path": "", "mime_type": "application/pdf",
+                 "size": 1234, "folder_id": None, "error_message": "",
+                 "is_duplicate": False, "existing_link_id": None, "file_hash": "abc123"},
+                None, False
+            )
+            with patch("apps.paket_spm.services.archive_file_link", return_value=success_result):
+                link_paket_spm_source_document(paket, rows, user=self.user, parsed=parsed, document_status="Lengkap")
             paket.status = PaketSPMUpload.Status.COMMITTED
             paket.save(update_fields=["status"])
         return paket, rows

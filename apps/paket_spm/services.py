@@ -2203,6 +2203,7 @@ def link_paket_spm_source_document(
             no_kuitansi=first_transaction.no_kuitansi,
             catatan_extra=catatan_extra,
             transaction_detail=first_transaction,
+            existing_link=first_link,  # Update existing link, don't create new one
         )
         logger.info(
             "[DRIVE ARCHIVE] link_paket_spm_source_document result=%s is_reused=%s drive_url=%s",
