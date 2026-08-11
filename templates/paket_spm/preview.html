@@ -114,6 +114,33 @@
   </div>
   {% endif %}
 
+  {% if spm_only %}
+  {# SPM-only state: document is SPM parent, no DRPP/pages detected yet. Show clean summary. #}
+  <section class="card app-card" style="margin-bottom: 24px;">
+    <div class="card-head">
+      <h3>SPM PARENT</h3>
+      <p class="muted">Dokumen SPM berhasil dibaca. DRPP dan kuitansi diunggah terpisah.</p>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <tbody>
+          <tr><td><strong>SPM Dokumen</strong></td><td>{{ spm_meta.nomor_spm_ocr|default:spm_meta.nomor_spm|default:"-" }}</td></tr>
+          <tr><td><strong>SPP / Matching D_K</strong></td><td>{{ spm_meta.nomor_spp|default:"-" }}</td></tr>
+          <tr><td><strong>Tanggal</strong></td><td>{{ spm_meta.tanggal_spm|date:"d M Y"|default:"-" }}</td></tr>
+          <tr><td><strong>Jenis</strong></td><td>{{ spm_meta.jenis_spm|default:"-" }}</td></tr>
+          <tr><td><strong>Satker</strong></td><td>{{ spm_meta.satker_app_name|default:spm_meta.satker_code|default:"-" }}</td></tr>
+          <tr><td><strong>Nilai Pembayaran</strong></td><td>{{ spm_meta.total_pembayaran|id_number|default:"-" }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top: 16px; padding: 12px; background: #f0f4f8; border-radius: 4px;">
+      <p><strong>SP2D pembanding:</strong> {% if decision.matched_sp2d %}Terhubung{% else %}Belum terhubung{% endif %}</p>
+      <p class="muted">SPM parent siap ditautkan. Unggah DRPP dan kuitansi terkait secara terpisah.</p>
+    </div>
+  </section>
+
+  {% endif %}
+
   <h3 class="section-title mt">Satker: {{ spm_meta.satker_app_name|default:paket.satker_code }}</h3>
   <form method="post" id="preview-edit-form" style="margin-bottom: 24px;">
     {% csrf_token %}
@@ -264,7 +291,7 @@
       </table>
     </div>
     {% endif %}
-  {% if not transaction_groups %}
+  {% if not transaction_groups and not spm_only %}
   {% if drpp_rows %}
   <h3 class="section-title mt">DRPP Terbaca</h3>
   <div class="table-wrap">
@@ -305,7 +332,7 @@
   </div>
   {% endif %}
 
-  {% if kw_rows %}
+  {% if kw_rows and not spm_only %}
   <h3 class="section-title mt">Item KW/Bukti</h3>
   <div class="table-wrap">
     <input type="hidden" name="kw_row_count" value="{{ kw_rows|length }}">
