@@ -787,6 +787,9 @@ def paket_spm_preview(request):
             if not parsed.get("spm"):
                 messages.error(request, "SPM parent tidak ditemukan pada dokumen.")
                 return redirect("paket_spm:preview")
+            if parsed.get("drpps") or (parsed.get("kw_items") or []):
+                messages.error(request, "Dokumen memiliki DRPP/Kuitansi. Gunakan alur simpan DRPP normal.")
+                return redirect("paket_spm:preview")
             try:
                 # Archive the uploaded file locally (Drive if configured, otherwise local only).
                 # Archive failures must NOT block the parent save.

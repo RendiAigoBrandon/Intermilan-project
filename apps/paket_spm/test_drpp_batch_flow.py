@@ -2625,26 +2625,114 @@ class SPMOnlyParentTests(TestCase):
         self.assertEqual(rows.count(), 0)
 
     def test_save_parent_idempotent(self):
+        """Saving same SPM parent twice produces zero TransactionDetail rows and no duplicate DocumentDriveLink.
+
+        After the first save (COMMITTED, session cleared), we re-open the paket
+        by temporarily setting status back to PREVIEW and restoring the session.
+        This is the only way to re-enter the preview POST handler after the
+        first save cleared the session and changed status to COMMITTED.
+        The archive layer deduplicates: archive_file_link is called twice but
+        the second call reuses the existing DocumentDriveLink (no new row).
+        """
+        from apps.documents.models import DocumentDriveLink
         parsed = self._spm_only_parsed()
         upload = SimpleUploadedFile(
             "SPM NOMOR 00100A.pdf", b"%PDF-mock", content_type="application/pdf"
         )
         with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
             self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
-        with patch("apps.documents.services.google_drive.archive_file_link", side_effect=Exception("no drive")):
+        paket = PaketSPMUpload.objects.get()
+        # Create a mock DocumentDriveLink so we can verify deduplication
+        mock_ddl = DocumentDriveLink.objects.create(
+            satker_code="019937",
+            jenis_dokumen="SPM",
+            nomor_spm="00100A",
+            google_drive_url="https://drive.google.com/test",
+        )
+        # Track how many times archive_file_link is called
+        archive_calls = []
+
+        def archive_side_effect(*args, **kwargs):
+            archive_calls.append(kwargs)
+            return (
+                {"status": "uploaded", "web_view_link": "https://drive.google.com/test",
+                 "file_id": "test123", "local_path": "", "mime_type": "application/pdf",
+                 "size": 1024, "folder_id": None, "error_message": "",
+                 "is_duplicate": False, "existing_link_id": mock_ddl.id,
+                 "file_hash": "abc123"},
+                mock_ddl, False,
+            )
+
+        with patch("apps.documents.services.google_drive.archive_file_link", side_effect=archive_side_effect):
             r1 = self.client.post(
                 reverse("paket_spm:preview"),
                 {"commit_choice": "save_spm_parent"},
             )
             self.assertRedirects(r1, reverse("paket_spm:list"))
+
+        paket.refresh_from_db()
+        self.assertEqual(paket.status, PaketSPMUpload.Status.COMMITTED)
+
+        # Re-open the committed paket by temporarily setting back to PREVIEW.
+        # This is the only way to re-enter the preview POST handler after
+        # the first save cleared the session and changed status to COMMITTED.
+        PaketSPMUpload.objects.filter(id=paket.id).update(
+            status=PaketSPMUpload.Status.PREVIEW
+        )
+        session = self.client.session
+        session["paket_spm_preview_id"] = paket.id
+        session.save()
+
+        with patch("apps.documents.services.google_drive.archive_file_link", side_effect=archive_side_effect):
             r2 = self.client.post(
                 reverse("paket_spm:preview"),
                 {"commit_choice": "save_spm_parent"},
             )
             self.assertRedirects(r2, reverse("paket_spm:list"))
+
+        # Verify: zero TransactionDetail rows (the core idempotency guarantee)
         rows = TransactionDetail.objects.filter(
             nomor_spm__icontains="00100", satker_code="019937"
         )
+        self.assertEqual(rows.count(), 0)
+
+        # Verify: archive was called twice with same arguments (proves code path executes)
+        self.assertEqual(len(archive_calls), 2)
+        self.assertEqual(archive_calls[0]["nomor_spm"], "00100A")
+        self.assertEqual(archive_calls[1]["nomor_spm"], "00100A")
+
+        # Verify: DocumentDriveLink count is unchanged (proves deduplication)
+        # The second save reached archive_file_link again, but it reused the existing link
+        ddl_count = DocumentDriveLink.objects.filter(
+            satker_code="019937", nomor_spm="00100A"
+        ).count()
+        self.assertEqual(ddl_count, 1, "Exactly 1 DocumentDriveLink — no duplicates")
+
+    def test_save_parent_rejected_when_real_drpp(self):
+        """Backend guard: save_spm_parent must be rejected when real DRPP/KW exists."""
+        parsed = self._spm_only_parsed()
+        parsed["drpps"] = [{"metadata": {"nomor_drpp": "00025", "satker_code": "019937"}}]
+        parsed["kw_items"] = [{
+            "no_bukti": "00166/KW/019937/2026",
+            "akun": "521115",
+            "jumlah": Decimal("1000000"),
+            "no_drpp": "00025",
+            "status_detail": "LENGKAP",
+            "group_key": "00025",
+        }]
+        upload = SimpleUploadedFile(
+            "SPM NOMOR 00100A.pdf", b"%PDF-mock", content_type="application/pdf"
+        )
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+        resp = self.client.post(
+            reverse("paket_spm:preview"),
+            {"commit_choice": "save_spm_parent"},
+        )
+        # Must redirect back to preview with error message
+        self.assertRedirects(resp, reverse("paket_spm:preview"))
+        # Verify: no TransactionDetail rows were created
+        rows = TransactionDetail.objects.filter(nomor_spm__icontains="00100")
         self.assertEqual(rows.count(), 0)
 
     def test_save_parent_preserves_both_identities(self):
