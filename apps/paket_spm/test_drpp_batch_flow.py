@@ -2491,3 +2491,155 @@ class DKDraft15ColumnIntegrationTests(TestCase):
             # Each draft should have unique index
             self.assertEqual(dk_drafts[0].get("source_transaction_index"), 0)
             self.assertEqual(dk_drafts[1].get("source_transaction_index"), 1)
+
+
+class SPMOnlyParentTests(TestCase):
+    """Regression: SPM-only upload (no DRPP) must not show TANPA_DRPP fake group."""
+
+    def setUp(self):
+        self.media_tmp = tempfile.TemporaryDirectory()
+        self.media_settings = override_settings(MEDIA_ROOT=self.media_tmp.name)
+        self.media_settings.enable()
+        self.user = User.objects.create_user(username="spm-only-operator", password="password")
+        Profile.objects.filter(user=self.user).update(
+            role=Profile.Role.SATKER,
+            satker_code="019937",
+        )
+        self.client.login(username="spm-only-operator", password="password")
+
+    def tearDown(self):
+        self.media_settings.disable()
+        self.media_tmp.cleanup()
+
+    def _spm_only_parsed(self):
+        """Return a parsed dict simulating SPM-only (SPM parsed, no DRPP pages)."""
+        return {
+            "ok": False,
+            "parser_version": "DRPP_BATCH_V2",
+            "spm_family": "GUP_REGULER",
+            "document_requirement_policy": "DRPP_REQUIRED",
+            "files": [
+                {
+                    "file_name": "SPM NOMOR 00100A.pdf",
+                    "type": "SPM",
+                    "status": "parsed_ocr",
+                    "parse_status": "needs_manual_review",
+                    "method": "drpp_batch_ocr",
+                    "warnings": [],
+                }
+            ],
+            "spm": {
+                "file_name": "SPM NOMOR 00100A.pdf",
+                "status": "parsed_ocr",
+                "method": "drpp_batch_ocr",
+                "warnings": [],
+                "metadata": {
+                    "nomor_spm": "00100A",
+                    "nomor_spm_ocr": "00100A",
+                    "nomor_spp": "00100T",
+                    "tanggal_spm": "2026-04-28",
+                    "jenis_spm": "GUP",
+                    "cara_pembayaran": "UP/TUP",
+                    "total_pembayaran": Decimal("3423800"),
+                    "satker_code": "019937",
+                },
+                "page_details": [],
+            },
+            "drpp": None,
+            "drpps": [],
+            "drpp_groups": [
+                {
+                    "no_drpp": "TANPA_DRPP",
+                    "is_kkp": False,
+                    "items": [],
+                    "validation": {
+                        "status": "PERLU_REVIEW",
+                        "can_commit": False,
+                        "errors": ["Halaman DRPP tidak ditemukan."],
+                    },
+                }
+            ],
+            "kw_by_drpp": {},
+            "kw_items": [],
+            "preview_rows": [],
+            "warnings": ["Halaman DRPP tidak ditemukan."],
+            "temp_dir": "",
+            "metrics": {},
+        }
+
+    def test_spm_only_no_tanpa_drpp_in_preview(self):
+        """SPM-only upload must NOT show TANPA_DRPP in the preview."""
+        parsed = self._spm_only_parsed()
+        upload = SimpleUploadedFile("SPM NOMOR 00100A.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        self.assertRedirects(response, reverse("paket_spm:preview"), fetch_redirect_response=False)
+        paket = PaketSPMUpload.objects.get()
+
+        preview = self.client.get(reverse("paket_spm:preview"))
+        self.assertEqual(preview.status_code, 200)
+        content = preview.content.decode("utf-8")
+
+        # SPM-only card must be shown
+        self.assertIn("SPM PARENT", content)
+        self.assertIn("00100A", content)
+        self.assertIn("00100T", content)
+
+        # TANPA_DRPP must NOT appear anywhere in the preview
+        self.assertNotIn("TANPA_DRPP", content,
+            "SPM-only upload must not show TANPA_DRPP placeholder group")
+
+        # The fake "SIMPAN DRPP TANPA_DRPP" button must NOT appear
+        self.assertNotIn("SIMPAN DRPP TANPA_DRPP", content)
+
+    def test_spm_only_context_flag(self):
+        """spm_only context flag must be True for SPM-only parsed data."""
+        parsed = self._spm_only_parsed()
+        upload = SimpleUploadedFile("SPM NOMOR 00100A.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            response = self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        preview = self.client.get(reverse("paket_spm:preview"))
+        self.assertTrue(preview.context["spm_only"],
+            "spm_only flag must be True when SPM is parsed but no DRPP pages exist")
+        # transaction_groups must be empty (TANPA_DRPP filtered out)
+        self.assertEqual(len(preview.context["transaction_groups"]), 0)
+
+    def test_spm_only_no_commit_drpp_action(self):
+        """Posting commit action with commit_drpp=TANPA_DRPP must be rejected for SPM-only."""
+        parsed = self._spm_only_parsed()
+        upload = SimpleUploadedFile("SPM NOMOR 00100A.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        # Simulate posting commit with commit_drpp=TANPA_DRPP
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            commit_response = self.client.post(
+                reverse("paket_spm:preview"),
+                {"action": "commit", "commit_choice": "create_from_package", "commit_drpp": "TANPA_DRPP"},
+            )
+
+        # Must redirect back (error) — must NOT create TransactionDetail rows
+        self.assertRedirects(commit_response, reverse("paket_spm:preview"), fetch_redirect_response=False)
+        rows = TransactionDetail.objects.filter(nomor_spm__icontains="00100")
+        self.assertEqual(rows.count(), 0,
+            "SPM-only commit must NOT create TransactionDetail rows")
+
+    def test_spm_only_preserves_both_identities(self):
+        """SPM-only preview must preserve both SPM body (00100A) and SPP (00100T) identities."""
+        parsed = self._spm_only_parsed()
+        upload = SimpleUploadedFile("SPM NOMOR 00100A.pdf", b"%PDF-mock", content_type="application/pdf")
+
+        with patch("apps.paket_spm.views.parse_drpp_upload_batch", return_value=parsed):
+            self.client.post(reverse("paket_spm:list"), {"file_paket": upload})
+
+        preview = self.client.get(reverse("paket_spm:preview"))
+        content = preview.content.decode("utf-8")
+        # Both identities must appear in the SPM-only card
+        self.assertIn("00100A", content)
+        self.assertIn("00100T", content)
+

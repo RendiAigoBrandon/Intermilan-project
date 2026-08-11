@@ -824,6 +824,15 @@ def paket_spm_preview(request):
                     return redirect("paket_spm:preview")
 
             elif commit_choice == "create_from_package":
+                # SPM-only: document is SPM parent with no DRPP pages.
+                # Must not create TransactionDetail rows from SPM-only uploads.
+                if (
+                    bool(parsed.get("spm"))
+                    and not parsed.get("drpps")
+                    and not (parsed.get("kw_items") or [])
+                ):
+                    messages.error(request, "Dokumen SPM tanpa DRPP tidak boleh membuat transaksi baru. Unggah DRPP terkait terlebih dahulu.")
+                    return redirect("paket_spm:preview")
                 try:
                     with transaction.atomic():
                         rows = build_transaction_rows_from_package(
@@ -935,6 +944,17 @@ def paket_spm_preview(request):
 
     # Jika ada error, blokir tombol SIMPAN KE D_K
     transaction_groups = build_transaction_groups(parsed, transaction_rows)
+    # Filter out TANPA_DRPP placeholder groups (created when SPM-only is uploaded).
+    # These fake groups must not be shown as saveable DRPP rows.
+    transaction_groups = [g for g in transaction_groups if g.get("no_drpp") != "TANPA_DRPP"]
+    # Detect SPM-only: batch parser parsed SPM but no real DRPP pages were detected.
+    # Groups with "TANPA_DRPP" are filtered out in transaction_groups above.
+    spm_only = (
+        bool(parsed.get("spm"))
+        and not parsed.get("drpps")
+        and not (parsed.get("kw_items") or [])
+        and not transaction_groups
+    )
     can_commit = (
         any(group["can_commit"] for group in transaction_groups)
         if transaction_groups
@@ -956,6 +976,7 @@ def paket_spm_preview(request):
         "summary_document_status": summary_document_status,
         "transaction_rows": transaction_rows,
         "transaction_groups": transaction_groups,
+        "spm_only": spm_only,
         "scan_rows": scan_rows,
         "drpp_rows": drpp_rows,
         "kw_rows": kw_rows,
