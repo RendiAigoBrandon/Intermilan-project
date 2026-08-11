@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import zipfile
@@ -35,6 +36,8 @@ from apps.paket_spm.services import build_drpp_batch_rows, build_package_decisio
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMUpload
+
+logger = logging.getLogger('paket_spm')
 
 
 @login_required
@@ -766,93 +769,62 @@ def paket_spm_preview(request):
                     return redirect("paket_spm:list")
                 return redirect("paket_spm:preview")
 
-            commit_choice = request.POST.get("commit_choice") # 'link_existing', 'create_from_package', 'review_manual', 'save_draft'
-            import logging
-            logger = logging.getLogger('paket_spm')
-            logger.warning(f"[PAKET SPM] commit_choice={commit_choice}")
+        commit_choice = request.POST.get("commit_choice") # 'link_existing', 'create_from_package', 'review_manual', 'save_draft', 'save_spm_parent'
 
-            decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
+        decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
 
-            if commit_choice == "save_draft":
-                request.session.pop("paket_spm_preview_id", None)
-                messages.success(request, "Draft Upload DRPP berhasil disimpan dan dapat dibuka kembali dari daftar draft.")
-                # We do not change status, keep it PREVIEW so it shows in drafts
-                return redirect("paket_spm:drafts")
+        if commit_choice == "save_draft":
+            request.session.pop("paket_spm_preview_id", None)
+            messages.success(request, "Draft Upload DRPP berhasil disimpan dan dapat dibuka kembali dari daftar draft.")
+            # We do not change status, keep it PREVIEW so it shows in drafts
+            return redirect("paket_spm:drafts")
 
-            if commit_choice == "link_existing":
-                matched_id = request.POST.get("matched_transaction_id")
-                exact_rows = exact_transactions_for_package(parsed, paket)
-                if exact_rows:
+        if commit_choice == "save_spm_parent":
+            # SPM-only: save/link the SPM parent document without creating TransactionDetail rows.
+            # The parsed_data already contains SPM body (00100A), SPP (00100T), date, jenis, satker.
+            # We mark the paket as COMMITTED so it's audited/archived.
+            # Later DRPP uploads can resolve the parent context via satker+tahun+nomor_spm matching.
+            if not parsed.get("spm"):
+                messages.error(request, "SPM parent tidak ditemukan pada dokumen.")
+                return redirect("paket_spm:preview")
+            try:
+                # Archive the uploaded file locally (Drive if configured, otherwise local only).
+                # Archive failures must NOT block the parent save.
+                source_path = paket.zip_file.path if paket.zip_file else ""
+                if source_path:
+                    from apps.documents.services.google_drive import archive_file_link
+                    spm_meta = (parsed.get("spm") or {}).get("metadata") or {}
                     try:
-                        with transaction.atomic():
-                            link_existing_package_documents(
-                                paket,
-                                exact_rows,
-                                user=request.user,
-                                parsed=parsed,
-                                document_status=decision.get("document_status"),
-                            )
-                            paket.status = PaketSPMUpload.Status.COMMITTED
-                            paket.save(update_fields=["status"])
-                    except Exception as e:
-                        messages.error(request, str(e))
-                        return redirect("paket_spm:preview")
-                    messages.success(request, "Dokumen berhasil dikaitkan ke seluruh grup D_K existing.")
-                elif matched_id:
-                    tx = TransactionDetail.objects.filter(id=matched_id).first()
-                    if tx:
-                        try:
-                            with transaction.atomic():
-                                link_existing_package_documents(
-                                    paket,
-                                    [tx],
-                                    user=request.user,
-                                    parsed=parsed,
-                                    document_status=decision.get("document_status"),
-                                )
-                                paket.status = PaketSPMUpload.Status.COMMITTED
-                                paket.save(update_fields=["status"])
-                        except Exception as e:
-                            messages.error(request, str(e))
-                            return redirect("paket_spm:preview")
-                        messages.success(request, "Dokumen berhasil dikaitkan ke D_K existing.")
-                    else:
-                        messages.error(request, "D_K existing tidak ditemukan.")
-                        return redirect("paket_spm:preview")
-                else:
-                    messages.error(request, "Pilih D_K existing terlebih dahulu.")
-                    return redirect("paket_spm:preview")
+                        archive_result, _, _ = archive_file_link(
+                            source_path,
+                            user=request.user,
+                            jenis_dokumen="SPM",
+                            nama_file=paket.original_filename,
+                            satker_code=paket.satker_code or spm_meta.get("satker_code", ""),
+                            nomor_spm=spm_meta.get("nomor_spm") or "",
+                            no_drpp="",
+                            no_kuitansi="",
+                        )
+                    except Exception as archive_exc:
+                        logger.warning("[SPM PARENT] Drive archive failed, continuing: %s", archive_exc)
+                paket.status = PaketSPMUpload.Status.COMMITTED
+                paket.save(update_fields=["status"])
+            except Exception as exc:
+                messages.error(request, f"Gagal menyimpan SPM parent: {exc}")
+                return redirect("paket_spm:preview")
+            messages.success(request, "SPM parent berhasil disimpan.")
+            request.session.pop("paket_spm_preview_id", None)
+            return redirect("paket_spm:list")
 
-            elif commit_choice == "create_from_package":
-                # SPM-only: document is SPM parent with no DRPP pages.
-                # Must not create TransactionDetail rows from SPM-only uploads.
-                if (
-                    bool(parsed.get("spm"))
-                    and not parsed.get("drpps")
-                    and not (parsed.get("kw_items") or [])
-                ):
-                    messages.error(request, "Dokumen SPM tanpa DRPP tidak boleh membuat transaksi baru. Unggah DRPP terkait terlebih dahulu.")
-                    return redirect("paket_spm:preview")
+        if commit_choice == "link_existing":
+            matched_id = request.POST.get("matched_transaction_id")
+            exact_rows = exact_transactions_for_package(parsed, paket)
+            if exact_rows:
                 try:
                     with transaction.atomic():
-                        rows = build_transaction_rows_from_package(
-                            parsed,
+                        link_existing_package_documents(
                             paket,
-                            request.user,
-                            sp2d_raw=forced_sp2d,
-                            document_status=decision.get("document_status"),
-                            save=True,
-                        )
-                        if not rows:
-                            meta = decision.get("meta", {})
-                            rows = list(TransactionDetail.objects.filter(
-                                satker_code=meta.get("satker_code") or paket.satker_code,
-                                nomor_spm__iexact=meta.get("nomor_spm") or paket.nomor_spm,
-                                tanggal_spm__year=getattr(meta.get("tanggal_spm") or paket.tanggal_spm, "year", None),
-                            ))
-                        link_paket_spm_source_document(
-                            paket,
-                            rows,
+                            exact_rows,
                             user=request.user,
                             parsed=parsed,
                             document_status=decision.get("document_status"),
@@ -862,31 +834,96 @@ def paket_spm_preview(request):
                 except Exception as e:
                     messages.error(request, str(e))
                     return redirect("paket_spm:preview")
-
-                messages.success(request, "Dokumen berhasil dibaca. D_K telah diperbarui/dibuat.")
-
-            elif commit_choice == "update_existing":
-                try:
-                    with transaction.atomic():
-                        rows = merge_followup_into_existing_dk(
-                            parsed,
-                            paket,
-                            user=request.user,
-                            document_status=decision.get("document_status"),
-                        )
-                        paket.status = PaketSPMUpload.Status.COMMITTED
-                        paket.save(update_fields=["status"])
-                except Exception as e:
-                    messages.error(request, str(e))
+                messages.success(request, "Dokumen berhasil dikaitkan ke seluruh grup D_K existing.")
+            elif matched_id:
+                tx = TransactionDetail.objects.filter(id=matched_id).first()
+                if tx:
+                    try:
+                        with transaction.atomic():
+                            link_existing_package_documents(
+                                paket,
+                                [tx],
+                                user=request.user,
+                                parsed=parsed,
+                                document_status=decision.get("document_status"),
+                            )
+                            paket.status = PaketSPMUpload.Status.COMMITTED
+                            paket.save(update_fields=["status"])
+                    except Exception as e:
+                        messages.error(request, str(e))
+                        return redirect("paket_spm:preview")
+                    messages.success(request, "Dokumen berhasil dikaitkan ke D_K existing.")
+                else:
+                    messages.error(request, "D_K existing tidak ditemukan.")
                     return redirect("paket_spm:preview")
-                request.session.pop("paket_spm_preview_id", None)
-                messages.success(request, "DRPP/KW berhasil memperbarui D_K existing.")
-                satker = clean_optional(rows[0].satker_code if rows else paket.satker_code)
-                nomor_spm = clean_optional(rows[0].nomor_spm if rows else paket.nomor_spm)
-                return redirect(f"{reverse('dk:transaction_list')}?satker={satker}&q={nomor_spm}")
+            else:
+                messages.error(request, "Pilih D_K existing terlebih dahulu.")
+                return redirect("paket_spm:preview")
 
+        elif commit_choice == "create_from_package":
+            # SPM-only: document is SPM parent with no DRPP pages.
+            # Must not create TransactionDetail rows from SPM-only uploads.
+            if (
+                bool(parsed.get("spm"))
+                and not parsed.get("drpps")
+                and not (parsed.get("kw_items") or [])
+            ):
+                messages.error(request, "Dokumen SPM tanpa DRPP tidak boleh membuat transaksi baru. Unggah DRPP terkait terlebih dahulu.")
+                return redirect("paket_spm:preview")
+            try:
+                with transaction.atomic():
+                    rows = build_transaction_rows_from_package(
+                        parsed,
+                        paket,
+                        request.user,
+                        sp2d_raw=forced_sp2d,
+                        document_status=decision.get("document_status"),
+                        save=True,
+                    )
+                    if not rows:
+                        meta = decision.get("meta", {})
+                        rows = list(TransactionDetail.objects.filter(
+                            satker_code=meta.get("satker_code") or paket.satker_code,
+                            nomor_spm__iexact=meta.get("nomor_spm") or paket.nomor_spm,
+                            tanggal_spm__year=getattr(meta.get("tanggal_spm") or paket.tanggal_spm, "year", None),
+                        ))
+                    link_paket_spm_source_document(
+                        paket,
+                        rows,
+                        user=request.user,
+                        parsed=parsed,
+                        document_status=decision.get("document_status"),
+                    )
+                    paket.status = PaketSPMUpload.Status.COMMITTED
+                    paket.save(update_fields=["status"])
+            except Exception as e:
+                messages.error(request, str(e))
+                return redirect("paket_spm:preview")
+
+            messages.success(request, "Dokumen berhasil dibaca. D_K telah diperbarui/dibuat.")
+
+        elif commit_choice == "update_existing":
+            try:
+                with transaction.atomic():
+                    rows = merge_followup_into_existing_dk(
+                        parsed,
+                        paket,
+                        user=request.user,
+                        document_status=decision.get("document_status"),
+                    )
+                    paket.status = PaketSPMUpload.Status.COMMITTED
+                    paket.save(update_fields=["status"])
+            except Exception as e:
+                messages.error(request, str(e))
+                return redirect("paket_spm:preview")
             request.session.pop("paket_spm_preview_id", None)
-            return redirect("paket_spm:list")
+            messages.success(request, "DRPP/KW berhasil memperbarui D_K existing.")
+            satker = clean_optional(rows[0].satker_code if rows else paket.satker_code)
+            nomor_spm = clean_optional(rows[0].nomor_spm if rows else paket.nomor_spm)
+            return redirect(f"{reverse('dk:transaction_list')}?satker={satker}&q={nomor_spm}")
+
+        request.session.pop("paket_spm_preview_id", None)
+        return redirect("paket_spm:list")
 
     decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
     preview_summary = build_preview_summary(parsed, decision, {"original_filename": paket.original_filename})

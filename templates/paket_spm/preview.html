@@ -117,26 +117,33 @@
   {% if spm_only %}
   {# SPM-only state: document is SPM parent, no DRPP/pages detected yet. Show clean summary. #}
   <section class="card app-card" style="margin-bottom: 24px;">
-    <div class="card-head">
-      <h3>SPM PARENT</h3>
-      <p class="muted">Dokumen SPM berhasil dibaca. DRPP dan kuitansi diunggah terpisah.</p>
-    </div>
-    <div class="table-wrap">
-      <table class="data-table">
-        <tbody>
-          <tr><td><strong>SPM Dokumen</strong></td><td>{{ spm_meta.nomor_spm_ocr|default:spm_meta.nomor_spm|default:"-" }}</td></tr>
-          <tr><td><strong>SPP / Matching D_K</strong></td><td>{{ spm_meta.nomor_spp|default:"-" }}</td></tr>
-          <tr><td><strong>Tanggal</strong></td><td>{{ spm_meta.tanggal_spm|date:"d M Y"|default:"-" }}</td></tr>
-          <tr><td><strong>Jenis</strong></td><td>{{ spm_meta.jenis_spm|default:"-" }}</td></tr>
-          <tr><td><strong>Satker</strong></td><td>{{ spm_meta.satker_app_name|default:spm_meta.satker_code|default:"-" }}</td></tr>
-          <tr><td><strong>Nilai Pembayaran</strong></td><td>{{ spm_meta.total_pembayaran|id_number|default:"-" }}</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div style="margin-top: 16px; padding: 12px; background: #f0f4f8; border-radius: 4px;">
-      <p><strong>SP2D pembanding:</strong> {% if decision.matched_sp2d %}Terhubung{% else %}Belum terhubung{% endif %}</p>
-      <p class="muted">SPM parent siap ditautkan. Unggah DRPP dan kuitansi terkait secara terpisah.</p>
-    </div>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="commit_choice" value="save_spm_parent">
+      <div class="card-head">
+        <h3>SPM PARENT</h3>
+        <p class="muted">Dokumen SPM berhasil dibaca. DRPP dan kuitansi diunggah terpisah.</p>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <tbody>
+            <tr><td><strong>SPM Dokumen</strong></td><td>{{ spm_meta.nomor_spm_ocr|default:spm_meta.nomor_spm|default:"-" }}</td></tr>
+            <tr><td><strong>SPP / Matching D_K</strong></td><td>{{ spm_meta.nomor_spp|default:"-" }}</td></tr>
+            <tr><td><strong>Tanggal</strong></td><td>{{ spm_meta.tanggal_spm|date:"d M Y"|default:"-" }}</td></tr>
+            <tr><td><strong>Jenis</strong></td><td>{{ spm_meta.jenis_spm|default:"-" }}</td></tr>
+            <tr><td><strong>Satker</strong></td><td>{{ spm_meta.satker_app_name|default:spm_meta.satker_code|default:"-" }}</td></tr>
+            <tr><td><strong>Nilai Pembayaran</strong></td><td>{{ spm_meta.total_pembayaran|id_number|default:"-" }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top: 16px; padding: 12px; background: #f0f4f8; border-radius: 4px;">
+        <p><strong>SP2D pembanding:</strong> {% if decision.matched_sp2d %}Terhubung{% else %}Belum terhubung{% endif %}</p>
+        <p class="muted">SPM parent siap disimpan dan ditautkan ke D_K. Unggah DRPP dan kuitansi terkait secara terpisah.</p>
+      </div>
+      <div style="margin-top: 16px;">
+        <button type="submit" class="btn primary">SIMPAN SPM PARENT</button>
+      </div>
+    </form>
   </section>
 
   {% endif %}
