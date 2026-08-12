@@ -7,6 +7,11 @@ Usage:
     python manage.py prepare_presentation_db --dry-run
     python manage.py prepare_presentation_db --execute
 
+ATOMIC EXECUTION:
+    All operational deletions are wrapped in a single database transaction.
+    If ANY deletion fails, ALL changes are rolled back.
+    Returns exit code 1 on failure.
+
 OPERATIONAL DATA (cleared):
 - TransactionDetail: transaction records
 - MonitoringSummary: budget/FA16 data
@@ -34,7 +39,8 @@ STRUCTURAL DATA (PRESERVED):
 - Group: permission groups
 """
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 
 
 class Command(BaseCommand):
@@ -139,19 +145,41 @@ class Command(BaseCommand):
 
         # Execute the clear
         self.stdout.write("\nClearing operational data...")
+        self.stdout.write("(All deletions are wrapped in a single atomic transaction)")
 
-        # Delete in dependency order (children before parents)
-        # Reverse the order so FK-referenced tables are cleared first
-        for app, model, label in reversed(operational_tables):
-            try:
-                from django.apps import apps
-                m = apps.get_model(app, model)
-                count = m.objects.count()
-                if count > 0:
-                    deleted, _ = m.objects.all().delete()
-                    self.stdout.write(self.style.SUCCESS("  Deleted {} {}.{} rows".format(deleted, app, model)))
-            except Exception as e:
-                self.stdout.write("  Error clearing {}.{}: {}".format(app, model, e))
+        deletion_summary = []
+
+        try:
+            with transaction.atomic():
+                # Delete in dependency order (children before parents)
+                # Reverse the order so FK-referenced tables are cleared first
+                for app, model, label in reversed(operational_tables):
+                    from django.apps import apps
+                    m = apps.get_model(app, model)
+                    count = m.objects.count()
+                    if count > 0:
+                        deleted, _ = m.objects.all().delete()
+                        deletion_summary.append((app, model, label, deleted))
+                        self.stdout.write(
+                            "  Deleted {} {}.{} rows".format(deleted, app, model)
+                        )
+
+                self.stdout.write(self.style.SUCCESS(
+                    "\nAll {} operational deletions committed atomically.".format(len(deletion_summary))
+                ))
+
+        except Exception as e:
+            error_type = type(e).__name__
+            self.stdout.write(
+                "\nATOMIC ROLLBACK: Deletion failed: {} - {}".format(error_type, e)
+            )
+            self.stdout.write(
+                "ALL changes have been rolled back. Database is unchanged."
+            )
+            self.stdout.write(
+                "Fix the issue and re-run with --execute."
+            )
+            raise CommandError("Atomic reset failed: {} - {}".format(error_type, e))
 
         # Verify counts after clearing
         self.stdout.write("\n" + "=" * 60)
@@ -181,6 +209,8 @@ class Command(BaseCommand):
                     self.stdout.write("  {}.{}: {} rows preserved".format(app, model, count))
                 except Exception:
                     pass
+            return  # Success
         else:
             self.stdout.write(self.style.ERROR("\nWARNING: {} operational rows remain".format(remaining_operational)))
+            raise CommandError("Some operational rows remain after reset.")
             self.stdout.write("Some tables may have circular FK references - manual cleanup needed.")
