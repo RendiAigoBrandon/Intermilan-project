@@ -50,6 +50,7 @@ from apps.core.parsers import (
     tesseract_image_to_data_with_fallback,
     tesseract_image_to_string_with_fallback,
 )
+from apps.core.models import ActiveParentSession, TransactionPackage
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
 from apps.documents.models import ChecklistStatus, DocumentDriveLink
@@ -2985,3 +2986,206 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(parsed["status"], "needs_manual_review")
         self.assertEqual(parsed["items"], [])
         self.assertTrue(any("OCR TSV sudah dicoba" in warning for warning in parsed["warnings"]))
+
+
+# =============================================================================
+# HTTP REGRESSION TEST: matched_transaction survives make_json_safe serialization
+# and the actual save_spm_parent POST produces the correct canonical identity.
+# =============================================================================
+class SPMMatchedTransactionSerializationRegressionTest(TestCase):
+    """
+    Regression test for the serialization bug where matched_transaction (a Django
+    model instance) was converted to str(id) by make_json_safe, losing the
+    validated TransactionDetail reference needed by save_spm_parent.
+
+    Real browser flow being tested:
+      1. Upload SPM-only document (OCR nomor_spm=00100A)
+      2. Preview: resolver finds existing D_K/SP2D (nomor_spm=00100T, satker=019937)
+      3. make_json_safe runs, converting matched_transaction Django model to str(id)
+      4. PaketSPMUpload.parsed_data is saved to DB with the string-ified data
+      5. User clicks "SIMPAN SPM PARENT" — a NEW HTTP POST reloads parsed from DB
+      6. FIX C restores matched_transaction from session and re-validates
+      7. Canonical TransactionPackage.nomor_spm must be 00100T (not 00100A)
+      8. ActiveParentSession.nomor_spm must be 00100T (not 00100A)
+
+    This test exercises make_json_safe + the actual save_spm_parent POST.
+    """
+
+    def setUp(self):
+        self.media_tmp = tempfile.TemporaryDirectory()
+        self.media_settings = override_settings(MEDIA_ROOT=self.media_tmp.name, MEDIA_URL="/media/")
+        self.media_settings.enable()
+        self.user = User.objects.create_user(username="mt_regression_test", password="password")
+        Profile.objects.filter(user=self.user).update(
+            role=Profile.Role.SATKER,
+            satker_code="1300",  # unit_code → resolved to 019937 by FIX A
+        )
+        DocumentDriveLink.objects.filter(
+            Q(catatan__icontains="source=Paket SPM") |
+            Q(jenis_dokumen__in=["PAKET_SPM_ZIP", "SPM"])
+        ).delete()
+
+    def tearDown(self):
+        DocumentDriveLink.objects.filter(
+            Q(catatan__icontains="source=Paket SPM") |
+            Q(jenis_dokumen__in=["PAKET_SPM_ZIP", "SPM"])
+        ).delete()
+        TransactionDetail.objects.filter(satker_code__in=["019937", "1300"]).delete()
+        ChecklistStatus.objects.all().delete()
+        PaketSPMUpload.objects.filter(uploaded_by=self.user).delete()
+        TransactionPackage.objects.filter(satker_code="019937", tahun=2026).delete()
+        ActiveParentSession.objects.filter(user=self.user).delete()
+        self.media_settings.disable()
+        self.media_tmp.cleanup()
+
+    def test_save_spm_parent_uses_matched_transaction_nomor_spm_after_serialization(self):
+        """
+        Parameterized: run once per existing D_K satker_code value.
+        Case A: D_K stored with unit_code "1300" (resolver queries by this).
+        Case B: D_K stored with canonical satker "019937" (production-normalized state).
+        Both must produce TransactionPackage + ActiveParentSession with 019937/2026/00100T
+        and Checklist SPM=ADA, without mutating the D_K row.
+        """
+        for dk_satker, doc_satker in (("1300", "1300"), ("019937", "019937")):
+            with self.subTest(dk_satker=dk_satker, doc_satker=doc_satker):
+                # Step 1: Create existing D_K with nomor_spm="00100T".
+                existing_dk = TransactionDetail.objects.create(
+                    satker_code=dk_satker,
+                    nomor_spm="00100T",
+                    tanggal_spm=datetime.date(2026, 1, 15),
+                    jenis_spm="GUP",
+                    akun="5111",
+                    bulan_sp2d=1,
+                    nilai_bruto=Decimal("500000"),
+                    nilai_netto=Decimal("500000"),
+                    status_detail=TransactionDetail.StatusDetail.DRAFT,
+                    created_by=self.user,
+                )
+
+                # Step 2: Create SPM-only paket (document nomor_spm="00100A", no DRPP/KW).
+                spm_only_parsed = make_json_safe({
+                    "ok": True,
+                    "parser_version": "paket_spm_v1",
+                    "files": [{"file_name": "SPM NOMOR 00100A.pdf", "type": "SPM"}],
+                    "spm": {
+                        "status": "parsed_text",
+                        "warnings": [],
+                        "metadata": {
+                            "nomor_spm": "00100A",
+                            "nomor_spp": "00100T",
+                            "satker_app_code": doc_satker,
+                            "tanggal_spm": "2026-01-15",
+                            "tahun": 2026,
+                            "jenis_spm": "GUP",
+                            "total_pembayaran": "500000",
+                        },
+                    },
+                    "drpps": [],
+                    "kw_items": [],
+                })
+
+                paket = PaketSPMUpload.objects.create(
+                    original_filename="SPM NOMOR 00100A.pdf",
+                    status=PaketSPMUpload.Status.PREVIEW,
+                    uploaded_by=self.user,
+                    nomor_spm="00100A",
+                    satker_code=doc_satker,
+                    tahun=2026,
+                    tanggal_spm=datetime.date(2026, 1, 15),
+                    parsed_data=spm_only_parsed,
+                )
+
+                # Step 3: Log in and set up session
+                self.client.login(username="mt_regression_test", password="password")
+                session = self.client.session
+                session["paket_spm_preview_id"] = paket.id
+                session.save()
+
+                # Step 4: POST action=recalculate to trigger the resolver.
+                with patch("apps.paket_spm.views.probe_package_identity", return_value={"needs_review": False}):
+                    recalc_response = self.client.post(
+                        reverse("paket_spm:preview"),
+                        {
+                            "action": "recalculate",
+                            "nomor_spm": "00100A",
+                            "satker_code": doc_satker,
+                            "tahun": "2026",
+                        },
+                    )
+
+                paket.refresh_from_db()
+                self.assertIn(
+                    paket.status,
+                    [PaketSPMUpload.Status.PREVIEW, PaketSPMUpload.Status.COMMITTED],
+                )
+
+                # Step 5: POST commit_choice=save_spm_parent
+                with patch("apps.documents.services.google_drive.archive_file_link", return_value=None):
+                    save_response = self.client.post(
+                        reverse("paket_spm:preview"),
+                        {
+                            "commit_choice": "save_spm_parent",
+                            "nomor_spm": "00100A",
+                            "satker_code": doc_satker,
+                            "tahun": "2026",
+                        },
+                    )
+
+                self.assertIn(
+                    save_response.status_code,
+                    [302, 303],
+                    f"save_spm_parent should redirect for dk_satker={dk_satker}. "
+                    f"Got {save_response.status_code}.",
+                )
+
+                # ---- Assertions ----
+                # TransactionPackage = 019937/2026/00100T
+                canonical_pkg = TransactionPackage.objects.filter(
+                    satker_code="019937", tahun=2026, nomor_spm="00100T"
+                ).first()
+                self.assertIsNotNone(
+                    canonical_pkg,
+                    f"TransactionPackage 019937/2026/00100T must exist (dk_satker={dk_satker}). "
+                    f"Actual: {list(TransactionPackage.objects.filter(tahun=2026).values('satker_code', 'tahun', 'nomor_spm'))}",
+                )
+
+                # No TransactionPackage with document's OCR nomor_spm
+                self.assertFalse(
+                    TransactionPackage.objects.filter(
+                        satker_code="019937", tahun=2026, nomor_spm="00100A"
+                    ).exists(),
+                    f"No package should exist with document nomor_spm=00100A (dk_satker={dk_satker})",
+                )
+
+                # ActiveParentSession = 019937/2026/00100T
+                active = ActiveParentSession.objects.filter(user=self.user).first()
+                self.assertIsNotNone(active, f"ActiveParentSession must exist (dk_satker={dk_satker})")
+                self.assertEqual(active.nomor_spm, "00100T",
+                    f"ActiveParentSession.nomor_spm=00100T (dk_satker={dk_satker})")
+                self.assertEqual(active.satker_code, "019937",
+                    f"ActiveParentSession.satker_code=019937 (dk_satker={dk_satker})")
+                self.assertEqual(active.tahun, 2026)
+
+                # Checklist SPM = ADA on the matched D_K
+                checklist = ChecklistStatus.objects.filter(
+                    transaction_detail=existing_dk, nama_dokumen="SPM"
+                ).first()
+                self.assertIsNotNone(checklist,
+                    f"Checklist SPM must exist on matched D_K (dk_satker={dk_satker})")
+                self.assertEqual(checklist.status, ChecklistStatus.Status.ADA,
+                    f"Checklist SPM must be ADA (dk_satker={dk_satker})")
+
+                # D_K row must NOT be mutated
+                existing_dk.refresh_from_db()
+                self.assertEqual(
+                    existing_dk.satker_code, dk_satker,
+                    f"TransactionDetail.satker_code must remain {dk_satker}, not mutated "
+                    f"(dk_satker={dk_satker})",
+                )
+
+                # Clean up before next subTest iteration
+                TransactionPackage.objects.filter(satker_code="019937", tahun=2026).delete()
+                ActiveParentSession.objects.filter(user=self.user).delete()
+                ChecklistStatus.objects.all().delete()
+                paket.delete()
+                existing_dk.delete()

@@ -49,7 +49,7 @@ from apps.core.services import (
 from apps.documents.services.checklist import mark_checklist_present
 from apps.dk.services import refresh_transaction_document_status
 from apps.dk.models import TransactionDetail
-from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, resolve_satker_from_existing_dk, short_document_number, upsert_drpp_group
+from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, normalize_key, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, resolve_satker_from_existing_dk, short_document_number, upsert_drpp_group
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMUpload
@@ -388,6 +388,7 @@ def paket_spm_list(request):
 @login_required
 def paket_spm_preview(request):
     paket_id = request.session.get("paket_spm_preview_id")
+    commit_choice = request.POST.get("commit_choice")
     if not paket_id:
         messages.error(request, "Sesi preview Upload DRPP tidak ditemukan. Silakan unggah ulang atau buka dari daftar draft.")
         return redirect("paket_spm:list")
@@ -792,11 +793,6 @@ def paket_spm_preview(request):
             paket.parsed_data = safe_parsed
             paket.save()
 
-            # Compute decision just to ensure it works, though not strictly needed since we redirect
-            decision = build_package_decision(parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id)
-            if keterangan and "notes" in decision:
-                decision["notes"].insert(0, keterangan)
-
             if action == "recalculate":
                 messages.success(request, "Data diupdate, matching dihitung ulang.")
                 return redirect("paket_spm:preview")
@@ -966,8 +962,8 @@ def paket_spm_preview(request):
             try:
                 spm_meta = (parsed.get("spm") or {}).get("metadata") or {}
 
-                # 1. Resolve canonical identity
-                satker_code = (
+                # 1. Resolve satker and tahun
+                raw_satker = (
                     spm_meta.get("satker_app_code")
                     or spm_meta.get("satker_code")
                     or paket.satker_code
@@ -975,51 +971,66 @@ def paket_spm_preview(request):
                 ).strip()
                 _tanggal_spm = spm_meta.get("tanggal_spm")
                 tahun = (
-                    getattr(_tanggal_spm, "year", None)  # works if it's a date/datetime object
-                    or (int(_tanggal_spm[:4]) if isinstance(_tanggal_spm, str) and len(_tanggal_spm) >= 4 else None)  # parse from ISO string "2026-01-15"
+                    getattr(_tanggal_spm, "year", None)
+                    or (int(_tanggal_spm[:4]) if isinstance(_tanggal_spm, str) and len(_tanggal_spm) >= 4 else None)
                     or spm_meta.get("tahun")
                     or paket.tahun
                     or None
                 )
-                nomor_spm = (spm_meta.get("nomor_spm") or "").strip()
+
+                # ================================================================
+                # FIX C: Call build_package_decision to get matched_transaction.
+                # build_package_decision does NOT mutate parsed["matched_transaction"],
+                # so we must call it here to extract matched_transaction from the
+                # decision dict.  This restores the validated D_K/SP2D reference
+                # after make_json_safe serialization (which converted the Django model
+                # instance to str(id)).
+                #
+                # The matched D_K may have a unit_code satker (e.g. "1300") while
+                # the canonical satker is the official 6-digit code (e.g. "019937").
+                # Use the matched D_K's satker for D_K queries, and the canonical
+                # satker for TransactionPackage / ActiveParentSession.
+                # ================================================================
+                _decision = build_package_decision(
+                    parsed, paket.original_filename, forced_sp2d=forced_sp2d, current_paket_id=paket.id
+                )
+                # Extract matched_transaction and metadata from decision
+                _matched_tx = _decision.get("matched_transaction")  # may be a dict
+                _matched_meta = _decision.get("meta", {})
+                _matched_nomor = normalize_key(_matched_meta.get("nomor_spm_matching") or "")
+
+                # 2. Canonical satker: use official 6-digit code for TransactionPackage/ActiveParentSession
+                canonical_satker = get_official_satker_code(raw_satker)
+                if canonical_satker:
+                    satker_code = canonical_satker
+                else:
+                    satker_code = raw_satker  # already 6-digit or unknown
+
+                # 3. Canonical nomor_spm: prefer matched D_K number over document number
+                doc_nomor = (spm_meta.get("nomor_spm") or "").strip()
+                nomor_spm = _matched_nomor if _matched_nomor else doc_nomor
 
                 if not satker_code or not tahun or not nomor_spm:
                     messages.error(request, "Satker, tahun, atau nomor SPM belum lengkap untuk disimpan sebagai parent.")
                     return redirect("paket_spm:preview")
 
-                # ================================================================
-                # FIX A: Resolve 4-digit unit_code to 6-digit official satker
-                # BEFORE: satker_code could be "1300" (unit_code)
-                # AFTER:  satker_code is always "019937" (official satker_code)
-                # ================================================================
-                canonical_satker = get_official_satker_code(satker_code)
-                if canonical_satker:
-                    satker_code = canonical_satker
-                # else: keep as-is (already 6-digit or unknown — let the system handle it)
+                # Retrieve matched D_K by PK from the decision dict, then validate against canonical identity.
+                # PK-based retrieval guarantees we get the exact matched row.  Canonicalize both sides
+                # using get_official_satker_code() so the comparison is safe whether the D_K row stores
+                # unit_code ("1300") or canonical satker ("019937").  Do NOT mutate the D_K row.
+                _mt_pk = _matched_tx.get("id") if isinstance(_matched_tx, dict) else None
+                if _mt_pk:
+                    try:
+                        _dk = TransactionDetail.objects.get(id=_mt_pk)
+                        # Resolve both sides to canonical satker for comparison
+                        _dk_canonical = get_official_satker_code(normalize_key(_dk.satker_code or "")) or normalize_key(_dk.satker_code or "")
+                        _parent_canonical = get_official_satker_code(normalize_key(satker_code)) or normalize_key(satker_code)
+                        _year_match = getattr(_dk.tanggal_spm, "year", None) == int(tahun) or _dk.tanggal_spm is None
+                        if _dk_canonical == _parent_canonical and _year_match:
+                            existing_dk_rows = [_dk]
+                    except TransactionDetail.DoesNotExist:
+                        pass
 
-                # ================================================================
-                # FIX B: Capture matching D_K/SP2D number for D_K linkage
-                # SPM document number (00100A) and D_K financial number (00100T) can differ.
-                # The resolver already computes this — capture it for D_K lookup below.
-                # ================================================================
-                nomor_spm_matching = (spm_meta.get("nomor_spm_matching") or "").strip()
-
-                # ================================================================
-                # FIX B-extended: When nomor_spm_matching is set from an explicit D_K/SP2D match
-                # and differs from the document's nomor_spm, the canonical SPM identifier must use
-                # the validated matching number.  This handles the case where matched_transaction
-                # was NOT set (document SPM not found in D_K) but SP2D provided the matching
-                # number.  When matched_transaction IS set, build_package_decision already updated
-                # nomer_spm via the warning block, so this is a no-op in that path.
-                # ================================================================
-                if nomor_spm_matching and nomor_spm_matching != nomor_spm:
-                    spm_meta["nomor_spm"] = nomor_spm_matching
-                    # Keep parsed_data consistent too
-                    if parsed.get("spm") and "metadata" in parsed["spm"]:
-                        parsed["spm"]["metadata"]["nomor_spm"] = nomor_spm_matching
-                    nomor_spm = nomor_spm_matching  # use matching number for this save
-
-                # 2. Find or create canonical TransactionPackage
                 package, package_created = find_or_create_package(
                     satker_code=satker_code,
                     tahun=int(tahun),
@@ -1040,31 +1051,16 @@ def paket_spm_preview(request):
 
                 # 4. Find and enrich existing TransactionDetail rows for this package
                 #
-                # FIX B (continued): Try document nomor_spm first (00100A), then fall back to
-                # matching D_K/SP2D number (00100T) — these differ when the document number does not
-                # match the D_K financial reference number.  Preserve the canonical package identity
-                # (satker_code + tahun + nomor_spm = 00100A) for TransactionPackage; link the SPM
-                # source document to whichever D_K row actually exists in the ledger.
+                # Try to find D_K rows using the matched TransactionDetail's pk.
                 existing_dk_rows = []
-                if nomor_spm:
-                    existing_dk_rows = list(
-                        TransactionDetail.objects.filter(
-                            satker_code=satker_code,
-                            nomor_spm__iexact=nomor_spm,
-                        ).filter(
-                            Q(tanggal_spm__year=int(tahun)) | Q(tanggal_spm__isnull=True)
-                        ).order_by("id")
-                    )
-                if not existing_dk_rows and nomor_spm_matching and nomor_spm_matching != nomor_spm:
-                    # Document number found nothing; try the D_K/SP2D financial reference number
-                    existing_dk_rows = list(
-                        TransactionDetail.objects.filter(
-                            satker_code=satker_code,
-                            nomor_spm__iexact=nomor_spm_matching,
-                        ).filter(
-                            Q(tanggal_spm__year=int(tahun)) | Q(tanggal_spm__isnull=True)
-                        ).order_by("id")
-                    )
+                _mt_pk = _matched_tx.get("id") if isinstance(_matched_tx, dict) else None
+                if _mt_pk:
+                    try:
+                        existing_dk_rows = list(
+                            TransactionDetail.objects.filter(id=_mt_pk).order_by("id")
+                        )
+                    except Exception:
+                        pass
                 if existing_dk_rows:
                     # Link SPM to existing D_K rows
                     for dk_row in existing_dk_rows:
