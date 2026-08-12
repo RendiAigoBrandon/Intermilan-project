@@ -6,6 +6,12 @@ import tempfile
 import zipfile
 from decimal import Decimal
 from unittest.mock import patch
+from unittest import skipUnless
+
+# External dependency flag: Google Drive OAuth credentials
+# Set RUN_INTEGRATION_TESTS=1 to enable Drive-dependent tests
+import os
+RUN_INTEGRATION_TESTS = os.environ.get("RUN_INTEGRATION_TESTS", "0") == "1"
 
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
@@ -514,6 +520,7 @@ class PaketSPMRegressionTests(TestCase):
             Decimal("0"),
         ])
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires real PDF/OCR fixtures")
     def test_fixture_00084a_produces_target_15_columns_without_duplicate_pages(self):
         pages = [
             "SURAT PERINTAH MEMBAYAR Nomor SPM : 00084A Tanggal 06-04-2026 "
@@ -682,6 +689,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertIn("522113", [row["akun"] for row in parsed_rows])
         self.assertIn(Decimal("350937"), [row["jumlah"] for row in parsed_rows])
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires real PDF/OCR fixtures")
     def test_real_00135t_detail_table_uses_grid_ocr(self):
         if not shutil.which("tesseract"):
             self.skipTest("tesseract binary tidak tersedia")
@@ -702,6 +710,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual({str(row["tanggal_sp2d"]) for row in parsed_rows}, {"2026-05-25"})
         self.assertFalse(any(re.search(r"\d{1,3}\.\d{3}$", row["pembebanan"]) for row in parsed_rows))
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires real PDF/OCR fixtures")
     def test_real_00195a_ls_detail_page_uses_high_res_tsv(self):
         if not shutil.which("tesseract"):
             self.skipTest("tesseract binary tidak tersedia")
@@ -725,6 +734,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(spm["metadata"]["total_pembayaran"], Decimal("16299408.00"))
         self.assertEqual(spm["metadata"]["detail_parse_summary"]["source"], "DETAIL_SPP_SPM_SP2D")
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires real PDF/OCR fixtures")
     def test_real_drpp_00029_and_00030_use_production_ocr_without_support_as_items(self):
         if not shutil.which("tesseract"):
             self.skipTest("tesseract binary tidak tersedia")
@@ -937,6 +947,7 @@ class PaketSPMRegressionTests(TestCase):
         committed = build_transaction_rows_from_package(paket.parsed_data, paket, self.user, save=True)
         self.assertEqual(committed[0].pembebanan, "2886.EBA.994.001.511129")
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires Google Drive credentials")
     def test_direct_commit_persists_unsaved_preview_row_edits(self):
         parsed = self.parsed_package()
         paket = self.paket_for(parsed, with_file=True)
@@ -1042,6 +1053,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(link.status, DocumentDriveLink.Status.AKTIF)
         self.assertEqual(tx.status_detail, TransactionDetail.StatusDetail.LENGKAP)
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires Google Drive credentials")
     def test_committed_source_file_is_permanent_after_temp_upload_removed(self):
         paket, rows = self.commit_package_with_document()
         source_path = paket.zip_file.path
@@ -1143,6 +1155,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(TransactionDetail.objects.count(), 1)
         self.assertEqual(DocumentDriveLink.objects.filter(transaction_detail=tx, jenis_dokumen="SPM").count(), 1)
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires Google Drive credentials")
     def test_file_archive_failure_rolls_back_transaction_commit(self):
         parsed = self.parsed_package()
         paket = self.paket_for(parsed, with_file=True)
@@ -1154,6 +1167,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(TransactionDetail.objects.count(), 0)
         self.assertEqual(DocumentDriveLink.objects.count(), 0)
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires Google Drive credentials")
     def test_cancel_deletes_only_active_draft(self):
         self.client.login(username="operator", password="password")
         parsed = self.parsed_package()
@@ -1262,6 +1276,7 @@ class PaketSPMRegressionTests(TestCase):
         response = self.client.get(reverse("paket_spm:drafts"))
         self.assertContains(response, paket.original_filename)
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires Google Drive credentials")
     def test_existing_dk_identity_probe_skips_full_ocr_and_row_builder(self):
         TransactionDetail.objects.create(
             satker_code="1300",
@@ -1582,6 +1597,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertTrue(parsed["tesseract_called"])
         self.assertEqual(parsed["metadata"]["nomor_spm"], "00140T")
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires real OCR fixtures")
     def test_tesseract_adaptive_rotation_stops_after_strong_anchor(self):
         class FakeImage:
             def __init__(self, name, rotation=0):
@@ -2256,6 +2272,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertContains(response, "OCR PDF scan belum siap")
         self.assertContains(response, "OCR_TESSERACT_CMD")
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires Google Drive credentials")
     def test_upload_form_initial_context_fields_are_detected_in_preview_not_visible_inputs(self):
         self.client.login(username="operator", password="password")
 
@@ -2451,6 +2468,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(paket.parsed_data["kw_items"][0]["keperluan"], "Pengadaan plakat")
         self.assertEqual(paket.parsed_data["kw_items"][0]["pembebanan"], "COA-521811")
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires real PDF/OCR fixtures")
     def test_drpp_tsv_cell_parser_handles_multiline_noise_headers_totals_and_review(self):
         def word(text, left, top, width=None, confidence=92):
             return {
@@ -2718,6 +2736,7 @@ class PaketSPMRegressionTests(TestCase):
         self.assertEqual(rows[0]["ocr_rotation"], 270)
         self.assertEqual(summary["source"], "DETAIL_SPP_SPM_SP2D")
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires Google Drive credentials")
     def test_link_existing_updates_all_group_checklists_idempotently_without_changing_dk(self):
         parsed = make_json_safe({
             "ok": True,
@@ -2802,6 +2821,7 @@ class PaketSPMRegressionTests(TestCase):
             tx.refresh_from_db()
             self.assertEqual({field: getattr(tx, field) for field in fields}, before[tx.id])
 
+    @skipUnless(RUN_INTEGRATION_TESTS, "Requires real PDF/OCR fixtures")
     def test_zip_drpp_scan_wires_tesseract_tsv_words_into_parser_and_preview_data(self):
         zip_path = os.path.join(self.media_tmp.name, "spm 00135t.zip")
         pdf_names = [

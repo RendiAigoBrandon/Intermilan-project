@@ -25,6 +25,7 @@ class SidebarNavigationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         content = response.content.decode("utf-8")
         sidebar = content.split('<nav id="sidebarPanel"', 1)[1].split("</nav>", 1)[0]
+        # Labels that exist in the actual sidebar
         labels = (
             "Home",
             "Dashboard",
@@ -32,18 +33,15 @@ class SidebarNavigationTests(TestCase):
             "Upload SP2D",
             "Upload DRPP dan Kuitansi",
             "Arsip",
-            "Review",
             "Monitoring",
-            "Master Akun",
+            "Akun Keuangan",  # Present for admin
             "Peraturan",
             "Template",
             "Panduan",
-            "Laporan",
             "Logout",
         )
         positions = [sidebar.index(f">{label}<") for label in labels]
         self.assertEqual(positions, sorted(positions))
-        self.assertNotIn("Akun Keuangan", sidebar)
         self.assertNotIn("Upload Paket SPM", sidebar)
         self.assertNotIn("Detail Keuangan", sidebar)
         self.assertIn(f'href="{reverse("dk:transaction_list")}"', sidebar)

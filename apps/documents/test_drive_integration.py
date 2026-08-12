@@ -15,6 +15,7 @@ Test scenarios untuk Central Archive:
 import json
 import os
 import tempfile
+import uuid
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -374,17 +375,19 @@ class TestCentralArchiveArchitecture(TestCase):
                 os.unlink(temp_path)
 
     def test_central_oauth_check(self):
-        """Test central OAuth status check."""
+        """Test central OAuth status check when token doesn't exist."""
         with override_settings(GOOGLE_DRIVE_ENABLED="true", GOOGLE_DRIVE_UPLOAD_MODE="oauth"):
             import importlib
             import apps.documents.services.google_drive as gd_module
             importlib.reload(gd_module)
 
-            # Test without token
-            status = gd_module.check_central_oauth_status()
-            self.assertFalse(status["is_authorized"])
-            self.assertEqual(status["mode"], "oauth")
-            self.assertIn("authorize", status["error"].lower())
+            # Patch _get_central_oauth_credentials to raise FileNotFoundError
+            with patch.object(gd_module, "_get_central_oauth_credentials", side_effect=FileNotFoundError("Token not found")):
+                status = gd_module.check_central_oauth_status()
+                # No token exists - should return unauthorized
+                self.assertFalse(status["is_authorized"])
+                self.assertEqual(status["mode"], "oauth")
+                self.assertIn("authorize", status["error"].lower())
 
 
 class TestOAuthViewsPermissions(TestCase):

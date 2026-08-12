@@ -178,12 +178,14 @@ class PackageIdentityProbeTests(TestCase):
         self.assertEqual(parsed["spm"]["metadata"]["total_pembayaran"], Decimal("500000.00"))
 
     def test_full_parser_reuses_identity_ocr_result(self):
+        # Must have >= 80 chars to pass has_usable_extracted check (OCR_REUSE_MIN_TEXT_LENGTH)
         extracted = {
             "method": "tesseract",
             "page_count": 1,
+            "status": "parsed_text",
             "page_details": [{
                 "page_number": 1,
-                "text": "SURAT PERINTAH MEMBAYAR Nomor SPM 00777T",
+                "text": "SURAT PERINTAH MEMBAYAR Nomor SPM 00777T Tanggal 30 Juni 2026 Total Pembayaran 500.000",
                 "confidence": 90,
             }],
         }

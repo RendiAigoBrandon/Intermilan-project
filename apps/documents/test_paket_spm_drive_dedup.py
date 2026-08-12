@@ -265,7 +265,8 @@ class TestPaketSPMArchiveDedupIntegration(TestCase):
                     # Central OAuth called
                     mock_upload.assert_called_once()
                     self.assertEqual(result["status"], "uploaded")
-                    self.assertEqual(result["upload_mode"], "oauth")
+                    # Note: archive_file_link doesn't return upload_mode, it returns processed result
+                    self.assertEqual(result["web_view_link"], "https://drive.google.com/file/d/central_file_id/view")
 
             central_path.unlink(missing_ok=True)
 
