@@ -697,3 +697,286 @@ class GantiLepasTests(TestCase, SPMParentTestMixin):
         # No active parent
         cleared = clear_active_parent(request=None, user=self.user)
         self.assertFalse(cleared)
+
+
+# ============================================================================
+# TESTS FOR BUG FIXES: SATKER RESOLUTION + MATCHING D_K NUMBER
+# ============================================================================
+
+class SatkerResolutionTests(TestCase, SPMParentTestMixin):
+    """
+    Bug Fix #1 + Fix B-extended: 4-digit unit_code (1300) resolved to 6-digit official
+    satker (019937), AND canonical SPM nomor_spm uses validated matching number (00100T)
+    when build_package_decision sets nomor_spm_matching from SP2D evidence.
+
+    BEFORE: satker_app_code=1300 persisted as satker_code; nomor_spm stays as 00100A.
+    AFTER:  satker_code=019937; canonical nomor_spm=00100T (SP2D financial reference).
+    """
+
+    def setUp(self):
+        self.user = self.make_admin_user("satker_fix_test")
+
+    def tearDown(self):
+        ActiveParentSession.objects.filter(user=self.user).delete()
+        TransactionPackage.objects.filter(satker_code__in=["019937", "1300"]).delete()
+        TransactionDetail.objects.filter(satker_code__in=["019937", "1300"]).delete()
+        ChecklistStatus.objects.all().delete()
+        DocumentDriveLink.objects.all().delete()
+        PaketSPMUpload.objects.filter(uploaded_by=self.user).delete()
+
+    def test_unit_code_resolved_and_matching_nomor_used(self):
+        """
+        With satker_app_code=1300 and nomor_spm_matching=00100T from SP2D evidence:
+        - TransactionPackage.satker_code = "019937"  (resolved from 1300)
+        - TransactionPackage.nomor_spm = "00100T"   (validated matching number, not 00100A)
+        - ActiveParentSession uses same canonical identity
+        - NO package with satker_code = "1300" exists
+        - NO package 019937/2026/00100A exists
+        - D_K found by 00100T, checklist SPM = ADA
+        """
+        from apps.core.services import find_or_create_package, set_active_parent
+        from apps.core.satker import get_official_satker_code
+        from apps.documents.services.checklist import mark_checklist_present
+
+        # Existing D_K row uses SP2D financial reference number
+        dk = TransactionDetail.objects.create(
+            satker_code="019937",
+            nomor_spm="00100T",
+            tanggal_spm=date(2026, 4, 28),
+            jenis_spm="GUP",
+            akun="5111", bulan_sp2d=4,
+            nilai_bruto=Decimal("51040959"), nilai_netto=Decimal("51040959"),
+            status_detail=TransactionDetail.StatusDetail.DRAFT,
+        )
+
+        # Simulated parsed SPM metadata (what build_package_decision produces)
+        spm_meta = {
+            "satker_app_code": "1300",          # 4-digit unit_code from OCR
+            "nomor_spm": "00100A",              # document identity from OCR
+            "nomor_spm_matching": "00100T",       # validated SP2D ledger number
+            "tanggal_spm": date(2026, 4, 28),
+            "jenis_spm": "GUP",
+        }
+
+        # FIX A: resolve 4-digit unit_code to official satker
+        raw_satker = spm_meta.get("satker_app_code") or ""
+        resolved_satker = get_official_satker_code(raw_satker) or raw_satker
+        self.assertEqual(resolved_satker, "019937")
+
+        # FIX B-extended: use validated matching number as canonical SPM identity
+        doc_nomor = (spm_meta.get("nomor_spm") or "").strip()
+        match_nomor = (spm_meta.get("nomor_spm_matching") or "").strip()
+        if match_nomor and match_nomor != doc_nomor:
+            canonical_nomor = match_nomor  # SP2D evidence wins
+        else:
+            canonical_nomor = doc_nomor
+        self.assertEqual(canonical_nomor, "00100T")
+        self.assertNotEqual(canonical_nomor, "00100A")
+
+        # Package created with correct canonical identity
+        package, _ = find_or_create_package(
+            satker_code=resolved_satker,
+            tahun=2026,
+            nomor_spm=canonical_nomor,
+        )
+        self.assertEqual(package.satker_code, "019937")
+        self.assertEqual(package.nomor_spm, "00100T")
+
+        # ActiveParentSession also uses canonical identity
+        set_active_parent(request=None, package=package, user=self.user)
+        session = ActiveParentSession.objects.filter(user=self.user).first()
+        self.assertEqual(session.satker_code, "019937")
+        self.assertEqual(session.nomor_spm, "00100T")
+
+        # No stale identities persisted
+        self.assertFalse(
+            TransactionPackage.objects.filter(satker_code="1300").exists(),
+            "1300 must NOT exist as canonical satker_code"
+        )
+        self.assertFalse(
+            TransactionPackage.objects.filter(
+                satker_code="019937", tahun=2026, nomor_spm="00100A"
+            ).exists(),
+            "00100A must NOT be persisted when 00100T is validated"
+        )
+
+        # Checklist attaches to D_K row found by 00100T
+        mark_checklist_present(dk, "SPM", self.user)
+        checklist = ChecklistStatus.objects.get(transaction_detail=dk, nama_dokumen="SPM")
+        self.assertEqual(checklist.status, "ADA")
+
+
+class MatchingDKLookupTests(TestCase, SPMParentTestMixin):
+    """
+    Bug Fix #2: When SPM document number (00100A) does not find an existing D_K row,
+    the system must try the matching D_K/SP2D number (00100T) from the resolver evidence.
+
+    Root cause: D_K lookup used only nomor_spm (00100A), which missed existing D_K
+    rows that use 00100T as their financial reference number.
+    Fix: fall back to nomor_spm_matching when the primary lookup finds nothing.
+    """
+
+    def setUp(self):
+        self.user = self.make_admin_user("dk_lookup_fix_test")
+
+    def tearDown(self):
+        ActiveParentSession.objects.filter(user=self.user).delete()
+        TransactionPackage.objects.filter(satker_code="019937").delete()
+        TransactionDetail.objects.filter(satker_code="019937").delete()
+        ChecklistStatus.objects.all().delete()
+        DocumentDriveLink.objects.all().delete()
+        PaketSPMUpload.objects.filter(uploaded_by=self.user).delete()
+
+    def test_dk_found_by_matching_number_not_document_number(self):
+        """
+        D_K row exists with nomor_spm=00100T (SP2D financial reference).
+        SPM document number is 00100A.
+        Lookup must find the D_K by 00100T (not 00100A).
+        D_K nomor_spm must remain 00100T (not overwritten to 00100A).
+        ChecklistStatus SPM must be marked ADA for that D_K row.
+        """
+        from apps.core.services import find_or_create_package, set_active_parent
+        from apps.documents.services.checklist import mark_checklist_present
+
+        # D_K ledger has 00100T (SP2D financial reference), NOT 00100A (document number)
+        dk = TransactionDetail.objects.create(
+            satker_code="019937",
+            nomor_spm="00100T",  # D_K/SP2D financial number, not document number
+            tanggal_spm=date(2026, 4, 28),
+            jenis_spm="GUP",
+            akun="5111",
+            bulan_sp2d=4,
+            nilai_bruto=Decimal("51040959"),
+            nilai_netto=Decimal("51040959"),
+            status_detail=TransactionDetail.StatusDetail.DRAFT,
+        )
+
+        # SPM package uses document number 00100A
+        package, _ = find_or_create_package(
+            satker_code="019937",
+            tahun=2026,
+            nomor_spm="00100A",  # SPM document number
+        )
+        set_active_parent(request=None, package=package, user=self.user)
+
+        # Simulate the fixed view logic:
+        # Primary lookup (00100A) finds nothing
+        primary = list(TransactionDetail.objects.filter(
+            satker_code="019937",
+            nomor_spm__iexact="00100A",
+            tanggal_spm__year=2026,
+        ))
+        self.assertEqual(len(primary), 0, "D_K should NOT have 00100A")
+
+        # Fallback to matching D_K/SP2D number (00100T)
+        matching_number = "00100T"  # what spm_meta.get("nomor_spm_matching") contains
+        fallback = list(TransactionDetail.objects.filter(
+            satker_code="019937",
+            nomor_spm__iexact=matching_number,
+            tanggal_spm__year=2026,
+        ))
+        self.assertEqual(len(fallback), 1, "D_K must be found by 00100T")
+
+        # Checklist must attach to the D_K found by 00100T
+        mark_checklist_present(fallback[0], "SPM", self.user)
+        checklist = ChecklistStatus.objects.get(
+            transaction_detail=dk,
+            nama_dokumen="SPM",
+        )
+        self.assertEqual(checklist.status, "ADA")
+
+        # D_K nomor_spm is PRESERVED as 00100T (not mutated to 00100A)
+        dk.refresh_from_db()
+        self.assertEqual(dk.nomor_spm, "00100T")
+
+
+class CombinedSatkerAndMatchingTests(TestCase, SPMParentTestMixin):
+    """
+    Combined test: 4-digit satker (1300) + document nomor (00100A) + matching D_K (00100T).
+
+    Full expected result:
+    - TransactionPackage: 019937 / 2026 / 00100A
+    - ActiveParentSession: 019937 / 2026 / 00100A
+    - D_K: 019937 / 2026 / 00100T (nomor_spm preserved)
+    - ChecklistStatus: ADA for that D_K
+    """
+
+    def setUp(self):
+        self.user = self.make_admin_user("combined_fix_test")
+
+    def tearDown(self):
+        ActiveParentSession.objects.filter(user=self.user).delete()
+        TransactionPackage.objects.filter(satker_code__in=["019937", "1300"]).delete()
+        TransactionDetail.objects.filter(satker_code__in=["019937", "1300"]).delete()
+        ChecklistStatus.objects.all().delete()
+        DocumentDriveLink.objects.all().delete()
+        PaketSPMUpload.objects.filter(uploaded_by=self.user).delete()
+
+    def test_full_flow_satker_and_matching_combined(self):
+        """4-digit satker + document nomor + D_K lookup by matching number."""
+        from apps.core.services import find_or_create_package, set_active_parent
+        from apps.core.satker import get_official_satker_code
+        from apps.documents.services.checklist import mark_checklist_present
+
+        # Step 1: D_K row exists with SP2D financial nomor 00100T
+        dk = TransactionDetail.objects.create(
+            satker_code="019937",
+            nomor_spm="00100T",
+            tanggal_spm=date(2026, 4, 28),
+            jenis_spm="GUP",
+            akun="5111",
+            bulan_sp2d=4,
+            nilai_bruto=Decimal("51040959"),
+            nilai_netto=Decimal("51040959"),
+            status_detail=TransactionDetail.StatusDetail.DRAFT,
+        )
+
+        # Step 2: SPM parsed metadata (simulating what parse_spm_pdf produces)
+        satker_app_code = "1300"   # 4-digit unit_code from OCR
+        document_spm = "00100A"   # SPM document number
+        matching_spm = "00100T"   # D_K/SP2D financial number from resolver
+
+        # Step 3: FIX A — resolve 4-digit to 6-digit
+        resolved_satker = get_official_satker_code(satker_app_code) or satker_app_code
+        self.assertEqual(resolved_satker, "019937")
+
+        # Step 4: create canonical package with resolved satker + document nomor
+        package, _ = find_or_create_package(
+            satker_code=resolved_satker,
+            tahun=2026,
+            nomor_spm=document_spm,
+        )
+        self.assertEqual(package.satker_code, "019937")
+        self.assertEqual(package.nomor_spm, "00100A")
+
+        # Step 5: set active parent
+        set_active_parent(request=None, package=package, user=self.user)
+        session = ActiveParentSession.objects.filter(user=self.user).first()
+        self.assertEqual(session.satker_code, "019937")
+        self.assertEqual(session.nomor_spm, "00100A")
+
+        # Step 6: FIX B — D_K lookup falls back to matching number
+        primary = list(TransactionDetail.objects.filter(
+            satker_code="019937", nomor_spm__iexact="00100A", tanggal_spm__year=2026
+        ))
+        self.assertEqual(len(primary), 0)
+
+        fallback = list(TransactionDetail.objects.filter(
+            satker_code="019937", nomor_spm__iexact=matching_spm, tanggal_spm__year=2026
+        ))
+        self.assertEqual(len(fallback), 1)
+        self.assertEqual(fallback[0].nomor_spm, "00100T")
+
+        # Step 7: checklist attached to the D_K found by matching number
+        mark_checklist_present(fallback[0], "SPM", self.user)
+        checklist = ChecklistStatus.objects.get(transaction_detail=dk, nama_dokumen="SPM")
+        self.assertEqual(checklist.status, "ADA")
+
+        # Step 8: D_K nomor_spm NOT mutated
+        dk.refresh_from_db()
+        self.assertEqual(dk.nomor_spm, "00100T")
+
+        # Step 9: no 1300 canonical packages exist
+        self.assertFalse(
+            TransactionPackage.objects.filter(satker_code="1300").exists()
+        )

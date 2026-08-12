@@ -33,6 +33,7 @@ from apps.core.dk_draft_adapter import (
 from apps.core.document_policy import SPMFamily, normalize_spm_family
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_date, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
+from apps.core.satker import get_official_satker_code
 from apps.core.services import (
     find_or_create_package,
     enrich_from_spm,
@@ -986,6 +987,38 @@ def paket_spm_preview(request):
                     messages.error(request, "Satker, tahun, atau nomor SPM belum lengkap untuk disimpan sebagai parent.")
                     return redirect("paket_spm:preview")
 
+                # ================================================================
+                # FIX A: Resolve 4-digit unit_code to 6-digit official satker
+                # BEFORE: satker_code could be "1300" (unit_code)
+                # AFTER:  satker_code is always "019937" (official satker_code)
+                # ================================================================
+                canonical_satker = get_official_satker_code(satker_code)
+                if canonical_satker:
+                    satker_code = canonical_satker
+                # else: keep as-is (already 6-digit or unknown — let the system handle it)
+
+                # ================================================================
+                # FIX B: Capture matching D_K/SP2D number for D_K linkage
+                # SPM document number (00100A) and D_K financial number (00100T) can differ.
+                # The resolver already computes this — capture it for D_K lookup below.
+                # ================================================================
+                nomor_spm_matching = (spm_meta.get("nomor_spm_matching") or "").strip()
+
+                # ================================================================
+                # FIX B-extended: When nomor_spm_matching is set from an explicit D_K/SP2D match
+                # and differs from the document's nomor_spm, the canonical SPM identifier must use
+                # the validated matching number.  This handles the case where matched_transaction
+                # was NOT set (document SPM not found in D_K) but SP2D provided the matching
+                # number.  When matched_transaction IS set, build_package_decision already updated
+                # nomer_spm via the warning block, so this is a no-op in that path.
+                # ================================================================
+                if nomor_spm_matching and nomor_spm_matching != nomor_spm:
+                    spm_meta["nomor_spm"] = nomor_spm_matching
+                    # Keep parsed_data consistent too
+                    if parsed.get("spm") and "metadata" in parsed["spm"]:
+                        parsed["spm"]["metadata"]["nomor_spm"] = nomor_spm_matching
+                    nomor_spm = nomor_spm_matching  # use matching number for this save
+
                 # 2. Find or create canonical TransactionPackage
                 package, package_created = find_or_create_package(
                     satker_code=satker_code,
@@ -1006,14 +1039,32 @@ def paket_spm_preview(request):
                 )
 
                 # 4. Find and enrich existing TransactionDetail rows for this package
-                existing_dk_rows = list(
-                    TransactionDetail.objects.filter(
-                        satker_code=satker_code,
-                        nomor_spm__iexact=nomor_spm,
-                    ).filter(
-                        Q(tanggal_spm__year=int(tahun)) | Q(tanggal_spm__isnull=True)
-                    ).order_by("id")
-                )
+                #
+                # FIX B (continued): Try document nomor_spm first (00100A), then fall back to
+                # matching D_K/SP2D number (00100T) — these differ when the document number does not
+                # match the D_K financial reference number.  Preserve the canonical package identity
+                # (satker_code + tahun + nomor_spm = 00100A) for TransactionPackage; link the SPM
+                # source document to whichever D_K row actually exists in the ledger.
+                existing_dk_rows = []
+                if nomor_spm:
+                    existing_dk_rows = list(
+                        TransactionDetail.objects.filter(
+                            satker_code=satker_code,
+                            nomor_spm__iexact=nomor_spm,
+                        ).filter(
+                            Q(tanggal_spm__year=int(tahun)) | Q(tanggal_spm__isnull=True)
+                        ).order_by("id")
+                    )
+                if not existing_dk_rows and nomor_spm_matching and nomor_spm_matching != nomor_spm:
+                    # Document number found nothing; try the D_K/SP2D financial reference number
+                    existing_dk_rows = list(
+                        TransactionDetail.objects.filter(
+                            satker_code=satker_code,
+                            nomor_spm__iexact=nomor_spm_matching,
+                        ).filter(
+                            Q(tanggal_spm__year=int(tahun)) | Q(tanggal_spm__isnull=True)
+                        ).order_by("id")
+                    )
                 if existing_dk_rows:
                     # Link SPM to existing D_K rows
                     for dk_row in existing_dk_rows:
