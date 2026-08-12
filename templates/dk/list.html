@@ -24,32 +24,18 @@
         {% if not is_role_viewer %}
         <a class="btn primary" href="{% url 'dk:transaction_create' %}">Tambah Baris Manual</a>
         {% endif %}
-        {% if can_export_data %}
-        <button class="btn ghost" type="button" disabled aria-disabled="true" title="Fitur ekspor belum tersedia.">Export Excel</button>
         <a class="btn ghost" href="{% url 'core:akun_index' %}">Lihat Per Akun</a>
-        <button class="btn ghost" type="button" disabled aria-disabled="true" title="Fitur ekspor belum tersedia.">Export Excel Per Akun</button>
-        <span class="muted">Fitur ekspor belum tersedia.</span>
-        {% else %}
+        {% if is_role_viewer %}
         <span class="badge">Read Only</span>
         {% endif %}
       </div>
     </div>
   </div>
-  <div class="note-box">Gunakan tombol Checklist untuk memeriksa dokumen pendukung transaksi yang membutuhkan verifikasi.</div>
 
-  {% if not is_role_viewer %}
-  <form method="get" action="{% url 'dk:transaction_bulk_edit' %}">
-  <div class="toolbar-row mt-small mb-small">
-    <button type="submit" class="btn warning">Bulk Edit Terpilih</button>
-  </div>
-  {% else %}
-  <form>
-  {% endif %}
   <div class="table-wrap wide-table-wrap large mt-small">
     <table class="data-table compact table-dk dk-full-table">
       <thead>
         <tr>
-          <th class="col-no"><input type="checkbox" id="selectAll"></th>
           <th class="col-no">No</th>
           <th class="col-status">Sumber Data</th>
           <th class="col-satker">Satker</th>
@@ -72,17 +58,12 @@
           <th class="col-nominal">PPh21</th>
           <th class="col-status">Status Dokumen</th>
           <th class="col-status">Status Rekonsiliasi</th>
-          <th class="col-status">Aksi</th>
+          <th class="col-aksi">Aksi</th>
         </tr>
       </thead>
       <tbody>
         {% for row in rows %}
-        <tr>
-          <td class="col-no">
-            {% if row.can_edit and row.status_detail != "DIARSIPKAN" %}
-            <input type="checkbox" name="ids" value="{{ row.id }}" class="row-checkbox">
-            {% endif %}
-          </td>
+        <tr data-row-id="{{ row.id }}" class="{% if row.can_edit %}editable-row{% endif %}" title="{% if row.can_edit %}Klik 2x untuk edit{% endif %}">
           <td class="col-no">{{ page_start|add:forloop.counter0 }}</td>
           <td class="col-status"><span class="badge">{{ row.source_data_label }}</span></td>
           <td class="col-satker">{{ row.satker_code|dash }}</td>
@@ -105,10 +86,7 @@
           <td class="col-nominal">{{ row.pph21|id_number }}</td>
           <td class="col-status">{{ row.document_status_label|dash }}</td>
           <td class="col-status">{{ row.reconciliation_status_label|dash }}</td>
-          <td class="col-status action-cell">
-            {% if row.can_edit %}
-            <a class="btn tiny primary" href="{% url 'dk:transaction_edit' row.id %}">Edit</a>
-            {% endif %}
+          <td class="col-aksi">
             {% if is_role_admin %}
             {% if row.status_detail != "DIARSIPKAN" %}
             <form method="post" action="{% url 'dk:transaction_archive' row.id %}" style="display:inline;" onsubmit="return confirm('Yakin ingin mengarsipkan baris ini?');">
@@ -128,12 +106,12 @@
           </td>
         </tr>
         {% empty %}
-        <tr><td colspan="24" class="empty">Belum ada data D_K.</td></tr>
+        <tr><td colspan="23" class="empty">Belum ada data D_K.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-  </form>
+
   <div class="pagination-wrap">
     <div class="pagination-info">Menampilkan {{ page_start }}-{{ page_end }} dari {{ paginator.count }} data - {{ page_size }} data/halaman</div>
     <div class="pagination-controls">
@@ -161,9 +139,29 @@
 </section>
 
 <script>
-document.getElementById('selectAll').addEventListener('change', function(e) {
-    var checkboxes = document.querySelectorAll('.row-checkbox');
-    checkboxes.forEach(function(cb) { cb.checked = e.target.checked; });
+// Double-click to edit D_K row
+document.addEventListener('DOMContentLoaded', function() {
+    // Find all editable rows
+    document.querySelectorAll('.editable-row').forEach(function(row) {
+        // Only trigger on double-click on the row itself, not on interactive children
+        row.addEventListener('dblclick', function(e) {
+            // Check if the click originated from an interactive element
+            var target = e.target;
+            var interactiveTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'];
+            var isInteractive = interactiveTags.includes(target.tagName) || target.closest('a, button, input, select, textarea, label, form');
+
+            if (!isInteractive) {
+                var rowId = row.getAttribute('data-row-id');
+                if (rowId) {
+                    // URL pattern: /dk/<id>/edit/
+                    window.location.href = '/dk/' + rowId + '/edit/';
+                }
+            }
+        });
+
+        // Add cursor style to indicate editability
+        row.style.cursor = 'pointer';
+    });
 });
 </script>
 {% endblock %}

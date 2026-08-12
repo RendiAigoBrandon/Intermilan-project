@@ -313,30 +313,30 @@
     margin-bottom: 16px;
     flex-wrap: wrap;
 }
-.toolbar-panel { margin: 0 0 14px; padding: 0; }
+.toolbar-panel { margin: 0 0 12px; padding: 0; }
 .toolbar-row {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
-    gap: 12px;
+    gap: 10px;
     flex-wrap: wrap;
 }
-.toolbar-row + .toolbar-row { margin-top: 10px; }
+.toolbar-row + .toolbar-row { margin-top: 8px; }
 .toolbar-row .filter-panel { flex: 1 1 560px; margin-bottom: 0; }
 .toolbar-row .action-bar, .toolbar-row .page-actions { flex: 0 1 auto; }
-.mt-small { margin-top: 10px; }
-.filter-panel { margin-bottom: 14px; background: var(--surface-soft); padding: 14px 16px; border-radius: var(--radius); border: 1px solid var(--border); }
-.filter-grid { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.mt-small { margin-top: 8px; }
+.filter-panel { margin-bottom: 10px; background: var(--surface-soft); padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--border); }
+.filter-grid { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
 .filter-grid.compact { display: flex; flex-wrap: wrap; justify-content: start; }
 .filter-field, .form-field { min-width: 0; }
-.filter-grid > .filter-field { flex: 0 1 170px; }
-.filter-grid > .filter-search { flex: 1 1 320px; min-width: min(340px, 100%); }
+.filter-grid > .filter-field { flex: 0 1 150px; }
+.filter-grid > .filter-search { flex: 1 1 280px; min-width: min(300px, 100%); }
 .filter-grid > .filter-actions { flex: 0 0 auto; }
 .filter-field label, .form-label, .form-field > label {
     display: block;
-    margin-bottom: 5px;
+    margin-bottom: 3px;
     color: var(--bps-navy);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     line-height: 1.3;
 }
@@ -345,9 +345,9 @@
     max-width: 100%;
     border-color: var(--border);
     border-radius: var(--radius-sm);
-    min-height: 38px;
-    font-size: 13px;
-    padding: 6px 12px;
+    min-height: 32px;
+    font-size: 12px;
+    padding: 4px 10px;
 }
 .filter-actions, .form-actions, .page-actions, .action-bar {
     display: flex;
@@ -473,7 +473,17 @@ th, .table th, .excel-table th, .data-table th, .dashboard-excel-table th {
     border-bottom: 2px solid var(--bps-cerulean);
 }
 .data-table th, .data-table td { line-height: 1.35; }
-.data-table.compact th, .data-table.compact td { padding: 7px 10px; font-size: 12px; }
+.data-table.compact th, .data-table.compact td { padding: 5px 8px; font-size: 12px; }
+
+/* D_K table specific compact styles */
+.dk-full-table { min-width: 2200px; }
+.dk-full-table th, .dk-full-table td { padding: 6px 8px; font-size: 12px; line-height: 1.4; }
+.dk-full-table tbody tr { transition: background-color 0.15s ease; }
+.dk-full-table tbody tr:hover { background-color: var(--surface-soft); }
+.dk-full-table tbody tr.editable-row:hover { background-color: #e8f0fe; cursor: pointer; }
+.dk-full-table tbody tr.editable-row:active { background-color: #d4e4fd; }
+.col-aksi { white-space: nowrap; text-align: center; }
+.col-aksi .btn.tiny { padding: 3px 8px; font-size: 11px; }
 
 /* Table Columns Width Standards */
 .table-sp2d { min-width: 2200px; }
