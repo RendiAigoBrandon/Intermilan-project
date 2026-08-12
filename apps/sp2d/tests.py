@@ -789,3 +789,395 @@ class SP2DUploadFieldLimitTest(TestCase):
             limit, total_fields,
             f"Limit {limit} must accommodate {rows}-row preview ({total_fields} fields)."
         )
+
+
+# =============================================================================
+# SATKER RESOLUTION TESTS
+# These tests verify that satker resolution works correctly in the SP2D
+# upload flow (GET preview and POST commit).
+# =============================================================================
+
+class SP2DSatkerResolutionTests(TestCase):
+    """Tests for satker resolution in SP2D upload flow."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="test_uploader", password="password", is_superuser=True)
+        from apps.accounts.models import Profile
+        profile = self.user.profile
+        profile.role = Profile.Role.ADMIN_PUSAT
+        profile.save()
+
+    def _create_mock_excel(self, data_rows):
+        """Create XLSX with SP2D-compatible header matching SP2D_COLUMN_MAP."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        headers = [
+            "Kode Satker", "Nama Satker", "No SP2D", "Tgl SP2D",
+            "Nilai SPM", "Potongan", "Nilai SP2D", "Nomor Invoice",
+            "Jenis SPM", "Deskripsi",
+        ]
+        ws.append(headers)
+        for row in data_rows:
+            ws.append(row)
+        mem = BytesIO()
+        wb.save(mem)
+        mem.seek(0)
+        return mem.read()
+
+    # -------------------------------------------------------------------------
+    # prepare_sp2d_rows tests: verifies satker resolution works in isolation
+    # -------------------------------------------------------------------------
+
+    def test_prepare_resolves_blank_code_from_name_sumbar(self):
+        """
+        Test A: Blank satker_code + known satker_name (BPS Provinsi Sumatera Barat)
+        resolves to official 6-digit satker_code 019937 and unit_code 1300.
+        """
+        from apps.sp2d.services import prepare_sp2d_rows
+        rows = [{
+            "satker_code": "",
+            "satker_name": "BPS Provinsi Sumatera Barat",
+            "no_sp2d": "SP2D-SATKER-RES-01",
+            "tgl_sp2d": None, "nilai_spm": Decimal("1000"), "potongan": Decimal("0"),
+            "nilai_sp2d": Decimal("1000"), "nomor_invoice": "INV/001/2026",
+            "jenis_spm": "LS", "deskripsi": "Test Res", "nomor_spm_extracted": "SPM-001",
+        }]
+        result = prepare_sp2d_rows(2026, rows)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["satker_code"], "019937")
+        self.assertEqual(result[0]["unit_code"], "1300")
+        self.assertEqual(result[0]["satker_name"], "BPS Provinsi Sumatera Barat")
+
+    def test_prepare_resolves_blank_code_from_name_bps_full(self):
+        """
+        Test B: Blank satker_code + full BPS name (BADAN PUSAT STATISTIK...)
+        resolves to official 6-digit satker_code 019937.
+        """
+        from apps.sp2d.services import prepare_sp2d_rows
+        rows = [{
+            "satker_code": "",
+            "satker_name": "BADAN PUSAT STATISTIK PROVINSI SUMATERA BARAT",
+            "no_sp2d": "SP2D-SATKER-RES-02",
+            "tgl_sp2d": None, "nilai_spm": Decimal("2000"), "potongan": Decimal("0"),
+            "nilai_sp2d": Decimal("2000"), "nomor_invoice": "INV/002/2026",
+            "jenis_spm": "LS", "deskripsi": "Test Res B", "nomor_spm_extracted": "SPM-002",
+        }]
+        result = prepare_sp2d_rows(2026, rows)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["satker_code"], "019937")
+
+    def test_prepare_resolves_blank_code_agam(self):
+        """
+        Test C: Blank satker_code + BPS Kabupaten Agam
+        resolves to satker_code 428041 and unit_code 1307.
+        """
+        from apps.sp2d.services import prepare_sp2d_rows
+        rows = [{
+            "satker_code": "",
+            "satker_name": "BPS Kabupaten Agam",
+            "no_sp2d": "SP2D-SATKER-RES-03",
+            "tgl_sp2d": None, "nilai_spm": Decimal("3000"), "potongan": Decimal("0"),
+            "nilai_sp2d": Decimal("3000"), "nomor_invoice": "INV/003/2026",
+            "jenis_spm": "LS", "deskripsi": "Test Res C", "nomor_spm_extracted": "SPM-003",
+        }]
+        result = prepare_sp2d_rows(2026, rows)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["satker_code"], "428041")
+        self.assertEqual(result[0]["unit_code"], "1307")
+
+    def test_prepare_marks_conflict_when_code_name_mismatch(self):
+        """
+        Test D: satker_code=428041 (Agam) + satker_name="BPS Provinsi Sumatera Barat"
+        (Sumbar) produces satker_resolution_error (ERROR_CONFLICT).
+        """
+        from apps.sp2d.services import prepare_sp2d_rows
+        rows = [{
+            "satker_code": "428041",
+            "satker_name": "BPS Provinsi Sumatera Barat",
+            "no_sp2d": "SP2D-SATKER-RES-04",
+            "tgl_sp2d": None, "nilai_spm": Decimal("4000"), "potongan": Decimal("0"),
+            "nilai_sp2d": Decimal("4000"), "nomor_invoice": "INV/004/2026",
+            "jenis_spm": "LS", "deskripsi": "Test Res D", "nomor_spm_extracted": "SPM-004",
+        }]
+        result = prepare_sp2d_rows(2026, rows)
+        self.assertEqual(len(result), 1)
+        self.assertIn("satker_resolution_error", result[0])
+        self.assertIn("Konflik", result[0]["satker_resolution_error"])
+
+    def test_prepare_unresolved_unknown_name(self):
+        """
+        Test E: Unknown satker_name + blank satker_code
+        stays unresolved (identity GAGAL).
+        """
+        from apps.sp2d.services import prepare_sp2d_rows
+        rows = [{
+            "satker_code": "",
+            "satker_name": "SATKER TIDAK DIKENAL XYZ123",
+            "no_sp2d": "SP2D-SATKER-RES-05",
+            "tgl_sp2d": None, "nilai_spm": Decimal("5000"), "potongan": Decimal("0"),
+            "nilai_sp2d": Decimal("5000"), "nomor_invoice": "INV/005/2026",
+            "jenis_spm": "LS", "deskripsi": "Test Res E", "nomor_spm_extracted": "SPM-005",
+        }]
+        result = prepare_sp2d_rows(2026, rows)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["satker_code"], "")
+        self.assertEqual(result[0]["identity_status"], "GAGAL")
+
+    # -------------------------------------------------------------------------
+    # resolve_sp2d_satker direct tests
+    # -------------------------------------------------------------------------
+
+    def test_resolve_sp2d_satker_blank_code_known_name(self):
+        """Direct test: resolve_sp2d_satker fills blank code from name."""
+        from apps.core.satker import resolve_sp2d_satker
+        result = resolve_sp2d_satker(
+            satker_code_input="",
+            satker_name_input="BPS Provinsi Sumatera Barat"
+        )
+        self.assertTrue(result.resolved)
+        self.assertEqual(result.satker_code, "019937")
+        self.assertEqual(result.unit_code, "1300")
+        self.assertEqual(result.satker_name, "BPS Provinsi Sumatera Barat")
+        self.assertEqual(result.status, "OK")
+
+    def test_resolve_sp2d_satker_conflict(self):
+        """Direct test: conflicting code and name returns ERROR_CONFLICT."""
+        from apps.core.satker import resolve_sp2d_satker
+        result = resolve_sp2d_satker(
+            satker_code_input="428041",  # Agam
+            satker_name_input="BPS Provinsi Sumatera Barat"  # Sumatera Barat
+        )
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.status, "ERROR_CONFLICT")
+
+    def test_resolve_sp2d_satker_explicit_code_validated(self):
+        """Direct test: explicit valid code is accepted and returns correct unit."""
+        from apps.core.satker import resolve_sp2d_satker
+        result = resolve_sp2d_satker(
+            satker_code_input="019937",
+            satker_name_input="BPS Provinsi Sumatera Barat"
+        )
+        self.assertTrue(result.resolved)
+        self.assertEqual(result.satker_code, "019937")
+        self.assertEqual(result.unit_code, "1300")
+
+    def test_resolve_sp2d_satker_unknown_name_blank_code(self):
+        """Direct test: unknown name + blank code returns ERROR_MISSING."""
+        from apps.core.satker import resolve_sp2d_satker
+        result = resolve_sp2d_satker(
+            satker_code_input="",
+            satker_name_input="SATKER TIDAK DIKENAL"
+        )
+        self.assertFalse(result.resolved)
+        self.assertIn(result.status, ("ERROR_MISSING", "UNKNOWN"))
+
+    # -------------------------------------------------------------------------
+    # Integration tests: HTTP upload with satker resolution
+    # -------------------------------------------------------------------------
+
+    def test_http_preview_resolves_blank_satker_code(self):
+        """
+        Integration test: Upload Excel with blank satker_code column.
+        Preview must show resolved 6-digit satker_code, not blank.
+        """
+        from apps.sp2d.services import prepare_sp2d_rows
+        # Simulate the parser output (blank satker_code, known satker_name)
+        raw_rows = [{
+            "satker_code": "",
+            "satker_name": "BPS Provinsi Sumatera Barat",
+            "no_sp2d": "SP2D-INT-01",
+            "tgl_sp2d": None, "nilai_spm": Decimal("1000"), "potongan": Decimal("0"),
+            "nilai_sp2d": Decimal("1000"), "nomor_invoice": "INV/INT/2026",
+            "jenis_spm": "LS", "deskripsi": "Integration Test", "nomor_spm_extracted": "SPM-INT",
+        }]
+        result = prepare_sp2d_rows(2026, raw_rows)
+        # The preview should have resolved satker_code
+        self.assertEqual(result[0]["satker_code"], "019937")
+        self.assertEqual(result[0]["satker_name"], "BPS Provinsi Sumatera Barat")
+
+    def test_http_preview_can_commit_false_with_unresolved(self):
+        """
+        Integration test: When satker cannot be resolved, can_commit must be False.
+        """
+        from apps.sp2d.services import prepare_sp2d_rows
+        raw_rows = [{
+            "satker_code": "",
+            "satker_name": "SATKER TIDAK DIKENAL XYZ",
+            "no_sp2d": "SP2D-INT-02",
+            "tgl_sp2d": None, "nilai_spm": Decimal("1000"), "potongan": Decimal("0"),
+            "nilai_sp2d": Decimal("1000"), "nomor_invoice": "INV/INT2/2026",
+            "jenis_spm": "LS", "deskripsi": "Unresolved Test", "nomor_spm_extracted": "SPM-INT2",
+        }]
+        result = prepare_sp2d_rows(2026, raw_rows)
+        # Satker not resolved -> identity GAGAL
+        self.assertEqual(result[0]["identity_status"], "GAGAL")
+
+    # -------------------------------------------------------------------------
+    # Persistence test: verify correct code is saved
+    # -------------------------------------------------------------------------
+
+    def test_persisted_satker_code_is_official_6digit(self):
+        """
+        Test F: After commit, SP2DRaw.satker_code must be official 6-digit code.
+        Not 4-digit unit_code. Not blank.
+        """
+        from apps.sp2d.services import commit_sp2d_rows
+        batch = SP2DImportBatch.objects.create(
+            filename="test_resolve.xlsx", original_filename="test_resolve.xlsx",
+            tahun=2026, bulan=1, total_rows=1,
+            status=SP2DImportBatch.Status.PROCESSING,
+            uploaded_by=self.user
+        )
+        rows = [{
+            "satker_code": "",  # blank in input
+            "satker_name": "BPS Provinsi Sumatera Barat",
+            "no_sp2d": "SP2D-PERSIST-01",
+            "tgl_sp2d": None, "nilai_spm": Decimal("1000"), "potongan": Decimal("0"),
+            "nilai_sp2d": Decimal("1000"), "nomor_invoice": "INV/P01/2026",
+            "jenis_spm": "LS", "deskripsi": "Persist Test", "nomor_spm_extracted": "SPM-P01",
+        }]
+        commit_sp2d_rows(batch, rows, self.user, filename="test_resolve.xlsx")
+
+        # Verify batch succeeded
+        self.assertEqual(batch.created_rows, 1)
+        self.assertEqual(batch.conflict_rows, 0)
+
+        # Verify SP2DRaw has official 6-digit satker_code
+        sp2d = SP2DRaw.objects.get(no_sp2d="SP2D-PERSIST-01")
+        self.assertEqual(sp2d.satker_code, "019937")
+        self.assertNotEqual(sp2d.satker_code, "1300")  # Not 4-digit unit_code
+        self.assertNotEqual(sp2d.satker_code, "")  # Not blank
+
+    def test_http_commit_persists_same_code_to_both_sp2d_raw_and_transaction_detail(self):
+        """
+        Regression: satker_code=blank + satker_name="BPS Provinsi Sumatera Barat"
+        committed via HTTP POST must persist "019937" to BOTH:
+        - SP2DRaw.satker_code
+        - TransactionDetail.satker_code
+        And must NOT persist "1300" or "".
+        """
+        from apps.dk.models import TransactionDetail
+        self.client.login(username="test_uploader", password="password")
+
+        # Step 1: upload to create preview session
+        excel_data = self._create_mock_excel([
+            ["", "BPS Provinsi Sumatera Barat", "SP2D-BOTH-01", "2026-01-15", 1000, 0, 1000, "INV/B01/2026", "LS", "Both Persist Test"],
+        ])
+        uploaded = SimpleUploadedFile(
+            "both.xlsx", excel_data,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        self.client.post(reverse("sp2d:list"), {"tahun": "2026", "bulan": "1", "file_sp2d": uploaded})
+
+        # Step 2: commit with the blank satker_code from the preview
+        commit_resp = self.client.post(reverse("sp2d:preview"), {
+            "action": "commit",
+            "satker_code[]": [""],          # blank in form (as rendered)
+            "satker_name[]": ["BPS Provinsi Sumatera Barat"],
+            "no_sp2d[]": ["SP2D-BOTH-01"],
+            "tahun[]": ["2026"],
+            "bulan_sp2d[]": ["1"],
+            "nomor_spm[]": ["INV/B01/2026"],
+            "tgl_spm[]": ["2026-01-15"],
+            "jenis_spm[]": ["LS"],
+            "cara_pembayaran[]": [""],
+            "akun[]": ["521111"],
+            "deskripsi[]": ["Both Persist Test"],
+            "nilai_bruto[]": ["1000"],
+            "nilai_netto[]": ["1000"],
+            "potongan[]": ["0"],
+            "no_kuitansi[]": [""],
+            "no_drpp[]": [""],
+            "pembebanan[]": [""],
+            "fp[]": [""],
+            "pph21[]": ["0"],
+        })
+
+        # Should redirect to success (not stay on preview)
+        self.assertRedirects(commit_resp, reverse("dk:transaction_list"))
+
+        # Verify SP2DRaw has canonical 6-digit code
+        sp2d = SP2DRaw.objects.get(no_sp2d="SP2D-BOTH-01")
+        self.assertEqual(sp2d.satker_code, "019937")
+        self.assertNotEqual(sp2d.satker_code, "1300")
+        self.assertNotEqual(sp2d.satker_code, "")
+
+        # Verify TransactionDetail also has the SAME canonical code
+        dk = TransactionDetail.objects.get(sp2d_raw=sp2d)
+        self.assertEqual(dk.satker_code, "019937")
+        self.assertNotEqual(dk.satker_code, "1300")
+        self.assertNotEqual(dk.satker_code, "")
+
+        # Verify BOTH models use the same code (not divergent)
+        self.assertEqual(sp2d.satker_code, dk.satker_code)
+
+    def test_can_edit_satker_receives_resolved_6digit_code_not_blank(self):
+        """
+        Regression: can_edit_satker() must be called with the resolved
+        official 6-digit satker code ("019937"), NOT the blank code from
+        the form and NOT the 4-digit unit code ("1300").
+
+        Exercises the actual HTTP POST commit path.
+        """
+        from unittest.mock import patch, MagicMock
+        from apps.accounts.access import can_edit_satker as real_can_edit_satker
+
+        self.client.login(username="test_uploader", password="password")
+
+        # Track all calls to can_edit_satker
+        call_log = []
+
+        def tracking_can_edit(user, satker_code):
+            call_log.append(satker_code)
+            return real_can_edit_satker(user, satker_code)
+
+        # Step 1: upload to create preview session
+        excel_data = self._create_mock_excel([
+            ["", "BPS Provinsi Sumatera Barat", "SP2D-PERM-01", "2026-01-15", 1000, 0, 1000, "INV/P01/2026", "LS", "Perm Test"],
+        ])
+        uploaded = SimpleUploadedFile(
+            "perm.xlsx", excel_data,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        self.client.post(reverse("sp2d:list"), {"tahun": "2026", "bulan": "1", "file_sp2d": uploaded})
+
+        # Step 2: commit with blank code — mock can_edit_satker in views namespace
+        with patch("apps.sp2d.views.can_edit_satker", side_effect=tracking_can_edit):
+            commit_resp = self.client.post(reverse("sp2d:preview"), {
+                "action": "commit",
+                "satker_code[]": [""],          # blank in submitted form
+                "satker_name[]": ["BPS Provinsi Sumatera Barat"],
+                "no_sp2d[]": ["SP2D-PERM-01"],
+                "tahun[]": ["2026"],
+                "bulan_sp2d[]": ["1"],
+                "nomor_spm[]": ["INV/P01/2026"],
+                "tgl_spm[]": ["2026-01-15"],
+                "jenis_spm[]": ["LS"],
+                "cara_pembayaran[]": [""],
+                "akun[]": ["521111"],
+                "deskripsi[]": ["Perm Test"],
+                "nilai_bruto[]": ["1000"],
+                "nilai_netto[]": ["1000"],
+                "potongan[]": ["0"],
+                "no_kuitansi[]": [""],
+                "no_drpp[]": [""],
+                "pembebanan[]": [""],
+                "fp[]": [""],
+                "pph21[]": ["0"],
+            })
+
+        # Should succeed (ADMIN_PUSAT can edit all satkers)
+        self.assertRedirects(commit_resp, reverse("dk:transaction_list"))
+
+        # Verify can_edit_satker was called at least once
+        self.assertTrue(len(call_log) >= 1, "can_edit_satker was not called during commit")
+
+        # Verify it was called with "019937", NOT "" and NOT "1300"
+        for arg in call_log:
+            with self.subTest(arg=arg):
+                self.assertEqual(arg, "019937", (
+                    f"can_edit_satker was called with '{arg}' instead of '019937'. "
+                    "It must receive the resolved official 6-digit satker code."
+                ))
+                self.assertNotEqual(arg, "")
+                self.assertNotEqual(arg, "1300")

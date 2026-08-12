@@ -16,7 +16,7 @@ from apps.accounts.access import (
     can_view_all_satker, get_user_satker_code, can_edit_satker
 )
 from apps.core.parsers import parse_decimal, parse_month, parse_sp2d_excel_file
-from apps.core.satker import infer_satker_from_name
+from apps.core.satker import infer_satker_from_name, resolve_sp2d_satker
 from apps.core.views import CHECKLIST_ROWS, MONTH_OPTIONS, build_pagination_window, normalize_page_size
 from apps.documents.models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink
 from apps.documents.services.google_drive import archive_file_link
@@ -25,7 +25,7 @@ from apps.dk.models import MasterAkun, TransactionDetail
 from apps.paket_spm.models import PaketSPMPreviewItem, PaketSPMUpload
 
 from .models import SP2DImportBatch, SP2DRaw
-from .services import classify_sp2d_rows, commit_sp2d_rows
+from .services import classify_sp2d_rows, commit_sp2d_rows, prepare_sp2d_rows
 
 
 @login_required
@@ -211,9 +211,68 @@ def sp2d_preview(request):
             mapped_rows = []
             errors = []
             for i in range(num_rows):
+                # 1. Read raw evidence from form
+                satker_code_input = satker_codes[i] if i < len(satker_codes) else ""
+                satker_name_input = satker_names[i] if i < len(satker_names) else ""
+
+                # 2. Re-resolve satker: validate and fill in missing code from name
+                resolution = resolve_sp2d_satker(
+                    satker_code_input=satker_code_input,
+                    satker_name_input=satker_name_input,
+                )
+
+                # 3. Block if resolution failed
+                if not resolution.resolved:
+                    if resolution.status == "ERROR_CONFLICT":
+                        errors.append(f"Baris {i+1}: Konflik satker - {resolution.error_message}")
+                    else:
+                        errors.append(f"Baris {i+1}: Satker tidak dapat diselesaikan dari data yang diberikan. Pastikan nama satker valid.")
+                    # Still add row with empty code so form re-renders
+                    mapped_rows.append({
+                        "satker_code": "",
+                        "satker_name": satker_name_input,
+                        "no_sp2d": no_sp2ds[i] if i < len(no_sp2ds) else "",
+                        "tahun": tahuns[i] if i < len(tahuns) else "",
+                        "bulan_sp2d": bulan_sp2ds[i] if i < len(bulan_sp2ds) else "",
+                        "nomor_spm": nomor_spms[i] if i < len(nomor_spms) else "",
+                        "tgl_spm": tgl_spms[i] if i < len(tgl_spms) else "",
+                        "jenis_spm": jenis_spms[i] if i < len(jenis_spms) else "",
+                        "cara_pembayaran": cara_pembayarans[i] if i < len(cara_pembayarans) else "",
+                        "akun": akuns[i] if i < len(akuns) else "",
+                        "deskripsi": deskripsis[i] if i < len(deskripsis) else "",
+                        "nilai_bruto": parse_money_input(nilai_brutos[i] if i < len(nilai_brutos) else "0"),
+                        "nilai_netto": parse_money_input(nilai_nettos[i] if i < len(nilai_nettos) else "0"),
+                        "potongan": parse_money_input(potongans[i] if i < len(potongans) else "0"),
+                        "no_kuitansi": no_kuitansis[i] if i < len(no_kuitansis) else "",
+                        "no_drpp": no_drpps[i] if i < len(no_drpps) else "",
+                        "pembebanan": pembebanans[i] if i < len(pembebanans) else "",
+                        "fp": fps[i] if i < len(fps) else "",
+                        "pph21": parse_money_input(pph21s[i] if i < len(pph21s) else "0"),
+                        "nilai_spm": parse_money_input(nilai_brutos[i] if i < len(nilai_brutos) else "0"),
+                        "nilai_sp2d": parse_money_input(nilai_nettos[i] if i < len(nilai_nettos) else "0"),
+                        "nomor_spm_extracted": nomor_spms[i] if i < len(nomor_spms) else "",
+                        "nomor_invoice": nomor_spms[i] if i < len(nomor_spms) else "",
+                        "tgl_sp2d": tgl_spms[i] if i < len(tgl_spms) else "",
+                        "tanggal_invoice": tgl_spms[i] if i < len(tgl_spms) else "",
+                        "mata_uang": cara_pembayarans[i] if i < len(cara_pembayarans) else "",
+                        "jenis_sp2d": jenis_spms[i] if i < len(jenis_spms) else "",
+                        "satker_resolution_error": resolution.error_message,
+                    })
+                    continue
+
+                # 4. Use resolved canonical values
+                resolved_satker_code = resolution.satker_code
+                resolved_satker_name = resolution.satker_name
+                resolved_unit_code = resolution.unit_code
+
+                # 5. Check permission using resolved 6-digit code
+                if not can_edit_satker(request.user, resolved_satker_code):
+                    errors.append(f"Baris {i+1}: Anda tidak memiliki akses ke satker {resolved_satker_code}")
+
                 row = {
-                    "satker_code": satker_codes[i] if i < len(satker_codes) else "",
-                    "satker_name": satker_names[i] if i < len(satker_names) else "",
+                    "satker_code": resolved_satker_code,
+                    "satker_name": resolved_satker_name,
+                    "unit_code": resolved_unit_code,
                     "no_sp2d": no_sp2ds[i] if i < len(no_sp2ds) else "",
                     "tahun": tahuns[i] if i < len(tahuns) else "",
                     "bulan_sp2d": bulan_sp2ds[i] if i < len(bulan_sp2ds) else "",
@@ -231,7 +290,6 @@ def sp2d_preview(request):
                     "pembebanan": pembebanans[i] if i < len(pembebanans) else "",
                     "fp": fps[i] if i < len(fps) else "",
                     "pph21": parse_money_input(pph21s[i] if i < len(pph21s) else "0"),
-                    
                     # For legacy compatibility with commit_sp2d_rows
                     "nilai_spm": parse_money_input(nilai_brutos[i] if i < len(nilai_brutos) else "0"),
                     "nilai_sp2d": parse_money_input(nilai_nettos[i] if i < len(nilai_nettos) else "0"),
@@ -242,11 +300,6 @@ def sp2d_preview(request):
                     "mata_uang": cara_pembayarans[i] if i < len(cara_pembayarans) else "",
                     "jenis_sp2d": jenis_spms[i] if i < len(jenis_spms) else "",
                 }
-                
-                # Check permission
-                if not can_edit_satker(request.user, row["satker_code"]):
-                    errors.append(f"Baris {i+1}: Anda tidak memiliki akses ke satker {row['satker_code']}")
-                    
                 mapped_rows.append(row)
 
             if errors:
@@ -258,7 +311,7 @@ def sp2d_preview(request):
                     "page_title": "Preview Import SP2D",
                     "preview_rows": mapped_rows,
                     "import_data": import_data,
-                    "can_commit": True,
+                    "can_commit": False,
                 })
                 return render(request, "sp2d/preview.html", context)
 
@@ -371,13 +424,41 @@ def sp2d_preview(request):
         parse_result = parse_sp2d_excel_file(file_path)
         tahun = import_data.get('tahun')
         bulan = import_data.get('bulan')
-        
-        # We don't need complex stats anymore, just map to the new format
-        mapped_rows = []
+
+        # Map parser rows to import format (same as before)
+        raw_rows = []
         for row in parse_result["rows"]:
+            raw_rows.append({
+                "satker_code": row.get("satker_code", ""),
+                "satker_name": row.get("satker_name", ""),
+                "no_sp2d": row.get("no_sp2d", ""),
+                "tahun": tahun,
+                "bulan_sp2d": bulan,
+                "nomor_spm_extracted": row.get("nomor_spm_extracted", ""),
+                "nomor_invoice": row.get("nomor_invoice", ""),
+                "tgl_sp2d": row.get("tgl_sp2d") or row.get("tanggal_invoice", ""),
+                "tanggal_invoice": row.get("tanggal_invoice", ""),
+                "tanggal_selesai_sp2d": row.get("tanggal_selesai_sp2d"),
+                "mata_uang": row.get("mata_uang", ""),
+                "jenis_spm": row.get("jenis_spm", ""),
+                "jenis_sp2d": row.get("jenis_sp2d", ""),
+                "nilai_spm": row.get("nilai_spm", 0),
+                "nilai_sp2d": row.get("nilai_sp2d", 0),
+                "potongan": row.get("potongan", 0),
+                "deskripsi": row.get("deskripsi", ""),
+            })
+
+        # Apply satker resolution: fill blank satker_code from satker_name
+        prepared_rows = prepare_sp2d_rows(tahun, raw_rows)
+
+        # Convert back to preview format with resolved satker values
+        mapped_rows = []
+        has_resolution_errors = False
+        for row in prepared_rows:
             mapped_rows.append({
                 "satker_code": row.get("satker_code", ""),
                 "satker_name": row.get("satker_name", ""),
+                "unit_code": row.get("unit_code", ""),
                 "no_sp2d": row.get("no_sp2d", ""),
                 "tahun": tahun,
                 "bulan_sp2d": bulan,
@@ -385,7 +466,7 @@ def sp2d_preview(request):
                 "tgl_spm": row.get("tgl_sp2d") or row.get("tanggal_invoice", ""),
                 "jenis_spm": row.get("jenis_spm", ""),
                 "cara_pembayaran": row.get("mata_uang", ""),
-                "akun": "", # To be filled by user
+                "akun": "",  # To be filled by user
                 "deskripsi": row.get("deskripsi", ""),
                 "nilai_bruto": row.get("nilai_spm", 0),
                 "nilai_netto": row.get("nilai_sp2d", 0),
@@ -395,8 +476,13 @@ def sp2d_preview(request):
                 "pembebanan": "",
                 "fp": "",
                 "pph21": 0,
+                # Pass through resolution errors for display
+                "satker_resolution_error": row.get("satker_resolution_error", ""),
+                "satker_resolution_status": row.get("satker_resolution_status", "OK"),
             })
-            
+            if row.get("satker_resolution_error") or not row.get("satker_code"):
+                has_resolution_errors = True
+
     except Exception as e:
         messages.error(request, f"Gagal membaca file Excel: {str(e)}")
         return redirect("sp2d:list")
@@ -407,7 +493,7 @@ def sp2d_preview(request):
         "page_subtitle": f"File: {import_data['original_filename']} ({parse_result['valid_rows']} baris valid)",
         "preview_rows": mapped_rows,
         "import_data": import_data,
-        "can_commit": parse_result["ok"],
+        "can_commit": parse_result["ok"] and not has_resolution_errors,
     })
     return render(request, "sp2d/preview.html", context)
 
