@@ -7,10 +7,12 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_POST
 from django.core.exceptions import PermissionDenied
 from django.core.files import File
 from django.core.files.storage import FileSystemStorage
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -31,6 +33,20 @@ from apps.core.dk_draft_adapter import (
 from apps.core.document_policy import SPMFamily, normalize_spm_family
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_date, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
+from apps.core.services import (
+    find_or_create_package,
+    enrich_from_spm,
+    set_active_parent,
+    get_active_parent_for_user,
+    find_compatible_parent,
+    validate_parent_compatibility,
+    clear_active_parent as _clear_active_parent_service,
+    create_drpp_preview_state,
+    get_drpp_preview_state_by_session,
+    commit_drpp_with_preview,
+)
+from apps.documents.services.checklist import mark_checklist_present
+from apps.dk.services import refresh_transaction_document_status
 from apps.dk.models import TransactionDetail
 from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, resolve_satker_from_existing_dk, short_document_number, upsert_drpp_group
 from apps.sp2d.models import SP2DRaw
@@ -347,6 +363,7 @@ def paket_spm_list(request):
 
     rows = filter_by_satker(PaketSPMUpload.objects.select_related("uploaded_by"), request.user)
     sp2d_context = get_sp2d_context(request.GET.get("sp2d_raw_id"), request.user)
+    active_parent = get_active_parent_for_user(request=request, user=request.user)
     context = access_context
     context.update(
         {
@@ -357,6 +374,7 @@ def paket_spm_list(request):
             "max_upload_size_mb": settings.MAX_UPLOAD_SIZE_MB,
             "sp2d_context": sp2d_context,
             "ocr_environment": check_ocr_environment(),
+            "active_parent": active_parent,
         }
     )
     return render(
@@ -533,6 +551,136 @@ def paket_spm_preview(request):
                 # Update dk_drafts with manual edits (manual_confirmed source)
                 # This preserves manual values when draft is saved
                 _update_dk_drafts_with_manual_edits(parsed, preview_rows)
+
+                # ================================================================
+                # DRPP PARENT INHERITANCE: Wire active SPM parent to DRPP preview
+                # Uses DRPPPreviewState as canonical frozen parent store.
+                # ================================================================
+                # Get active parent for this user
+                active_parent = get_active_parent_for_user(request=request, user=request.user)
+                parent_warning = None
+                parent_conflict = None
+
+                # Extract DRPP identity from parsed data
+                drpp_satker = (
+                    parsed.get("spm", {}).get("metadata", {}).get("satker_code")
+                    or parsed.get("spm", {}).get("metadata", {}).get("satker_app_code")
+                    or paket.satker_code
+                    or ""
+                ).strip()
+                drpp_tahun = (
+                    parsed.get("spm", {}).get("metadata", {}).get("tahun")
+                    or paket.tahun
+                    or None
+                )
+                if drpp_tahun:
+                    try:
+                        drpp_tahun = int(drpp_tahun)
+                    except (ValueError, TypeError):
+                        drpp_tahun = None
+                drpp_nomor_spm = (
+                    parsed.get("spm", {}).get("metadata", {}).get("nomor_spm")
+                    or ""
+                ).strip()
+
+                # Check for SPM metadata presence (not just drpp_groups)
+                has_own_spm = bool(
+                    parsed.get("spm")
+                    and parsed.get("spm", {}).get("metadata", {}).get("nomor_spm")
+                )
+
+                # Get the first DRPP number for preview state identification
+                first_drpp = None
+                if parsed.get("drpps"):
+                    first_drpp = (parsed.get("drpps")[0].get("metadata") or {}).get("nomor_drpp") or "UNKNOWN"
+                elif parsed.get("drpp_groups"):
+                    first_drpp = (parsed.get("drpp_groups")[0].get("group_key") or parsed.get("drpp_groups")[0].get("no_drpp") or "UNKNOWN")
+                else:
+                    first_drpp = paket.original_filename or "UNKNOWN"
+
+                if active_parent and active_parent.transaction_package and not has_own_spm:
+                    # DRPP-only upload: inherit SPM fields from active parent
+                    parent_package = active_parent.transaction_package
+
+                    # Validate compatibility with DRPP evidence
+                    is_compatible, conflict_msg = validate_parent_compatibility(
+                        package=parent_package,
+                        drpp_satker=drpp_satker or None,
+                        drpp_tahun=drpp_tahun,
+                        drpp_nomor_spm=drpp_nomor_spm or None,
+                    )
+
+                    if not is_compatible:
+                        # Block preview if parent is incompatible
+                        parent_conflict = conflict_msg
+                        messages.warning(request, conflict_msg)
+                        # Mark conflict in DRPPPreviewState so commit is blocked
+                        create_drpp_preview_state(
+                            request=request,
+                            nomor_drpp=first_drpp,
+                            satker_code=drpp_satker or paket.satker_code or "",
+                            tahun=drpp_tahun or paket.tahun or 0,
+                            parent_package=parent_package,
+                            preview_data=parsed,
+                            conflict=True,
+                            conflict_message=conflict_msg,
+                            user=request.user,
+                        )
+                    else:
+                        # Inherit SPM fields where blank in preview_rows
+                        inherited_fields = []
+                        if preview_rows:
+                            first = preview_rows[0]
+                            if not first.get("nomor_spm") and parent_package.nomor_spm:
+                                first["nomor_spm"] = parent_package.nomor_spm
+                                inherited_fields.append("nomor_spm")
+                            if not first.get("tanggal_spm") and parent_package.tanggal_spm:
+                                first["tanggal_spm"] = parent_package.tanggal_spm
+                                inherited_fields.append("tanggal_spm")
+                            if not first.get("jenis_spm") and parent_package.jenis_spm:
+                                first["jenis_spm"] = parent_package.jenis_spm
+                                inherited_fields.append("jenis_spm")
+                            if not first.get("cara_pembayaran") and getattr(parent_package, "cara_pembayaran", None):
+                                first["cara_pembayaran"] = parent_package.cara_pembayaran
+                                inherited_fields.append("cara_pembayaran")
+
+                            # Update all KW items in drpp_groups
+                            if parsed.get("drpp_groups"):
+                                for group in parsed.get("drpp_groups"):
+                                    if not group.get("items"):
+                                        continue
+                                    for item in group["items"]:
+                                        if "nomor_spm" not in item and parent_package.nomor_spm:
+                                            item["nomor_spm"] = parent_package.nomor_spm
+                                        if "tanggal_spm" not in item and parent_package.tanggal_spm:
+                                            item["tanggal_spm"] = parent_package.tanggal_spm
+                                        if "jenis_spm" not in item and parent_package.jenis_spm:
+                                            item["jenis_spm"] = parent_package.jenis_spm
+
+                            # Update _meta from inherited first row
+                            paket.nomor_spm = first.get("nomor_spm") or paket.nomor_spm
+
+                            if inherited_fields:
+                                parent_warning = f"Field SPM diwariskan dari parent aktif: {', '.join(inherited_fields)}"
+                                messages.info(request, parent_warning)
+
+                        # Create DRPPPreviewState as canonical frozen parent (DB-backed)
+                        preview_state = create_drpp_preview_state(
+                            request=request,
+                            nomor_drpp=first_drpp,
+                            satker_code=drpp_satker or paket.satker_code or "",
+                            tahun=drpp_tahun or paket.tahun or 0,
+                            parent_package=parent_package,
+                            preview_data=parsed,
+                            conflict=False,
+                            conflict_message="",
+                            user=request.user,
+                        )
+
+                        # Store preview_state_id in session for browser flow compatibility
+                        request.session["drpp_preview_state_id"] = preview_state.pk
+                        request.session.modified = True
+
                 if preview_rows:
                     first = preview_rows[0]
                     _meta["nomor_spm"] = first.get("nomor_spm") or _meta.get("nomor_spm") or paket.nomor_spm
@@ -653,6 +801,30 @@ def paket_spm_preview(request):
                 return redirect("paket_spm:preview")
 
         if action == "commit":
+            # ================================================================
+            # COMMIT REVALIDATION: Use DRPPPreviewState as canonical frozen parent
+            # ================================================================
+            preview_state_id = request.session.get("drpp_preview_state_id")
+            commit_parent_package = None
+
+            if preview_state_id:
+                # Load DRPPPreviewState from DB
+                preview_state = get_drpp_preview_state_by_session(request, user=request.user)
+                if preview_state and preview_state.pk == preview_state_id:
+                    # Verify frozen parent is still valid
+                    if preview_state.selection_conflict:
+                        messages.error(request, preview_state.conflict_message or "Terjadi konflik Seleksi. Buat preview ulang.")
+                        return redirect("paket_spm:preview")
+
+                    if not preview_state.is_frozen_parent_valid():
+                        messages.error(request, "SPM parent yang dipilih di preview sudah tidak valid. Buat preview ulang.")
+                        return redirect("paket_spm:preview")
+
+                    commit_parent_package = preview_state.get_frozen_parent_for_commit()
+                    if not commit_parent_package:
+                        messages.error(request, "SPM parent tidak ditemukan. Buat preview ulang.")
+                        return redirect("paket_spm:preview")
+
             if parsed.get("parser_version") == DRPP_BATCH_VERSION:
                 commit_drpp = clean_optional(request.POST.get("commit_drpp"))
                 if not commit_drpp:
@@ -791,28 +963,124 @@ def paket_spm_preview(request):
                 messages.error(request, "Dokumen memiliki DRPP/Kuitansi. Gunakan alur simpan DRPP normal.")
                 return redirect("paket_spm:preview")
             try:
-                # Archive the uploaded file locally (Drive if configured, otherwise local only).
-                # Archive failures must NOT block the parent save.
+                spm_meta = (parsed.get("spm") or {}).get("metadata") or {}
+
+                # 1. Resolve canonical identity
+                satker_code = (
+                    spm_meta.get("satker_app_code")
+                    or spm_meta.get("satker_code")
+                    or paket.satker_code
+                    or ""
+                ).strip()
+                _tanggal_spm = spm_meta.get("tanggal_spm")
+                tahun = (
+                    getattr(_tanggal_spm, "year", None)  # works if it's a date/datetime object
+                    or (int(_tanggal_spm[:4]) if isinstance(_tanggal_spm, str) and len(_tanggal_spm) >= 4 else None)  # parse from ISO string "2026-01-15"
+                    or spm_meta.get("tahun")
+                    or paket.tahun
+                    or None
+                )
+                nomor_spm = (spm_meta.get("nomor_spm") or "").strip()
+
+                if not satker_code or not tahun or not nomor_spm:
+                    messages.error(request, "Satker, tahun, atau nomor SPM belum lengkap untuk disimpan sebagai parent.")
+                    return redirect("paket_spm:preview")
+
+                # 2. Find or create canonical TransactionPackage
+                package, package_created = find_or_create_package(
+                    satker_code=satker_code,
+                    tahun=int(tahun),
+                    nomor_spm=nomor_spm,
+                    user=request.user,
+                )
+
+                # 3. Enrich package with SPM data
+                enrich_from_spm(
+                    package=package,
+                    tanggal_spm=spm_meta.get("tanggal_spm"),
+                    jenis_spm=spm_meta.get("jenis_spm"),
+                    nilai_spm=spm_meta.get("total_pembayaran"),
+                    deskripsi=spm_meta.get("uraian", ""),
+                    source_filename=paket.original_filename,
+                    user=request.user,
+                )
+
+                # 4. Find and enrich existing TransactionDetail rows for this package
+                existing_dk_rows = list(
+                    TransactionDetail.objects.filter(
+                        satker_code=satker_code,
+                        nomor_spm__iexact=nomor_spm,
+                    ).filter(
+                        Q(tanggal_spm__year=int(tahun)) | Q(tanggal_spm__isnull=True)
+                    ).order_by("id")
+                )
+                if existing_dk_rows:
+                    # Link SPM to existing D_K rows
+                    for dk_row in existing_dk_rows:
+                        mark_checklist_present(dk_row, "SPM", request.user)
+                        refresh_transaction_document_status(dk_row, verified_document_type="SPM")
+
+                    # Create document links for D_K rows
+                    try:
+                        link_paket_spm_source_document(
+                            paket,
+                            existing_dk_rows,
+                            user=request.user,
+                            parsed=parsed,
+                            document_status="Lengkap SPM Utama",
+                            existing_dk=True,
+                        )
+                    except Exception as link_exc:
+                        logger.warning("[SPM PARENT] Document link failed (D_K exists), continuing: %s", link_exc)
+                else:
+                    # No existing D_K — just create a standalone SPM document link
+                    try:
+                        link_paket_spm_source_document(
+                            paket,
+                            [],  # no transactions yet
+                            user=request.user,
+                            parsed=parsed,
+                            document_status="Lengkap SPM Utama",
+                            existing_dk=False,
+                        )
+                    except Exception as link_exc:
+                        logger.warning("[SPM PARENT] Document link failed (standalone), continuing: %s", link_exc)
+
+                # 5. Archive file (Drive if configured)
                 source_path = paket.zip_file.path if paket.zip_file else ""
                 if source_path:
                     from apps.documents.services.google_drive import archive_file_link
-                    spm_meta = (parsed.get("spm") or {}).get("metadata") or {}
                     try:
-                        archive_result, _, _ = archive_file_link(
+                        archive_file_link(
                             source_path,
                             user=request.user,
                             jenis_dokumen="SPM",
                             nama_file=paket.original_filename,
-                            satker_code=paket.satker_code or spm_meta.get("satker_code", ""),
-                            nomor_spm=spm_meta.get("nomor_spm") or "",
+                            satker_code=satker_code,
+                            nomor_spm=nomor_spm,
                             no_drpp="",
                             no_kuitansi="",
                         )
                     except Exception as archive_exc:
                         logger.warning("[SPM PARENT] Drive archive failed, continuing: %s", archive_exc)
+
+                # 6. Establish active SPM parent for DRPP uploads
+                set_active_parent(
+                    request=request,
+                    package=package,
+                    selection_method="SPM_SAVE",
+                    selection_evidence={
+                        "paket_spm_upload_id": paket.id,
+                        "source_filename": paket.original_filename,
+                    },
+                    user=request.user,
+                )
+
                 paket.status = PaketSPMUpload.Status.COMMITTED
                 paket.save(update_fields=["status"])
+
             except Exception as exc:
+                logger.exception("[SPM PARENT] Save failed: %s", exc)
                 messages.error(request, f"Gagal menyimpan SPM parent: {exc}")
                 return redirect("paket_spm:preview")
             messages.success(request, "SPM parent berhasil disimpan.")
@@ -1006,6 +1274,9 @@ def paket_spm_preview(request):
     if rekon_errors and not transaction_groups:
         can_commit = False
 
+    # Get active parent for preview context
+    active_parent = get_active_parent_for_user(request=request, user=request.user)
+
     context = permission_context(request.user)
     context.update({
         "page_title": "Preview Upload DRPP",
@@ -1032,6 +1303,7 @@ def paket_spm_preview(request):
         "paket": paket,
         "can_commit": can_commit,
         "lampiran_warnings": lampiran_warnings(parsed),
+        "active_parent": active_parent,
     })
     return render(request, "paket_spm/preview.html", context)
 
@@ -1549,3 +1821,27 @@ def paket_spm_drafts(request):
         "drafts": drafts,
     })
     return render(request, "paket_spm/drafts.html", context)
+
+
+@login_required
+@require_POST
+def change_active_parent(request):
+    """Ganti SPM: clear current parent and redirect to SPM upload workflow."""
+    cleared = _clear_active_parent_service(request=request, user=request.user)
+    if cleared:
+        messages.info(request, "SPM Parent sebelumnya telah dilepas. Silakan pilih atau upload SPM baru.")
+    else:
+        messages.info(request, "Silakan pilih atau upload SPM baru.")
+    return redirect("paket_spm:list")
+
+
+@login_required
+@require_POST
+def clear_active_parent(request):
+    """Clear the active SPM parent (Lepas SPM Parent)."""
+    cleared = _clear_active_parent_service(request=request, user=request.user)
+    if cleared:
+        messages.info(request, "SPM Parent aktif telah dilepas.")
+    else:
+        messages.info(request, "Tidak ada SPM Parent aktif yang perlu dilepas.")
+    return redirect("paket_spm:list")

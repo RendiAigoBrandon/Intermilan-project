@@ -24,6 +24,47 @@
   </div>
   {% endif %}
 
+  {% if active_parent %}
+  <div class="note-box mt-small" style="border-left: 3px solid #2e7d32; background: #f6fbf6;">
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+      <div>
+        <strong style="color: #2e7d32;">&#10004; SPM PARENT AKTIF</strong>
+        <table style="margin-top: 6px; font-size: 13px; border-collapse: collapse;">
+          <tr><td style="padding: 1px 8px 1px 0; color: #555;">No. SPM&nbsp;&nbsp;</td><td style="padding: 1px 0;"><b>{{ active_parent.nomor_spm }}</b></td></tr>
+          <tr><td style="padding: 1px 8px 1px 0; color: #555;">Satker&nbsp;&nbsp;</td><td style="padding: 1px 0;"><b>{{ active_parent.satker_code }}</b></td></tr>
+          <tr><td style="padding: 1px 8px 1px 0; color: #555;">Tahun&nbsp;&nbsp;</td><td style="padding: 1px 0;"><b>{{ active_parent.tahun }}</b></td></tr>
+          <tr><td style="padding: 1px 8px 1px 0; color: #555;">Tanggal&nbsp;&nbsp;</td><td style="padding: 1px 0;"><b>{{ active_parent.tanggal_spm|default:"-" }}</b></td></tr>
+          <tr><td style="padding: 1px 8px 1px 0; color: #555;">Jenis&nbsp;&nbsp;</td><td style="padding: 1px 0;"><b>{{ active_parent.jenis_spm|default:"-" }}</b></td></tr>
+        </table>
+      </div>
+      <div style="display: flex; gap: 8px; flex-shrink: 0;">
+        {# Ganti SPM: clears current parent and redirects to SPM upload workflow #}
+        <form method="post" action="{% url 'paket_spm:change_active_parent' %}" style="margin:0;">
+          {% csrf_token %}
+          <button type="submit" class="btn ghost" onclick="return confirm('Ganti SPM parent aktif? SPM sebelumnya akan dilepas dan Anda dapat memilih SPM baru.')">Ganti SPM</button>
+        </form>
+        {# Lepas SPM Parent: just clears the parent #}
+        <form method="post" action="{% url 'paket_spm:clear_active_parent' %}" style="margin:0;">
+          {% csrf_token %}
+          <button type="submit" class="btn" style="background: #c62828; color: #fff;" onclick="return confirm('Lepas SPM Parent aktif? Data SPM tetap tersimpan.')">Lepas SPM Parent</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="note-box mt-small" style="border-left: 3px solid #9e9e9e; background: #fafafa;">
+    <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+      <div>
+        <strong style="color: #666;">&#9898; TIDAK ADA SPM PARENT AKTIF</strong>
+        <p style="margin: 4px 0 0; color: #777; font-size: 13px;">Pilih atau upload SPM sebelum melanjutkan DRPP.</p>
+      </div>
+      <div style="flex-shrink: 0;">
+        {# TODO: Add link to select existing SPM parent #}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   <form class="upload-form-stack mt js-drpp-upload-form" method="post" enctype="multipart/form-data" data-loading-title="Sedang memproses DRPP dan kuitansi" data-loading-description="Dokumen sedang dibaca dan diproses dengan OCR. Proses ini dapat memerlukan beberapa saat.">
     {% csrf_token %}
     {% if sp2d_context %}<input type="hidden" name="sp2d_raw_id" value="{{ sp2d_context.sp2d_raw_id }}">{% endif %}

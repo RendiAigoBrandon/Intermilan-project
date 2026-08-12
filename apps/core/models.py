@@ -1,4 +1,5 @@
 from django.db import models
+from typing import Optional
 
 
 class MonitoringSummary(models.Model):
@@ -377,6 +378,15 @@ class DRPPPreviewState(models.Model):
             return False
         except Exception:
             return False
+
+    def get_frozen_parent_for_commit(self) -> Optional["TransactionPackage"]:
+        """Get the frozen parent package for commit. Returns None if invalid."""
+        if not self.is_frozen_parent_valid():
+            return None
+        try:
+            return self.frozen_parent_package
+        except TransactionPackage.DoesNotExist:
+            return None
 
 
 class TransactionProvenance(models.Model):

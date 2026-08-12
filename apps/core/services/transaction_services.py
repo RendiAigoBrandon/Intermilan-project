@@ -105,12 +105,22 @@ def find_or_create_package(
     if not all([satker_code, tahun, nomor_spm]):
         raise ValueError("satker_code, tahun, and nomor_spm are required")
 
-    package, created = TransactionPackage.objects.get_or_create(
-        satker_code=satker_code,
-        tahun=tahun,
-        nomor_spm=nomor_spm,
-        defaults={"created_by": user} if user else {},
-    )
+    try:
+        package, created = TransactionPackage.objects.get_or_create(
+            satker_code=satker_code,
+            tahun=tahun,
+            nomor_spm=nomor_spm,
+            defaults={},
+        )
+    except Exception:
+        package, created = TransactionPackage.objects.get_or_create(
+            satker_code=satker_code,
+            tahun=tahun,
+            nomor_spm=nomor_spm,
+        )
+    if user and created and hasattr(package, "created_by"):
+        package.created_by = user
+        package.save(update_fields=["created_by"])
 
     logger.info(
         "Package lookup: %s/%d/%s -> %s (created=%s)",
@@ -212,7 +222,8 @@ def enrich_from_spm(
     warnings = []
 
     if not package.pk:
-        package.created_by = user
+        if hasattr(package, "created_by"):
+            package.created_by = user
         created = True
 
     # Update SPM fields
@@ -231,6 +242,14 @@ def enrich_from_spm(
             )
         package.jenis_spm = jenis_spm
         enriched_fields.append("jenis_spm")
+
+    # Normalize nilai_spm to Decimal for consistent comparison
+    if nilai_spm is not None:
+        if isinstance(nilai_spm, str):
+            try:
+                nilai_spm = Decimal(nilai_spm)
+            except Exception:
+                pass  # keep as-is if conversion fails
 
     if nilai_spm is not None and package.nilai_spm != nilai_spm:
         # Check for significant discrepancy
@@ -550,6 +569,24 @@ def create_drpp_preview_state(
     )
 
     return preview_state
+
+
+def get_drpp_preview_state_by_session(request, user=None) -> Optional[DRPPPreviewState]:
+    """
+    Load the current DRPPPreviewState for this session.
+
+    Returns the most recent PENDING state for this session_key and user.
+    """
+    if user is None:
+        user = request.user if request else None
+
+    session_key = request.session.session_key if request else ""
+
+    return DRPPPreviewState.objects.filter(
+        session_key=session_key,
+        user=user,
+        status=DRPPPreviewState.Status.PENDING,
+    ).order_by("-created_at").first()
 
 
 def commit_drpp_with_preview(

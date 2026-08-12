@@ -5,6 +5,7 @@ import datetime
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_POST
 from django.core.files.storage import FileSystemStorage
 from django.core.paginator import Paginator
 from django.shortcuts import redirect, render
@@ -17,6 +18,7 @@ from apps.accounts.access import (
     permission_context,
 )
 from apps.core.views import build_pagination_window, normalize_page_size
+from apps.core.services import get_active_parent_for_user, clear_active_parent as _clear_parent_svc
 from apps.documents.services.google_drive_dedup import archive_file_with_dedup
 from apps.documents.models import DocumentDriveLink
 
@@ -162,6 +164,7 @@ def drpp_list(request):
     page_obj = paginator.get_page(request.GET.get("page"))
     base_query = request.GET.copy()
     base_query.pop("page", None)
+    active_parent = get_active_parent_for_user(request=request, user=request.user)
     context = permission_context(request.user)
     context.update(
         {
@@ -176,6 +179,7 @@ def drpp_list(request):
             "page_end": page_obj.end_index() if paginator.count else 0,
             "base_querystring": base_query.urlencode(),
             "pagination_window": build_pagination_window(page_obj),
+            "active_parent": active_parent,
         }
     )
     return render(
@@ -329,3 +333,27 @@ def drpp_preview(request):
         "warnings": prep["warnings"]
     })
     return render(request, "drpp/preview.html", context)
+
+
+@require_POST
+@login_required
+def change_active_parent(request):
+    """Ganti SPM: clear current parent and redirect to SPM upload workflow."""
+    cleared = _clear_parent_svc(request=request, user=request.user)
+    if cleared:
+        messages.info(request, "SPM Parent sebelumnya telah dilepas. Silakan pilih atau upload SPM baru.")
+    else:
+        messages.info(request, "Silakan pilih atau upload SPM baru.")
+    return redirect("paket_spm:list")
+
+
+@require_POST
+@login_required
+def clear_active_parent(request):
+    """Clear the active SPM parent (Lepas SPM Parent)."""
+    cleared = _clear_parent_svc(request=request, user=request.user)
+    if cleared:
+        messages.info(request, "SPM Parent aktif telah dilepas.")
+    else:
+        messages.info(request, "Tidak ada SPM Parent aktif yang perlu dilepas.")
+    return redirect("drpp:list")
