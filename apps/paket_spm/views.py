@@ -635,7 +635,14 @@ def paket_spm_preview(request):
                     else:
                         # Inherit SPM fields where blank in preview_rows
                         inherited_fields = []
+                        # Initialize _meta safely before the try so it's always defined for line 719+.
+                        # Then apply inheritance on top (inherited values override existing _meta values).
+                        # Safe JSON conversion of _meta["bulan_sp2d"] / _meta["total_pembayaran"] AFTER inheritance.
                         try:
+                            _meta = parsed["spm"]["metadata"]  # always exists after init
+
+                            # Inherit SPM fields where blank in preview_rows
+                            inherited_fields = []
                             if preview_rows:
                                 first = preview_rows[0]
                                 if not first.get("nomor_spm") and parent_package.nomor_spm:
@@ -651,15 +658,7 @@ def paket_spm_preview(request):
                                     first["cara_pembayaran"] = parent_package.cara_pembayaran
                                     inherited_fields.append("cara_pembayaran")
 
-                            # Also populate parsed["spm"]["metadata"] so that
-                            # build_transaction_rows_from_package() (called on recalculate)
-                            # reads the inherited SPM fields.  The above updates to
-                            # preview_rows[0] are for the initial preview display;
-                            # this update makes the inheritance persist through form
-                            # recalculation.
-                            if "metadata" not in parsed["spm"]:
-                                parsed["spm"]["metadata"] = {}
-                            _meta = parsed["spm"]["metadata"]
+                            # Inherit into _meta so build_transaction_rows_from_package finds it on recalculate
                             if not _meta.get("nomor_spm") and parent_package.nomor_spm:
                                 _meta["nomor_spm"] = parent_package.nomor_spm
                             if not _meta.get("tanggal_spm") and parent_package.tanggal_spm:
@@ -669,7 +668,7 @@ def paket_spm_preview(request):
                             if not _meta.get("cara_pembayaran") and getattr(parent_package, "cara_pembayaran", None):
                                 _meta["cara_pembayaran"] = parent_package.cara_pembayaran
 
-                            # Update all KW items in drpp_groups
+                            # Inherit into drpp_groups items
                             if parsed.get("drpp_groups"):
                                 for group in parsed["drpp_groups"]:
                                     if not group.get("items"):
@@ -682,22 +681,32 @@ def paket_spm_preview(request):
                                         if "jenis_spm" not in item and parent_package.jenis_spm:
                                             item["jenis_spm"] = parent_package.jenis_spm
 
-                            # Update _meta from inherited first row
-                            paket.nomor_spm = first.get("nomor_spm") or paket.nomor_spm
-
-                            if inherited_fields:
-                                parent_warning = f"Field SPM diwariskan dari parent aktif: {', '.join(inherited_fields)}"
-                                messages.info(request, parent_warning)
+                            # _meta may contain non-string types (Decimal, date, int) that fail JSON serialization
+                            # in create_drpp_preview_state(preview_data=parsed). Convert them to strings here.
+                            if _meta.get("bulan_sp2d") is not None:
+                                val = _meta["bulan_sp2d"]
+                                if not isinstance(val, str):
+                                    try:
+                                        _meta["bulan_sp2d"] = str(val)
+                                    except Exception:
+                                        pass
+                            if _meta.get("total_pembayaran") is not None:
+                                val = _meta["total_pembayaran"]
+                                if not isinstance(val, str):
+                                    try:
+                                        _meta["total_pembayaran"] = str(val)
+                                    except Exception:
+                                        pass
 
                             logger.info(
-                                "[INHERIT] inherited_fields=%s to parsed['spm']['metadata']=%s",
-                                inherited_fields,
-                                _meta,
+                                "[INHERIT] inherited_fields=%s _meta=%s",
+                                inherited_fields, _meta,
                             )
                         except Exception as exc:
                             logger.exception("[INHERIT] inheritance block crashed: %s", exc)
                             messages.error(request, f"Gagal mewariskan SPM parent: {exc}")
                             inherited_fields = []
+                            _meta = {}  # safe fallback for line 719+
 
                         # Create DRPPPreviewState as canonical frozen parent (DB-backed)
                         preview_state = create_drpp_preview_state(
