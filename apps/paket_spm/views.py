@@ -564,9 +564,16 @@ def paket_spm_preview(request):
                 parent_conflict = None
 
                 # Extract DRPP identity from parsed data
+                drpp_meta = (parsed.get("drpp") or {}).get("metadata") or {}
+                if not drpp_meta and parsed.get("drpps"):
+                    drpp_meta = ((parsed.get("drpps") or [{}])[0] or {}).get("metadata") or {}
                 drpp_satker = (
                     parsed.get("spm", {}).get("metadata", {}).get("satker_code")
                     or parsed.get("spm", {}).get("metadata", {}).get("satker_app_code")
+                    or parsed.get("spm", {}).get("metadata", {}).get("satker_djpb_code")
+                    or drpp_meta.get("satker_app_code")
+                    or drpp_meta.get("satker_code")
+                    or drpp_meta.get("satker_djpb_code")
                     or paket.satker_code
                     or ""
                 ).strip()
@@ -648,24 +655,33 @@ def paket_spm_preview(request):
                                 else parent_package.jenis_spm
                             )
                         parent_bulan_sp2d = getattr(getattr(parent_package, "tanggal_sp2d", None), "month", None)
+                        parent_satker = clean_optional(parent_package.satker_code)
+
+                        def inherited_row_field(row, field, value):
+                            if row.get(field) or not value:
+                                return False
+                            row[field] = value
+                            review_fields = set(row.get("_preview_review_fields") or [])
+                            blank_fields = set(row.get("_preview_blank_fields") or [])
+                            review_fields.discard(field)
+                            blank_fields.discard(field)
+                            row["_preview_review_fields"] = sorted(review_fields)
+                            row["_preview_blank_fields"] = sorted(blank_fields)
+                            row["status_detail"] = "PERLU_REVIEW" if review_fields else "LENGKAP"
+                            return True
 
                         inherited_fields = []
                         if preview_rows:
                             first = preview_rows[0]
-                            if not first.get("nomor_spm") and parent_package.nomor_spm:
-                                first["nomor_spm"] = parent_package.nomor_spm
+                            if inherited_row_field(first, "nomor_spm", parent_package.nomor_spm):
                                 inherited_fields.append("nomor_spm")
-                            if not first.get("tanggal_spm") and parent_package.tanggal_spm:
-                                first["tanggal_spm"] = parent_package.tanggal_spm
+                            if inherited_row_field(first, "tanggal_spm", parent_package.tanggal_spm):
                                 inherited_fields.append("tanggal_spm")
-                            if not first.get("jenis_spm") and parent_package.jenis_spm:
-                                first["jenis_spm"] = parent_package.jenis_spm
+                            if inherited_row_field(first, "jenis_spm", parent_package.jenis_spm):
                                 inherited_fields.append("jenis_spm")
-                            if not first.get("bulan_sp2d") and parent_bulan_sp2d:
-                                first["bulan_sp2d"] = parent_bulan_sp2d
+                            if inherited_row_field(first, "bulan_sp2d", parent_bulan_sp2d):
                                 inherited_fields.append("bulan_sp2d")
-                            if not first.get("cara_pembayaran") and parent_cara_pembayaran:
-                                first["cara_pembayaran"] = parent_cara_pembayaran
+                            if inherited_row_field(first, "cara_pembayaran", parent_cara_pembayaran):
                                 inherited_fields.append("cara_pembayaran")
 
                         if not _meta.get("nomor_spm") and parent_package.nomor_spm:
@@ -678,6 +694,20 @@ def paket_spm_preview(request):
                             _meta["bulan_sp2d"] = parent_bulan_sp2d
                         if not _meta.get("cara_pembayaran") and parent_cara_pembayaran:
                             _meta["cara_pembayaran"] = parent_cara_pembayaran
+                        if parent_satker and not (
+                            _meta.get("satker_code")
+                            or _meta.get("satker_app_code")
+                            or _meta.get("satker_djpb_code")
+                        ):
+                            _meta["satker_code"] = parent_satker
+                            _meta["satker_app_code"] = parent_satker
+                            inherited_fields.append("satker_code")
+                        if parent_satker:
+                            context = parsed.setdefault("paket_context", {})
+                            if not context.get("satker_code"):
+                                context["satker_code"] = parent_satker
+                            if not paket.satker_code:
+                                paket.satker_code = parent_satker
 
                         if parsed.get("drpp_groups"):
                             for group in parsed["drpp_groups"]:

@@ -19,12 +19,14 @@ import os
 from datetime import date, datetime
 from decimal import Decimal
 
+from django.contrib.messages import get_messages
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from unittest.mock import patch, MagicMock
 
+from apps.core.drpp_batch_parser import PARSER_VERSION as DRPP_BATCH_VERSION
 from apps.core.models import (
     ActiveParentSession,
     DRPPPreviewState,
@@ -357,15 +359,20 @@ class DRPPParentRevalidationHTTPRegressionTests(TestCase, SPMParentTestMixin):
         row.update(overrides)
         return row
 
-    def parsed_drpp(self, spm_shape=None, row=None):
+    def parsed_drpp(self, spm_shape=None, row=None, satker_code="019937", batch=False):
         row = row or self.base_row()
+        drpp_meta = {"nomor_drpp": "00025", "tahun": 2026}
+        if satker_code is not None:
+            drpp_meta["satker_code"] = satker_code
+        if batch:
+            drpp_meta.update({"source_item_count": 1, "printed_total": row.get("nilai_bruto", "1000")})
         drpp = {
             "file_name": "DRPP 00025.pdf",
             "status": "parsed_text",
-            "metadata": {"nomor_drpp": "00025", "satker_code": "019937", "tahun": 2026},
+            "metadata": drpp_meta,
             "items": [],
         }
-        return {
+        parsed = {
             "ok": True,
             "files": [{"file_name": "DRPP 00025.pdf", "type": "DRPP"}],
             "spm": spm_shape,
@@ -376,20 +383,31 @@ class DRPPParentRevalidationHTTPRegressionTests(TestCase, SPMParentTestMixin):
                 "no_drpp": "00025",
                 "drpp": drpp,
                 "items": [dict(row)],
-                "validation": {"status": "LENGKAP", "can_commit": True, "errors": []},
-                "status": "LENGKAP",
+                "validation": {
+                    "status": "BALANCE" if batch else "LENGKAP",
+                    "can_commit": True,
+                    "errors": [],
+                },
+                "status": "BALANCE" if batch else "LENGKAP",
             }],
             "kw_by_drpp": {"00025": [dict(row)]},
             "kw_items": [dict(row)],
             "preview_rows": [dict(row)],
-            "paket_context": {"satker_code": "019937", "tahun": 2026, "bulan": 1},
+            "paket_context": {"tahun": 2026, "bulan": 1},
             "warnings": [],
         }
+        if satker_code is not None:
+            parsed["paket_context"]["satker_code"] = satker_code
+        if batch:
+            parsed["parser_version"] = DRPP_BATCH_VERSION
+            parsed["spm_family"] = "GUP_REGULAR"
+            parsed["document_requirement_policy"] = "DRPP_REQUIRED"
+        return parsed
 
-    def open_preview(self, parsed):
+    def open_preview(self, parsed, satker_code="019937"):
         paket = PaketSPMUpload.objects.create(
             original_filename="DRPP 00025.zip",
-            satker_code="019937",
+            satker_code=satker_code,
             tahun=2026,
             status=PaketSPMUpload.Status.PREVIEW,
             uploaded_by=self.user,
@@ -413,6 +431,14 @@ class DRPPParentRevalidationHTTPRegressionTests(TestCase, SPMParentTestMixin):
             data["commit_choice"] = commit_choice
         for field in self.preview_fields:
             data[f"rows-0-{field}"] = row.get(field, "")
+        return data
+
+    def batch_post_rows(self, row=None, action="recalculate"):
+        data = self.post_rows(row=row, action=action)
+        data["nomor_spm"] = ""
+        data["satker_code"] = ""
+        if action == "commit":
+            data["commit_drpp"] = "00025"
         return data
 
     def test_recalculate_inherits_active_parent_when_spm_is_none(self):
@@ -510,6 +536,63 @@ class DRPPParentRevalidationHTTPRegressionTests(TestCase, SPMParentTestMixin):
         self.assertEqual(dk.cara_pembayaran, "UP/TUP")
         self.assertEqual(dk.no_kuitansi, "KW-1")
         self.assertEqual(dk.no_drpp, "00025")
+
+    def test_batch_commit_uses_active_parent_satker_after_revalidation(self):
+        row = self.base_row(nomor_spm="SPM-X")
+        paket = self.open_preview(
+            self.parsed_drpp(spm_shape=None, row=self.base_row(), satker_code="", batch=True),
+            satker_code="",
+        )
+
+        recalc = self.client.post(reverse("paket_spm:preview"), self.batch_post_rows(row=row))
+
+        self.assertEqual(recalc.status_code, 302)
+        paket.refresh_from_db()
+        meta = paket.parsed_data["spm"]["metadata"]
+        self.assertEqual(meta["satker_code"], "019937")
+        self.assertEqual(meta["satker_app_code"], "019937")
+        self.assertEqual(paket.parsed_data["paket_context"]["satker_code"], "019937")
+
+        with patch("apps.paket_spm.views.link_followup_document"):
+            committed = self.client.post(
+                reverse("paket_spm:preview"),
+                self.batch_post_rows(row=paket.parsed_data["preview_rows"][0], action="commit"),
+            )
+
+        self.assertEqual(committed.status_code, 302)
+        messages = [str(message) for message in get_messages(committed.wsgi_request)]
+        self.assertNotIn("Satker belum ditentukan.", messages)
+        dk = TransactionDetail.objects.get(satker_code="019937", nomor_spm="SPM-X")
+        self.assertEqual(dk.tanggal_spm, date(2026, 1, 15))
+        self.assertEqual(dk.jenis_spm, "GUP")
+        self.assertEqual(dk.bulan_sp2d, 1)
+        self.assertEqual(dk.cara_pembayaran, "UP/TUP")
+        self.assertEqual(dk.no_kuitansi, "KW-1")
+        self.assertEqual(dk.no_drpp, "00025")
+
+    def test_explicit_conflicting_drpp_satker_is_not_overwritten(self):
+        row = self.base_row(nomor_spm="SPM-X")
+        paket = self.open_preview(
+            self.parsed_drpp(spm_shape=None, row=self.base_row(), satker_code="029999", batch=True),
+            satker_code="",
+        )
+
+        recalc = self.client.post(reverse("paket_spm:preview"), self.batch_post_rows(row=row))
+
+        self.assertEqual(recalc.status_code, 302)
+        paket.refresh_from_db()
+        self.assertNotEqual(paket.parsed_data["spm"]["metadata"].get("satker_code"), "019937")
+        self.assertEqual(paket.parsed_data["drpp"]["metadata"]["satker_code"], "029999")
+        state = DRPPPreviewState.objects.get(user=self.user, nomor_drpp="00025")
+        self.assertTrue(state.selection_conflict)
+
+        committed = self.client.post(
+            reverse("paket_spm:preview"),
+            self.batch_post_rows(row=paket.parsed_data["preview_rows"][0], action="commit"),
+        )
+
+        self.assertEqual(committed.status_code, 302)
+        self.assertFalse(TransactionDetail.objects.filter(no_drpp="00025", satker_code="019937").exists())
 
     def test_explicit_conflicting_spm_evidence_is_not_overwritten(self):
         from apps.core.services import validate_parent_compatibility
