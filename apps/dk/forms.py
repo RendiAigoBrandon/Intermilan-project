@@ -21,6 +21,7 @@ CARA_PEMBAYARAN_CHOICES = [
 
 class TransactionDetailForm(forms.ModelForm):
     satker_code = forms.ChoiceField(choices=[('', '--- Pilih Satker ---')], label="Satker")
+    akun = forms.ChoiceField(choices=[('', '--- Pilih Akun ---')], label="Akun")
     bulan_sp2d = forms.ChoiceField(choices=BULAN_CHOICES, required=False, label="Bulan SP2D")
     cara_pembayaran = forms.ChoiceField(choices=CARA_PEMBAYARAN_CHOICES, required=False, label="Cara Pembayaran")
     tanggal_spm = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}), required=False, label="Tanggal SPM")
@@ -52,11 +53,6 @@ class TransactionDetailForm(forms.ModelForm):
         self.fields['pembebanan'].label = "Pembebanan"
         self.fields['fp'].label = "FP"
         self.fields['pph21'].label = "PPh21"
-        
-        # Populate akun choices
-        active_akuns = MasterAkun.objects.filter(is_active=True)
-        self.fields['akun'].widget = forms.Select(choices=[('', '--- Pilih Akun ---')] + [(a.kode, f"{a.kode} - {a.nama_akun}") for a in active_akuns])
-
         sp2d_qs = SP2DRaw.objects.all()
         tx_qs = TransactionDetail.objects.exclude(satker_code="")
         if self.user:
@@ -107,6 +103,7 @@ class TransactionDetailForm(forms.ModelForm):
         ]
         self.fields['satker_code'].choices = satker_choices
         self.allowed_satker_codes = {code for code, _label in satker_choices if code}
+        self.fields['akun'].choices = self._akun_choices(tx_qs)
 
         self.sp2d_rows = list(sp2d_qs.order_by("satker_code", "-created_at", "no_sp2d")[:1000])
         sp2d_choices = [('', '--- Tanpa SP2D ---')]
@@ -184,6 +181,36 @@ class TransactionDetailForm(forms.ModelForm):
         self.fields['nilai_bruto'].required = True
         self.fields['nilai_netto'].required = True
         self.fields['pph21'].required = True
+
+    def _akun_choices(self, tx_qs):
+        choices = [('', '--- Pilih Akun ---')]
+        seen = set()
+        master_rows = MasterAkun.objects.filter(is_active=True).values_list("kode", "nama_akun")
+        for kode, nama_akun in master_rows:
+            kode = (kode or "").strip()
+            if kode and kode not in seen:
+                choices.append((kode, f"{kode} - {nama_akun}".rstrip(" -")))
+                seen.add(kode)
+
+        if not seen:
+            akun_rows = (
+                tx_qs.exclude(akun="")
+                .values_list("akun", flat=True)
+                .distinct()
+                .order_by("akun")
+            )
+            for akun in akun_rows:
+                akun = (akun or "").strip()
+                if akun and akun not in seen:
+                    choices.append((akun, akun))
+                    seen.add(akun)
+
+        existing_akun = getattr(self.instance, "akun", "") if self.instance and self.instance.pk else ""
+        existing_akun = (existing_akun or "").strip()
+        if existing_akun and existing_akun not in seen:
+            choices.append((existing_akun, existing_akun))
+
+        return choices
 
     def _form_value(self, field_name):
         if self.is_bound:

@@ -1,6 +1,7 @@
 from django.test import TestCase, Client
 from django.urls import NoReverseMatch, reverse
 from django.contrib.auth import get_user_model
+from apps.dk.forms import TransactionDetailForm
 from apps.dk.models import TransactionDetail, MasterAkun, TransactionChangeLog
 from apps.accounts.models import Profile
 from apps.sp2d.models import SP2DRaw
@@ -84,6 +85,9 @@ class DKTests(TestCase):
         data.update(overrides)
         return data
 
+    def akun_choice_values(self, form):
+        return {value for value, _label in form.fields["akun"].choices}
+
     def test_helper_property(self):
         self.assertEqual(self.transaction.helper, "12345KUIT001")
 
@@ -119,6 +123,121 @@ class DKTests(TestCase):
                 self.assertGreater(index, last_index)
                 last_index = index
         self.assertNotIn("Sp2d raw id", html)
+
+    def test_manual_create_without_sp2d_has_account_choices_and_saves(self):
+        response = self.client.get(reverse("dk:transaction_create"))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("521115", self.akun_choice_values(response.context["form"]))
+
+        response = self.client.post(
+            reverse("dk:transaction_create"),
+            self.valid_transaction_payload(
+                sp2d_raw_id="",
+                akun="521115",
+                nomor_spm="SPM-NO-SP2D",
+                no_kuitansi="00243/KW/019937/2026",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        transaction = TransactionDetail.objects.get(nomor_spm="SPM-NO-SP2D")
+        self.assertIsNone(transaction.sp2d_raw_id)
+        self.assertEqual(transaction.akun, "521115")
+        self.assertEqual(transaction.helper, "52111500243/KW/019937/2026")
+
+    def test_account_choices_do_not_depend_on_sp2d(self):
+        SP2DRaw.objects.all().delete()
+
+        form = TransactionDetailForm(user=self.user, initial={"satker_code": "SAT1"})
+
+        self.assertIn("521115", self.akun_choice_values(form))
+        self.assertEqual(form.fields["sp2d_raw_id"].choices, [("", "--- Tanpa SP2D ---")])
+
+    def test_manual_account_fallback_uses_existing_dk_when_master_empty(self):
+        MasterAkun.objects.all().delete()
+        TransactionDetail.objects.create(
+            satker_code="SAT1",
+            akun="522151",
+            no_kuitansi="FALLBACK-KW",
+            nilai_bruto=1,
+            nilai_netto=1,
+            pph21=0,
+        )
+
+        form = TransactionDetailForm(user=self.user, initial={"satker_code": "SAT1"})
+        self.assertIn("522151", self.akun_choice_values(form))
+
+        response = self.client.post(
+            reverse("dk:transaction_create"),
+            self.valid_transaction_payload(
+                akun="522151",
+                nomor_spm="SPM-FALLBACK-AKUN",
+                no_kuitansi="00243/KW/019937/2026",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        transaction = TransactionDetail.objects.get(nomor_spm="SPM-FALLBACK-AKUN")
+        self.assertEqual(transaction.akun, "522151")
+        self.assertIsNone(transaction.sp2d_raw_id)
+
+    def test_manual_account_fallback_respects_operator_satker_scope(self):
+        MasterAkun.objects.all().delete()
+        TransactionDetail.objects.create(
+            satker_code="SAT2",
+            akun="999999",
+            nilai_bruto=1,
+            nilai_netto=1,
+            pph21=0,
+        )
+
+        form = TransactionDetailForm(user=self.operator)
+        choices = self.akun_choice_values(form)
+
+        self.assertIn("12345", choices)
+        self.assertNotIn("999999", choices)
+
+    def test_manual_create_rejects_account_not_in_choice_source(self):
+        response = self.client.post(
+            reverse("dk:transaction_create"),
+            self.valid_transaction_payload(
+                akun="999999",
+                nomor_spm="SPM-INVALID-AKUN",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(TransactionDetail.objects.filter(nomor_spm="SPM-INVALID-AKUN").exists())
+        self.assertIn("akun", response.context["form"].errors)
+
+    def test_edit_existing_dk_keeps_account_when_master_source_changes(self):
+        MasterAkun.objects.all().delete()
+        self.transaction.akun = "522151"
+        self.transaction.save(update_fields=["akun"])
+
+        response = self.client.get(reverse("dk:transaction_edit", args=[self.transaction.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("522151", self.akun_choice_values(response.context["form"]))
+
+        response = self.client.post(
+            reverse("dk:transaction_edit", args=[self.transaction.pk]),
+            self.valid_transaction_payload(
+                akun="522151",
+                nomor_spm="SPM001",
+                no_kuitansi="KUIT001",
+                deskripsi="Edited without master account",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.transaction.refresh_from_db()
+        self.assertEqual(self.transaction.akun, "522151")
+        self.assertEqual(self.transaction.deskripsi, "Edited without master account")
+
+    def test_manual_form_helper_javascript_still_tracks_account_and_receipt(self):
+        response = self.client.get(reverse("dk:transaction_create"))
+        self.assertContains(response, 'akunField.addEventListener("change", updateHelper);', html=False)
+        self.assertContains(response, 'kuitansiField.addEventListener("input", updateHelper);', html=False)
 
     def test_create_transaction_with_sp2d_links_and_displays_business_labels(self):
         sp2d = SP2DRaw.objects.create(
