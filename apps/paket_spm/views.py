@@ -646,6 +646,24 @@ def paket_spm_preview(request):
                                 first["cara_pembayaran"] = parent_package.cara_pembayaran
                                 inherited_fields.append("cara_pembayaran")
 
+                            # Also populate parsed["spm"]["metadata"] so that
+                            # build_transaction_rows_from_package() (called on recalculate)
+                            # reads the inherited SPM fields.  The above updates to
+                            # preview_rows[0] are for the initial preview display;
+                            # this update makes the inheritance persist through form
+                            # recalculation.
+                            if "metadata" not in parsed["spm"]:
+                                parsed["spm"]["metadata"] = {}
+                            _meta = parsed["spm"]["metadata"]
+                            if not _meta.get("nomor_spm") and parent_package.nomor_spm:
+                                _meta["nomor_spm"] = parent_package.nomor_spm
+                            if not _meta.get("tanggal_spm") and parent_package.tanggal_spm:
+                                _meta["tanggal_spm"] = parent_package.tanggal_spm
+                            if not _meta.get("jenis_spm") and parent_package.jenis_spm:
+                                _meta["jenis_spm"] = parent_package.jenis_spm
+                            if not _meta.get("cara_pembayaran") and getattr(parent_package, "cara_pembayaran", None):
+                                _meta["cara_pembayaran"] = parent_package.cara_pembayaran
+
                             # Update all KW items in drpp_groups
                             if parsed.get("drpp_groups"):
                                 for group in parsed.get("drpp_groups"):
