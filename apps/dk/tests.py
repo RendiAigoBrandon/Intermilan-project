@@ -85,8 +85,8 @@ class DKTests(TestCase):
         data.update(overrides)
         return data
 
-    def akun_choice_values(self, form):
-        return {value for value, _label in form.fields["akun"].choices}
+    def akun_suggestion_values(self, form):
+        return {row["kode"] for row in form.akun_suggestions}
 
     def test_helper_property(self):
         self.assertEqual(self.transaction.helper, "12345KUIT001")
@@ -127,7 +127,9 @@ class DKTests(TestCase):
     def test_manual_create_without_sp2d_has_account_choices_and_saves(self):
         response = self.client.get(reverse("dk:transaction_create"))
         self.assertEqual(response.status_code, 200)
-        self.assertIn("521115", self.akun_choice_values(response.context["form"]))
+        self.assertIn("521115", self.akun_suggestion_values(response.context["form"]))
+        self.assertContains(response, 'list="dk-akun-suggestions"', html=False)
+        self.assertContains(response, "Ketik atau pilih akun")
 
         response = self.client.post(
             reverse("dk:transaction_create"),
@@ -145,15 +147,15 @@ class DKTests(TestCase):
         self.assertEqual(transaction.akun, "521115")
         self.assertEqual(transaction.helper, "52111500243/KW/019937/2026")
 
-    def test_account_choices_do_not_depend_on_sp2d(self):
+    def test_account_suggestions_do_not_depend_on_sp2d(self):
         SP2DRaw.objects.all().delete()
 
         form = TransactionDetailForm(user=self.user, initial={"satker_code": "SAT1"})
 
-        self.assertIn("521115", self.akun_choice_values(form))
-        self.assertEqual(form.fields["sp2d_raw_id"].choices, [("", "--- Tanpa SP2D ---")])
+        self.assertIn("521115", self.akun_suggestion_values(form))
+        self.assertEqual(form.fields["sp2d_raw_id"].choices, [("", "--- Opsional / Tanpa SP2D ---")])
 
-    def test_manual_account_fallback_uses_existing_dk_when_master_empty(self):
+    def test_manual_account_suggestions_use_existing_dk_when_master_empty(self):
         MasterAkun.objects.all().delete()
         TransactionDetail.objects.create(
             satker_code="SAT1",
@@ -165,7 +167,7 @@ class DKTests(TestCase):
         )
 
         form = TransactionDetailForm(user=self.user, initial={"satker_code": "SAT1"})
-        self.assertIn("522151", self.akun_choice_values(form))
+        self.assertIn("522151", self.akun_suggestion_values(form))
 
         response = self.client.post(
             reverse("dk:transaction_create"),
@@ -181,7 +183,7 @@ class DKTests(TestCase):
         self.assertEqual(transaction.akun, "522151")
         self.assertIsNone(transaction.sp2d_raw_id)
 
-    def test_manual_account_fallback_respects_operator_satker_scope(self):
+    def test_manual_account_suggestions_respect_operator_satker_scope(self):
         MasterAkun.objects.all().delete()
         TransactionDetail.objects.create(
             satker_code="SAT2",
@@ -192,16 +194,30 @@ class DKTests(TestCase):
         )
 
         form = TransactionDetailForm(user=self.operator)
-        choices = self.akun_choice_values(form)
+        choices = self.akun_suggestion_values(form)
 
         self.assertIn("12345", choices)
         self.assertNotIn("999999", choices)
 
-    def test_manual_create_rejects_account_not_in_choice_source(self):
+    def test_manual_create_accepts_new_valid_account_not_in_source(self):
         response = self.client.post(
             reverse("dk:transaction_create"),
             self.valid_transaction_payload(
-                akun="999999",
+                akun=" 522151 ",
+                nomor_spm="SPM-NEW-AKUN",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        transaction = TransactionDetail.objects.get(nomor_spm="SPM-NEW-AKUN")
+        self.assertEqual(transaction.akun, "522151")
+        self.assertIsNone(transaction.sp2d_raw_id)
+
+    def test_manual_create_rejects_invalid_account_format(self):
+        response = self.client.post(
+            reverse("dk:transaction_create"),
+            self.valid_transaction_payload(
+                akun="522 151",
                 nomor_spm="SPM-INVALID-AKUN",
             ),
         )
@@ -217,7 +233,8 @@ class DKTests(TestCase):
 
         response = self.client.get(reverse("dk:transaction_edit", args=[self.transaction.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertIn("522151", self.akun_choice_values(response.context["form"]))
+        self.assertIn("522151", self.akun_suggestion_values(response.context["form"]))
+        self.assertContains(response, 'value="522151"', html=False)
 
         response = self.client.post(
             reverse("dk:transaction_edit", args=[self.transaction.pk]),
@@ -238,6 +255,23 @@ class DKTests(TestCase):
         response = self.client.get(reverse("dk:transaction_create"))
         self.assertContains(response, 'akunField.addEventListener("change", updateHelper);', html=False)
         self.assertContains(response, 'kuitansiField.addEventListener("input", updateHelper);', html=False)
+
+    def test_manual_form_required_optional_markers_match_backend(self):
+        response = self.client.get(reverse("dk:transaction_create"))
+        form = response.context["form"]
+
+        expected_required = {"satker_code", "akun", "nilai_bruto", "nilai_netto", "pph21"}
+        self.assertEqual(
+            {name for name, field in form.fields.items() if field.required},
+            expected_required,
+        )
+        self.assertEqual(form.fields["tanggal_spm"].label, "Tanggal SPM (Opsional)")
+        self.assertEqual(form.fields["bulan_sp2d"].choices[0][1], "--- Opsional / Pilih Bulan ---")
+        self.assertEqual(form.fields["cara_pembayaran"].choices[0][1], "--- Opsional / Pilih Cara Pembayaran ---")
+        self.assertEqual(form.fields["sp2d_raw_id"].choices[0][1], "--- Opsional / Tanpa SP2D ---")
+        self.assertEqual(form.fields["no_drpp"].widget.attrs["placeholder"], "Opsional - isi jika tersedia")
+        self.assertEqual(form.fields["fp"].widget.attrs["placeholder"], "Opsional")
+        self.assertNotIn("placeholder", form.fields["nilai_bruto"].widget.attrs)
 
     def test_create_transaction_with_sp2d_links_and_displays_business_labels(self):
         sp2d = SP2DRaw.objects.create(

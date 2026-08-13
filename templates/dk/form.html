@@ -47,6 +47,11 @@
       <div class="form-group {% if form.akun.errors %}has-error{% endif %}">
         {{ form.akun.label_tag }}
         {{ form.akun }}
+        <datalist id="dk-akun-suggestions">
+          {% for suggestion in form.akun_suggestions %}
+            <option value="{{ suggestion.kode }}" label="{{ suggestion.label }}"></option>
+          {% endfor %}
+        </datalist>
         {% for error in form.akun.errors %}
           <span class="error-msg">{{ error }}</span>
         {% endfor %}

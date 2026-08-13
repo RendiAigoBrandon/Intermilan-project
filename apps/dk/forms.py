@@ -1,18 +1,23 @@
+import re
+
 from django import forms
 from .models import TransactionDetail, MasterAkun
 from apps.accounts.access import can_view_all_satker, filter_by_satker, get_user_satker_code
 from apps.core.satker import get_satker_name_map
 from apps.sp2d.models import SP2DRaw
 
+
+AKUN_PATTERN = re.compile(r"^[0-9][0-9A-Za-z./_-]{1,31}$")
+
 BULAN_CHOICES = [
-    ('', '--- Pilih Bulan ---'),
+    ('', '--- Opsional / Pilih Bulan ---'),
     ('1', 'Januari'), ('2', 'Februari'), ('3', 'Maret'), ('4', 'April'),
     ('5', 'Mei'), ('6', 'Juni'), ('7', 'Juli'), ('8', 'Agustus'),
     ('9', 'September'), ('10', 'Oktober'), ('11', 'November'), ('12', 'Desember'),
 ]
 
 CARA_PEMBAYARAN_CHOICES = [
-    ('', '--- Pilih Cara Pembayaran ---'),
+    ('', '--- Opsional / Pilih Cara Pembayaran ---'),
     ('UP/TUP', 'UP/TUP'),
     ('LS', 'LS'),
     ('LS Kontraktual', 'LS Kontraktual'),
@@ -21,11 +26,19 @@ CARA_PEMBAYARAN_CHOICES = [
 
 class TransactionDetailForm(forms.ModelForm):
     satker_code = forms.ChoiceField(choices=[('', '--- Pilih Satker ---')], label="Satker")
-    akun = forms.ChoiceField(choices=[('', '--- Pilih Akun ---')], label="Akun")
+    akun = forms.CharField(
+        max_length=32,
+        label="Akun",
+        widget=forms.TextInput(attrs={
+            "list": "dk-akun-suggestions",
+            "placeholder": "Ketik atau pilih akun",
+            "autocomplete": "off",
+        }),
+    )
     bulan_sp2d = forms.ChoiceField(choices=BULAN_CHOICES, required=False, label="Bulan SP2D")
     cara_pembayaran = forms.ChoiceField(choices=CARA_PEMBAYARAN_CHOICES, required=False, label="Cara Pembayaran")
     tanggal_spm = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}), required=False, label="Tanggal SPM")
-    sp2d_raw_id = forms.ChoiceField(choices=[('', '--- Tanpa SP2D ---')], required=False, label="No SP2D")
+    sp2d_raw_id = forms.ChoiceField(choices=[('', '--- Opsional / Tanpa SP2D ---')], required=False, label="No SP2D")
 
     class Meta:
         model = TransactionDetail
@@ -44,6 +57,7 @@ class TransactionDetailForm(forms.ModelForm):
         self.fields['satker_code'].required = True
         self.fields['akun'].label = "Akun"
         self.fields['nomor_spm'].label = "Nomor SPM"
+        self.fields['tanggal_spm'].label = "Tanggal SPM (Opsional)"
         self.fields['jenis_spm'].label = "Jenis SPM"
         self.fields['no_kuitansi'].label = "No. Kuitansi"
         self.fields['no_drpp'].label = "No. DRPP"
@@ -53,6 +67,9 @@ class TransactionDetailForm(forms.ModelForm):
         self.fields['pembebanan'].label = "Pembebanan"
         self.fields['fp'].label = "FP"
         self.fields['pph21'].label = "PPh21"
+        for field_name in ["nomor_spm", "jenis_spm", "no_kuitansi", "no_drpp", "deskripsi", "pembebanan"]:
+            self.fields[field_name].widget.attrs.setdefault("placeholder", "Opsional - isi jika tersedia")
+        self.fields["fp"].widget.attrs.setdefault("placeholder", "Opsional")
         sp2d_qs = SP2DRaw.objects.all()
         tx_qs = TransactionDetail.objects.exclude(satker_code="")
         if self.user:
@@ -103,10 +120,10 @@ class TransactionDetailForm(forms.ModelForm):
         ]
         self.fields['satker_code'].choices = satker_choices
         self.allowed_satker_codes = {code for code, _label in satker_choices if code}
-        self.fields['akun'].choices = self._akun_choices(tx_qs)
+        self.akun_suggestions = self._akun_suggestions(tx_qs)
 
         self.sp2d_rows = list(sp2d_qs.order_by("satker_code", "-created_at", "no_sp2d")[:1000])
-        sp2d_choices = [('', '--- Tanpa SP2D ---')]
+        sp2d_choices = [('', '--- Opsional / Tanpa SP2D ---')]
         self.sp2d_json = []
         for row in self.sp2d_rows:
             label = " | ".join(
@@ -182,35 +199,37 @@ class TransactionDetailForm(forms.ModelForm):
         self.fields['nilai_netto'].required = True
         self.fields['pph21'].required = True
 
-    def _akun_choices(self, tx_qs):
-        choices = [('', '--- Pilih Akun ---')]
+    def _akun_suggestions(self, tx_qs):
+        suggestions = []
         seen = set()
         master_rows = MasterAkun.objects.filter(is_active=True).values_list("kode", "nama_akun")
         for kode, nama_akun in master_rows:
             kode = (kode or "").strip()
-            if kode and kode not in seen:
-                choices.append((kode, f"{kode} - {nama_akun}".rstrip(" -")))
+            if self._valid_akun_format(kode) and kode not in seen:
+                suggestions.append({"kode": kode, "label": f"{kode} - {nama_akun}".rstrip(" -")})
                 seen.add(kode)
 
-        if not seen:
-            akun_rows = (
-                tx_qs.exclude(akun="")
-                .values_list("akun", flat=True)
-                .distinct()
-                .order_by("akun")
-            )
-            for akun in akun_rows:
-                akun = (akun or "").strip()
-                if akun and akun not in seen:
-                    choices.append((akun, akun))
-                    seen.add(akun)
+        akun_rows = (
+            tx_qs.exclude(akun="")
+            .values_list("akun", flat=True)
+            .distinct()
+            .order_by("akun")
+        )
+        for akun in akun_rows:
+            akun = (akun or "").strip()
+            if self._valid_akun_format(akun) and akun not in seen:
+                suggestions.append({"kode": akun, "label": akun})
+                seen.add(akun)
 
         existing_akun = getattr(self.instance, "akun", "") if self.instance and self.instance.pk else ""
         existing_akun = (existing_akun or "").strip()
-        if existing_akun and existing_akun not in seen:
-            choices.append((existing_akun, existing_akun))
+        if self._valid_akun_format(existing_akun) and existing_akun not in seen:
+            suggestions.append({"kode": existing_akun, "label": existing_akun})
 
-        return choices
+        return suggestions
+
+    def _valid_akun_format(self, value):
+        return bool(AKUN_PATTERN.fullmatch((value or "").strip()))
 
     def _form_value(self, field_name):
         if self.is_bound:
@@ -219,6 +238,14 @@ class TransactionDetailForm(forms.ModelForm):
         if value not in (None, ""):
             return value
         return getattr(self.instance, field_name, "")
+
+    def clean_akun(self):
+        akun = (self.cleaned_data.get("akun") or "").strip()
+        if akun and not self._valid_akun_format(akun):
+            raise forms.ValidationError(
+                "Akun harus berupa kode tanpa spasi, diawali angka, maksimal 32 karakter."
+            )
+        return akun
 
     def clean(self):
         cleaned_data = super().clean()
