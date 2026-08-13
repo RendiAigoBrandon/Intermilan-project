@@ -604,19 +604,23 @@ def paket_spm_preview(request):
                     # DRPP-only upload: inherit SPM fields from active parent
                     parent_package = active_parent.transaction_package
 
-                    # Validate compatibility with DRPP evidence
-                    is_compatible, conflict_msg = validate_parent_compatibility(
-                        package=parent_package,
-                        drpp_satker=drpp_satker or None,
-                        drpp_tahun=drpp_tahun,
-                        drpp_nomor_spm=drpp_nomor_spm or None,
-                    )
+                    try:
+                        # Validate compatibility with DRPP evidence
+                        is_compatible, conflict_msg = validate_parent_compatibility(
+                            package=parent_package,
+                            drpp_satker=drpp_satker or None,
+                            drpp_tahun=drpp_tahun,
+                            drpp_nomor_spm=drpp_nomor_spm or None,
+                        )
+                    except Exception as exc:
+                        logger.exception("[INHERIT] validate_parent_compatibility crashed: %s", exc)
+                        is_compatible = False
+                        conflict_msg = str(exc)
 
                     if not is_compatible:
                         # Block preview if parent is incompatible
                         parent_conflict = conflict_msg
                         messages.warning(request, conflict_msg)
-                        # Mark conflict in DRPPPreviewState so commit is blocked
                         create_drpp_preview_state(
                             request=request,
                             nomor_drpp=first_drpp,
@@ -631,20 +635,21 @@ def paket_spm_preview(request):
                     else:
                         # Inherit SPM fields where blank in preview_rows
                         inherited_fields = []
-                        if preview_rows:
-                            first = preview_rows[0]
-                            if not first.get("nomor_spm") and parent_package.nomor_spm:
-                                first["nomor_spm"] = parent_package.nomor_spm
-                                inherited_fields.append("nomor_spm")
-                            if not first.get("tanggal_spm") and parent_package.tanggal_spm:
-                                first["tanggal_spm"] = parent_package.tanggal_spm
-                                inherited_fields.append("tanggal_spm")
-                            if not first.get("jenis_spm") and parent_package.jenis_spm:
-                                first["jenis_spm"] = parent_package.jenis_spm
-                                inherited_fields.append("jenis_spm")
-                            if not first.get("cara_pembayaran") and getattr(parent_package, "cara_pembayaran", None):
-                                first["cara_pembayaran"] = parent_package.cara_pembayaran
-                                inherited_fields.append("cara_pembayaran")
+                        try:
+                            if preview_rows:
+                                first = preview_rows[0]
+                                if not first.get("nomor_spm") and parent_package.nomor_spm:
+                                    first["nomor_spm"] = parent_package.nomor_spm
+                                    inherited_fields.append("nomor_spm")
+                                if not first.get("tanggal_spm") and parent_package.tanggal_spm:
+                                    first["tanggal_spm"] = parent_package.tanggal_spm
+                                    inherited_fields.append("tanggal_spm")
+                                if not first.get("jenis_spm") and parent_package.jenis_spm:
+                                    first["jenis_spm"] = parent_package.jenis_spm
+                                    inherited_fields.append("jenis_spm")
+                                if not first.get("cara_pembayaran") and getattr(parent_package, "cara_pembayaran", None):
+                                    first["cara_pembayaran"] = parent_package.cara_pembayaran
+                                    inherited_fields.append("cara_pembayaran")
 
                             # Also populate parsed["spm"]["metadata"] so that
                             # build_transaction_rows_from_package() (called on recalculate)
@@ -666,7 +671,7 @@ def paket_spm_preview(request):
 
                             # Update all KW items in drpp_groups
                             if parsed.get("drpp_groups"):
-                                for group in parsed.get("drpp_groups"):
+                                for group in parsed["drpp_groups"]:
                                     if not group.get("items"):
                                         continue
                                     for item in group["items"]:
@@ -683,6 +688,16 @@ def paket_spm_preview(request):
                             if inherited_fields:
                                 parent_warning = f"Field SPM diwariskan dari parent aktif: {', '.join(inherited_fields)}"
                                 messages.info(request, parent_warning)
+
+                            logger.info(
+                                "[INHERIT] inherited_fields=%s to parsed['spm']['metadata']=%s",
+                                inherited_fields,
+                                _meta,
+                            )
+                        except Exception as exc:
+                            logger.exception("[INHERIT] inheritance block crashed: %s", exc)
+                            messages.error(request, f"Gagal mewariskan SPM parent: {exc}")
+                            inherited_fields = []
 
                         # Create DRPPPreviewState as canonical frozen parent (DB-backed)
                         preview_state = create_drpp_preview_state(
