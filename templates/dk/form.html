@@ -7,6 +7,9 @@
 <section class="card app-card">
   <form method="post" class="standard-form">
     {% csrf_token %}
+    {% for hidden in form.hidden_fields %}
+      {{ hidden }}
+    {% endfor %}
     
     {% if form.non_field_errors %}
       <div class="alert error">
@@ -15,18 +18,143 @@
     {% endif %}
 
     <div class="form-grid">
-      {% for field in form %}
-        <div class="form-group {% if field.errors %}has-error{% endif %}">
-          {{ field.label_tag }}
-          {{ field }}
-          {% if field.help_text %}
-            <small class="help-text">{{ field.help_text }}</small>
-          {% endif %}
-          {% for error in field.errors %}
-            <span class="error-msg">{{ error }}</span>
-          {% endfor %}
-        </div>
-      {% endfor %}
+      <div class="form-group {% if form.satker_code.errors %}has-error{% endif %}">
+        {{ form.satker_code.label_tag }}
+        {{ form.satker_code }}
+        {% for error in form.satker_code.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group">
+        <label for="nama-satker-display">Nama Satker</label>
+        <input type="text" id="nama-satker-display" value="{{ form.satker_name|default:'' }}" readonly>
+      </div>
+
+      <div class="form-group {% if form.sp2d_raw_id.errors %}has-error{% endif %}">
+        {{ form.sp2d_raw_id.label_tag }}
+        {{ form.sp2d_raw_id }}
+        {% for error in form.sp2d_raw_id.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group">
+        <label for="helper-display">Helper</label>
+        <input type="text" id="helper-display" value="{{ form.helper_value|default:'' }}" readonly>
+      </div>
+
+      <div class="form-group {% if form.akun.errors %}has-error{% endif %}">
+        {{ form.akun.label_tag }}
+        {{ form.akun }}
+        {% for error in form.akun.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.bulan_sp2d.errors %}has-error{% endif %}">
+        {{ form.bulan_sp2d.label_tag }}
+        {{ form.bulan_sp2d }}
+        {% for error in form.bulan_sp2d.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.cara_pembayaran.errors %}has-error{% endif %}">
+        {{ form.cara_pembayaran.label_tag }}
+        {{ form.cara_pembayaran }}
+        {% for error in form.cara_pembayaran.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.nomor_spm.errors %}has-error{% endif %}">
+        {{ form.nomor_spm.label_tag }}
+        {{ form.nomor_spm }}
+        {% for error in form.nomor_spm.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.tanggal_spm.errors %}has-error{% endif %}">
+        {{ form.tanggal_spm.label_tag }}
+        {{ form.tanggal_spm }}
+        {% for error in form.tanggal_spm.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.jenis_spm.errors %}has-error{% endif %}">
+        {{ form.jenis_spm.label_tag }}
+        {{ form.jenis_spm }}
+        {% for error in form.jenis_spm.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.no_kuitansi.errors %}has-error{% endif %}">
+        {{ form.no_kuitansi.label_tag }}
+        {{ form.no_kuitansi }}
+        {% for error in form.no_kuitansi.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.no_drpp.errors %}has-error{% endif %}">
+        {{ form.no_drpp.label_tag }}
+        {{ form.no_drpp }}
+        {% for error in form.no_drpp.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.deskripsi.errors %}has-error{% endif %}">
+        {{ form.deskripsi.label_tag }}
+        {{ form.deskripsi }}
+        {% for error in form.deskripsi.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.nilai_bruto.errors %}has-error{% endif %}">
+        {{ form.nilai_bruto.label_tag }}
+        {{ form.nilai_bruto }}
+        {% for error in form.nilai_bruto.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.nilai_netto.errors %}has-error{% endif %}">
+        {{ form.nilai_netto.label_tag }}
+        {{ form.nilai_netto }}
+        {% for error in form.nilai_netto.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.pembebanan.errors %}has-error{% endif %}">
+        {{ form.pembebanan.label_tag }}
+        {{ form.pembebanan }}
+        {% for error in form.pembebanan.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.fp.errors %}has-error{% endif %}">
+        {{ form.fp.label_tag }}
+        {{ form.fp }}
+        {% for error in form.fp.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group {% if form.pph21.errors %}has-error{% endif %}">
+        {{ form.pph21.label_tag }}
+        {{ form.pph21 }}
+        {% for error in form.pph21.errors %}
+          <span class="error-msg">{{ error }}</span>
+        {% endfor %}
+      </div>
     </div>
 
     <div class="form-actions mt-large">
@@ -38,4 +166,120 @@
     </div>
   </form>
 </section>
+
+{{ form.satker_json|json_script:"dk-satker-data" }}
+{{ form.sp2d_json|json_script:"dk-sp2d-data" }}
+<script>
+  (function () {
+    function readJson(id) {
+      var node = document.getElementById(id);
+      if (!node) {
+        return [];
+      }
+      try {
+        return JSON.parse(node.textContent);
+      } catch (error) {
+        return [];
+      }
+    }
+
+    var satkerData = readJson("dk-satker-data");
+    var sp2dData = readJson("dk-sp2d-data");
+    var satkerNameByCode = new Map(satkerData.map(function (row) {
+      return [row.code, row.name || ""];
+    }));
+    var sp2dById = new Map(sp2dData.map(function (row) {
+      return [row.id, row];
+    }));
+
+    var satkerSelect = document.getElementById("id_satker_code");
+    var satkerNameDisplay = document.getElementById("nama-satker-display");
+    var sp2dSelect = document.getElementById("id_sp2d_raw_id");
+    var akunField = document.getElementById("id_akun");
+    var kuitansiField = document.getElementById("id_no_kuitansi");
+    var helperDisplay = document.getElementById("helper-display");
+
+    function annotateSp2dOptions() {
+      if (!sp2dSelect) {
+        return;
+      }
+      Array.from(sp2dSelect.options).forEach(function (option) {
+        var row = sp2dById.get(option.value);
+        if (row) {
+          option.dataset.satkerCode = row.satker_code || "";
+          option.dataset.satkerName = row.satker_name || "";
+        }
+      });
+    }
+
+    function updateSatkerName() {
+      if (!satkerNameDisplay) {
+        return;
+      }
+      var code = satkerSelect ? satkerSelect.value : "";
+      var name = satkerNameByCode.get(code) || "";
+      if (!name && sp2dSelect && sp2dSelect.value) {
+        var row = sp2dById.get(sp2dSelect.value);
+        name = row ? row.satker_name || "" : "";
+      }
+      satkerNameDisplay.value = name;
+    }
+
+    function filterSp2dOptions() {
+      if (!sp2dSelect) {
+        return;
+      }
+      var selectedSatker = satkerSelect ? satkerSelect.value : "";
+      Array.from(sp2dSelect.options).forEach(function (option) {
+        if (!option.value) {
+          option.hidden = false;
+          if (!sp2dSelect.disabled) {
+            option.disabled = false;
+          }
+          return;
+        }
+        var optionSatker = option.dataset.satkerCode || "";
+        var allowed = Boolean(selectedSatker) && optionSatker === selectedSatker;
+        option.hidden = !allowed;
+        if (!sp2dSelect.disabled) {
+          option.disabled = !allowed;
+        }
+        if (!allowed && option.selected && !sp2dSelect.disabled) {
+          sp2dSelect.value = "";
+        }
+      });
+    }
+
+    function updateHelper() {
+      if (!helperDisplay) {
+        return;
+      }
+      var akun = akunField ? akunField.value || "" : "";
+      var kuitansi = kuitansiField ? kuitansiField.value || "" : "";
+      helperDisplay.value = akun + kuitansi;
+    }
+
+    annotateSp2dOptions();
+    filterSp2dOptions();
+    updateSatkerName();
+    updateHelper();
+
+    if (satkerSelect) {
+      satkerSelect.addEventListener("change", function () {
+        filterSp2dOptions();
+        updateSatkerName();
+      });
+    }
+    if (sp2dSelect) {
+      sp2dSelect.addEventListener("change", updateSatkerName);
+    }
+    if (akunField) {
+      akunField.addEventListener("change", updateHelper);
+      akunField.addEventListener("input", updateHelper);
+    }
+    if (kuitansiField) {
+      kuitansiField.addEventListener("input", updateHelper);
+    }
+  }());
+</script>
 {% endblock %}

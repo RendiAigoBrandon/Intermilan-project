@@ -3,6 +3,7 @@ from django.urls import NoReverseMatch, reverse
 from django.contrib.auth import get_user_model
 from apps.dk.models import TransactionDetail, MasterAkun, TransactionChangeLog
 from apps.accounts.models import Profile
+from apps.sp2d.models import SP2DRaw
 
 User = get_user_model()
 
@@ -14,7 +15,11 @@ class DKTests(TestCase):
         
         # Operator Satker
         self.operator = User.objects.create_user(username="op", password="password")
-        Profile.objects.filter(user=self.operator).update(role=Profile.Role.SATKER, satker_code="SAT1")
+        Profile.objects.filter(user=self.operator).update(
+            role=Profile.Role.SATKER,
+            satker_code="SAT1",
+            satker_name="Satker Satu",
+        )
         
         # Viewer
         self.viewer = User.objects.create_user(username="view", password="password")
@@ -24,6 +29,21 @@ class DKTests(TestCase):
         self.client.login(username="testuser", password="password")
         
         self.akun = MasterAkun.objects.create(kode="12345", nama_akun="Test Akun", is_active=True)
+        self.helper_akun = MasterAkun.objects.create(kode="521115", nama_akun="Belanja Honor", is_active=True)
+        self.sp2d_sat1 = SP2DRaw.objects.create(
+            satker_code="SAT1",
+            satker_name="Satker Satu",
+            no_sp2d="SP2D-SAT1",
+            nomor_spm_extracted="SPM001",
+            tahun=2026,
+        )
+        self.sp2d_sat2 = SP2DRaw.objects.create(
+            satker_code="SAT2",
+            satker_name="Satker Dua",
+            no_sp2d="SP2D-SAT2",
+            nomor_spm_extracted="SPM002",
+            tahun=2026,
+        )
         self.transaction = TransactionDetail.objects.create(
             satker_code="SAT1",
             akun="12345",
@@ -42,8 +62,193 @@ class DKTests(TestCase):
             status_detail=TransactionDetail.StatusDetail.DRAFT
         )
 
+    def valid_transaction_payload(self, **overrides):
+        data = {
+            'satker_code': 'SAT1',
+            'sp2d_raw_id': '',
+            'akun': '12345',
+            'bulan_sp2d': '2',
+            'cara_pembayaran': 'LS',
+            'nomor_spm': 'SPM-VALID',
+            'tanggal_spm': '2026-02-01',
+            'jenis_spm': 'Gaji',
+            'no_kuitansi': 'KUIT-VALID',
+            'no_drpp': 'DRPP-VALID',
+            'deskripsi': 'Test',
+            'nilai_bruto': 2000,
+            'nilai_netto': 1800,
+            'pembebanan': '',
+            'fp': '',
+            'pph21': 200,
+        }
+        data.update(overrides)
+        return data
+
     def test_helper_property(self):
         self.assertEqual(self.transaction.helper, "12345KUIT001")
+
+    def test_create_form_renders_manual_business_structure(self):
+        response = self.client.get(reverse("dk:transaction_create"))
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode("utf-8")
+        expected_labels = [
+            "Satker",
+            "Nama Satker",
+            "No SP2D",
+            "Helper",
+            "Akun",
+            "Bulan SP2D",
+            "Cara Pembayaran",
+            "Nomor SPM",
+            "Tanggal SPM",
+            "Jenis SPM",
+            "No. Kuitansi",
+            "No. DRPP",
+            "Deskripsi",
+            "Nilai Bruto",
+            "Nilai Netto",
+            "Pembebanan",
+            "FP",
+            "PPh21",
+        ]
+
+        last_index = -1
+        for label in expected_labels:
+            with self.subTest(label=label):
+                index = html.find(f">{label}", last_index + 1)
+                self.assertGreater(index, last_index)
+                last_index = index
+        self.assertNotIn("Sp2d raw id", html)
+
+    def test_create_transaction_with_sp2d_links_and_displays_business_labels(self):
+        sp2d = SP2DRaw.objects.create(
+            satker_code="019937",
+            satker_name="BPS Provinsi Sumatera Barat",
+            no_sp2d="260100000019075",
+            nomor_spm_extracted="00100T",
+            tanggal_invoice="2026-02-01",
+            bulan_sp2d=2,
+            jenis_spm="UP/TUP",
+            deskripsi="SP2D untuk manual D_K",
+            tahun=2026,
+            nilai_spm=2000,
+            nilai_sp2d=1800,
+            potongan=200,
+        )
+        response = self.client.post(
+            reverse('dk:transaction_create'),
+            self.valid_transaction_payload(
+                satker_code="019937",
+                sp2d_raw_id=str(sp2d.id),
+                akun="521115",
+                nomor_spm="SPM-LINKED",
+                no_kuitansi="00166/KW/019937/2026",
+                cara_pembayaran="UP/TUP",
+                jenis_spm="UP/TUP",
+            ),
+        )
+        self.assertEqual(response.status_code, 302)
+
+        transaction = TransactionDetail.objects.get(nomor_spm="SPM-LINKED")
+        self.assertEqual(transaction.sp2d_raw_id, sp2d.id)
+        self.assertEqual(transaction.satker_code, "019937")
+
+        list_response = self.client.get(reverse("dk:transaction_list"), {"q": "SPM-LINKED"})
+        self.assertContains(list_response, "260100000019075")
+        self.assertContains(list_response, "BPS Provinsi Sumatera Barat")
+
+    def test_helper_is_derived_and_not_stored(self):
+        transaction = TransactionDetail.objects.create(
+            satker_code="019937",
+            akun="521115",
+            no_kuitansi="00166/KW/019937/2026",
+            nilai_bruto=0,
+            nilai_netto=0,
+            pph21=0,
+            created_by=self.user,
+        )
+        self.assertEqual(transaction.helper, "52111500166/KW/019937/2026")
+        self.assertNotIn("helper", [field.name for field in TransactionDetail._meta.fields])
+
+    def test_operator_cannot_link_sp2d_from_another_satker(self):
+        operator = User.objects.create_user(username="op_019937", password="password")
+        Profile.objects.filter(user=operator).update(
+            role=Profile.Role.SATKER,
+            satker_code="019937",
+            satker_name="BPS Provinsi Sumatera Barat",
+        )
+        other_sp2d = SP2DRaw.objects.create(
+            satker_code="428041",
+            satker_name="BPS Kabupaten Agam",
+            no_sp2d="SP2D-AGAM",
+            tahun=2026,
+        )
+
+        self.client.login(username="op_019937", password="password")
+        response = self.client.post(
+            reverse('dk:transaction_create'),
+            self.valid_transaction_payload(
+                satker_code="428041",
+                sp2d_raw_id=str(other_sp2d.id),
+                akun="521115",
+                nomor_spm="SPM-BLOCKED",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(TransactionDetail.objects.filter(nomor_spm="SPM-BLOCKED").exists())
+        self.assertContains(response, "SP2D tidak ditemukan atau beda satker.")
+
+    def test_manual_create_numeric_fields_require_values_but_accept_zero(self):
+        blank_response = self.client.post(
+            reverse('dk:transaction_create'),
+            self.valid_transaction_payload(
+                nomor_spm="SPM-BLANK-NUMERIC",
+                nilai_bruto="",
+                nilai_netto="",
+                pph21="",
+            ),
+        )
+        self.assertEqual(blank_response.status_code, 200)
+        self.assertFalse(TransactionDetail.objects.filter(nomor_spm="SPM-BLANK-NUMERIC").exists())
+        expected_error = "Isi 0 hanya jika nilai dokumen memang nol. Kosong tidak didukung."
+        self.assertIn(expected_error, blank_response.context["form"].errors["nilai_bruto"])
+        self.assertIn(expected_error, blank_response.context["form"].errors["nilai_netto"])
+        self.assertIn(expected_error, blank_response.context["form"].errors["pph21"])
+
+        zero_response = self.client.post(
+            reverse('dk:transaction_create'),
+            self.valid_transaction_payload(
+                nomor_spm="SPM-ZERO-NUMERIC",
+                nilai_bruto="0",
+                nilai_netto="0",
+                pph21="0",
+            ),
+        )
+        self.assertEqual(zero_response.status_code, 302)
+        transaction = TransactionDetail.objects.get(nomor_spm="SPM-ZERO-NUMERIC")
+        self.assertEqual(transaction.nilai_bruto, 0)
+        self.assertEqual(transaction.nilai_netto, 0)
+        self.assertEqual(transaction.pph21, 0)
+
+    def test_edit_form_preserves_existing_sp2d_and_updates_fields(self):
+        self.transaction.sp2d_raw = self.sp2d_sat1
+        self.transaction.save(update_fields=["sp2d_raw"])
+
+        response = self.client.post(
+            reverse('dk:transaction_edit', args=[self.transaction.pk]),
+            self.valid_transaction_payload(
+                satker_code="SAT1",
+                sp2d_raw_id=str(self.sp2d_sat2.id),
+                nomor_spm="SPM001",
+                no_kuitansi="KUIT001",
+                deskripsi="Edited with linked SP2D",
+            ),
+        )
+        self.assertEqual(response.status_code, 302)
+        self.transaction.refresh_from_db()
+        self.assertEqual(self.transaction.sp2d_raw_id, self.sp2d_sat1.id)
+        self.assertEqual(self.transaction.deskripsi, "Edited with linked SP2D")
 
     def test_dk_renders_business_headers_and_disabled_export_controls(self):
         response = self.client.get(reverse("dk:transaction_list"))
@@ -187,7 +392,7 @@ class DKTests(TestCase):
     def test_create_transaction_admin(self):
         url = reverse('dk:transaction_create')
         data = {
-            'satker_code': 'SAT2', # Admin can use any satker
+            'satker_code': 'SAT2', # Admin can use a valid data-backed satker
             'akun': '12345',
             'bulan_sp2d': '2',
             'cara_pembayaran': 'UP/TUP',
