@@ -11,9 +11,24 @@
   </div>
   
   {% for warning in warnings %}<div class="note-box danger">{{ warning }}</div>{% endfor %}
-  
+
   <form method="post" id="previewForm">
     {% csrf_token %}
+    {# Manual SPM input: find the parent SPM by satker + tahun + nomor_spm #}
+    <div style="display: flex; gap: 10px; align-items: flex-end; margin-bottom: 12px; flex-wrap: wrap;">
+      <div class="filter-field" style="flex: 0 0 auto;">
+        <label>Nomor SPM Parent</label>
+        <input class="form-control" type="text" name="nomor_spm" value="" placeholder="e.g. 00100T" style="min-width: 140px;">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button type="submit" name="action" value="inherit_spm" class="btn ghost" style="white-space: nowrap;">Cari &amp; Wariskan SPM</button>
+      </div>
+      <div style="flex: 1; min-width: 200px;">
+        <p class="muted" style="margin: 0; font-size: 12px;">
+          Jika Nomor SPM tidak terbaca dari file DRPP, masukkan Nomor SPM untuk mencari Parent SPM yang sesuai (Satker: <strong>{{ satker_code }}</strong>, Tahun: <strong>{{ tahun }}</strong>).
+        </p>
+      </div>
+    </div>
     <div class="table-wrap mt-small">
       <table class="data-table">
         <thead>

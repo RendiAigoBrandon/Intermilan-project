@@ -65,6 +65,32 @@ def _date_or_none(value):
     return parse_date(value)
 
 
+def _inject_spm_fields_from_package(rows, package):
+    """
+    Inject authoritative SPM fields from a TransactionPackage into DRPP source rows.
+
+    Only fills in fields that are blank in the row.  Does not overwrite existing
+    values.  Does not modify row["message"] or row["status"] — the classifier
+    will recompute those correctly after re-classification.
+    """
+    if not rows or not package:
+        return
+    for row in rows:
+        if not row.get("nomor_spm") and package.nomor_spm:
+            row["nomor_spm"] = package.nomor_spm
+        if not row.get("tanggal_spm") and package.tanggal_spm:
+            if hasattr(package.tanggal_spm, "isoformat"):
+                row["tanggal_spm"] = package.tanggal_spm.isoformat()
+            else:
+                row["tanggal_spm"] = str(package.tanggal_spm)
+        if not row.get("jenis_spm") and package.jenis_spm:
+            row["jenis_spm"] = package.jenis_spm
+        if not row.get("cara_pembayaran") and getattr(package, "cara_pembayaran", None):
+            row["cara_pembayaran"] = package.cara_pembayaran
+        if not row.get("bulan_sp2d") and getattr(package, "bulan_sp2d", None):
+            row["bulan_sp2d"] = package.bulan_sp2d
+
+
 def _row_from_item(*, item, source_type, satker_code, tahun, nomor_drpp, file_hash, source_row_id, metadata):
     no_kuitansi = (item.get("no_bukti") or "").strip()
     source_member_name = (
@@ -521,7 +547,7 @@ def reconcile_drpp_item_to_dk(drpp_item, row, user):
 
 
 @transaction.atomic
-def commit_drpp_rows(zip_path, ocr, satker_code, tahun, user, filename, original_filename, user_corrections=None):
+def commit_drpp_rows(zip_path, ocr, satker_code, tahun, user, filename, original_filename, user_corrections=None, inherited_spm_package=None):
     from apps.accounts.access import get_user_satker_code, is_admin
 
     satker_code = (satker_code or "").strip()
@@ -557,6 +583,11 @@ def commit_drpp_rows(zip_path, ocr, satker_code, tahun, user, filename, original
         batch.notes = "; ".join(prep["warnings"])
         batch.save(update_fields=["status", "notes"])
         return {"ok": False, "error": prep["warnings"], "batch": batch, "document_upload": document_upload}
+
+    # Inject SPM fields from inherited parent package (if user manually selected a parent SPM).
+    # This must happen BEFORE classify so the classifier sees the SPM metadata.
+    if inherited_spm_package:
+        _inject_spm_fields_from_package(prep["rows"], inherited_spm_package)
 
     for source_row in prep["rows"]:
         source_row["satker_code"] = batch.satker_code

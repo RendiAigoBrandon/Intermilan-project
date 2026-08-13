@@ -18,12 +18,14 @@ ARCHITECTURE: Central Archive
 - Token central: media/drive_tokens/archive_oauth.json
 """
 
+import httplib2
 import io
 import json
 import logging
 import mimetypes
 import os
 import shutil
+import socket
 from pathlib import Path
 from typing import Optional
 
@@ -116,7 +118,7 @@ def _get_saved_root_folder_id() -> Optional[str]:
     return None
 
 
-def _get_or_create_root_folder(service) -> str:
+def _get_or_create_root_folder(service, timeout: int = None) -> str:
     """
     Dapatkan atau buat root folder archive.
 
@@ -135,7 +137,7 @@ def _get_or_create_root_folder(service) -> str:
     if saved_id:
         # Verify folder still exists
         try:
-            service.files().get(fileId=saved_id, fields="id").execute()
+            service.files().get(fileId=saved_id, fields="id").execute(timeout=timeout)
             return saved_id  # Folder exists
         except Exception:
             # Folder no longer exists, recreate
@@ -147,7 +149,7 @@ def _get_or_create_root_folder(service) -> str:
         spaces="drive",
         fields="files(id, name)",
         pageSize=10,
-    ).execute()
+    ).execute(timeout=timeout)
 
     folders = results.get("files", [])
 
@@ -165,7 +167,7 @@ def _get_or_create_root_folder(service) -> str:
     folder = service.files().create(
         body=folder_metadata,
         fields="id",
-    ).execute()
+    ).execute(timeout=timeout)
 
     folder_id = folder.get("id")
     _save_root_folder_id(folder_id)
@@ -173,7 +175,7 @@ def _get_or_create_root_folder(service) -> str:
     return folder_id
 
 
-def _ensure_root_folder(service) -> Optional[str]:
+def _ensure_root_folder(service, timeout: int = None) -> Optional[str]:
     """
     Ensure root folder exists, return folder ID or None.
 
@@ -181,6 +183,7 @@ def _ensure_root_folder(service) -> Optional[str]:
 
     Args:
         service: Google Drive API service
+        timeout: Optional socket timeout in seconds.
 
     Returns:
         Folder ID or None if error
@@ -192,7 +195,7 @@ def _ensure_root_folder(service) -> Optional[str]:
 
     # Auto-create/retrieve
     try:
-        return _get_or_create_root_folder(service)
+        return _get_or_create_root_folder(service, timeout=timeout)
     except Exception:
         return None
 
@@ -232,14 +235,25 @@ def _get_service_account_credentials():
     return credentials
 
 
-def build_drive_service(credentials):
-    """Build Google Drive service with given credentials."""
+def build_drive_service(credentials, timeout=None):
+    """
+    Build Google Drive service with given credentials.
+
+    Args:
+        credentials: google-auth credentials object
+        timeout: Optional socket timeout in seconds. If provided, the underlying HTTP
+            client will raise socket.timeout after this many seconds.  This bounds
+            the Drive API call for user-facing requests and prevents Cloudflare 524
+            timeouts from being triggered by a slow Drive upload.
+    """
     from googleapiclient.discovery import build
-    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+    http = credentials.authorize(httplib2.Http(timeout=timeout)) if timeout else None
+    return build("drive", "v3", credentials=credentials, http=http, cache_discovery=False)
 
 
 def _upload_service_account(file_path: str, display_name: str = None,
-                            mime_type: str = None):
+                            mime_type: str = None, timeout: int = None):
     """
     Upload file menggunakan Service Account.
 
@@ -247,6 +261,7 @@ def _upload_service_account(file_path: str, display_name: str = None,
         file_path: Path ke file yang diupload
         display_name: Nama file di Drive
         mime_type: MIME type file
+        timeout: Optional socket timeout in seconds.
 
     Returns:
         Result dict dengan status, file_id, web_view_link, etc.
@@ -254,12 +269,12 @@ def _upload_service_account(file_path: str, display_name: str = None,
     from googleapiclient.http import MediaFileUpload
 
     credentials = _get_service_account_credentials()
-    service = build_drive_service(credentials)
+    service = build_drive_service(credentials, timeout=timeout)
 
     guessed_mime = mime_type or mimetypes.guess_type(file_path)[0] or "application/octet-stream"
 
     # Get or create root folder
-    root_folder_id = _ensure_root_folder(service)
+    root_folder_id = _ensure_root_folder(service, timeout=timeout)
 
     metadata = {"name": display_name or os.path.basename(file_path)}
     if root_folder_id:
@@ -340,7 +355,7 @@ def _get_central_oauth_credentials():
 
 
 def _upload_oauth_central(file_path: str, display_name: str = None,
-                           mime_type: str = None):
+                           mime_type: str = None, timeout: int = None):
     """
     Upload file menggunakan central OAuth credentials.
 
@@ -348,6 +363,7 @@ def _upload_oauth_central(file_path: str, display_name: str = None,
         file_path: Path ke file yang diupload
         display_name: Nama file di Drive
         mime_type: MIME type file
+        timeout: Optional socket timeout in seconds.
 
     Returns:
         Result dict dengan status, file_id, web_view_link, etc.
@@ -355,12 +371,12 @@ def _upload_oauth_central(file_path: str, display_name: str = None,
     from googleapiclient.http import MediaFileUpload
 
     credentials = _get_central_oauth_credentials()
-    service = build_drive_service(credentials)
+    service = build_drive_service(credentials, timeout=timeout)
 
     guessed_mime = mime_type or mimetypes.guess_type(file_path)[0] or "application/octet-stream"
 
     # Get or create root folder
-    root_folder_id = _ensure_root_folder(service)
+    root_folder_id = _ensure_root_folder(service, timeout=timeout)
 
     metadata = {"name": display_name or os.path.basename(file_path)}
     if root_folder_id:
@@ -392,7 +408,7 @@ def _upload_oauth_central(file_path: str, display_name: str = None,
 # =============================================================================
 
 def upload_file_to_drive(file_path: str, display_name: str = None,
-                        mime_type: str = None) -> dict:
+                        mime_type: str = None, timeout: int = None) -> dict:
     """
     Upload file ke Google Drive central archive.
 
@@ -412,10 +428,14 @@ def upload_file_to_drive(file_path: str, display_name: str = None,
         file_path: Path ke file yang diupload
         display_name: Nama file di Drive
         mime_type: MIME type file
+        timeout: Optional socket timeout in seconds for the Drive API call.
+            If set, the upload fails fast with status 'timeout' instead of
+            blocking for the Cloudflare/gunicorn timeout.  Recommended for
+            user-facing requests (e.g. manual document upload).
 
     Returns:
         Result dict:
-        - status: 'uploaded', 'local_archived', 'disabled', 'missing_credentials', 'failed'
+        - status: 'uploaded', 'local_archived', 'disabled', 'missing_credentials', 'failed', 'timeout'
         - file_id: Google Drive file ID (jika uploaded)
         - web_view_link: Google Drive URL
         - local_path: Local archive path (jika local_archived)
@@ -442,16 +462,30 @@ def upload_file_to_drive(file_path: str, display_name: str = None,
 
     try:
         if mode == "oauth":
-            result = _upload_oauth_central(file_path, display_name, mime_type)
+            result = _upload_oauth_central(file_path, display_name, mime_type, timeout=timeout)
         else:
             # Default to service_account
-            result = _upload_service_account(file_path, display_name, mime_type)
+            result = _upload_service_account(file_path, display_name, mime_type, timeout=timeout)
         logger.info(
             "[DRIVE] uploaded status=%s file_id=%s folder=%s",
             result["status"], result.get("file_id", "")[:20], result.get("folder_id", ""),
         )
         return result
 
+    except socket.timeout:
+        # Drive was too slow — local archive is already saved by _create_drive_link_placeholder.
+        # Mark status truthfully so the UI shows "Drive pending/failed".
+        logger.warning("[DRIVE] socket timeout after %ss — Drive upload timed out, local link preserved.", timeout)
+        return {
+            "status": "timeout",
+            "file_id": "",
+            "web_view_link": "",
+            "local_path": "",
+            "mime_type": mime_type or mimetypes.guess_type(file_path)[0] or "",
+            "size": os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+            "folder_id": None,
+            "error_message": f"Google Drive tidak merespon dalam {timeout} detik. File tersimpan lokal.",
+        }
     except FileNotFoundError as e:
         # Central OAuth token not found
         logger.warning("[DRIVE] FileNotFoundError (missing_credentials): %s", e)
@@ -541,6 +575,7 @@ def archive_file_link(
     transaction_detail=None,
     force_upload: bool = False,
     existing_link=None,
+    timeout: int = None,
 ) -> tuple:
     """
     Upload file ke Google Drive dan buat DocumentDriveLink dengan DUPLICATE PROTECTION.
@@ -606,6 +641,7 @@ def archive_file_link(
     result = upload_file_to_drive(
         file_path=file_path,
         display_name=nama_file or os.path.basename(file_path),
+        timeout=timeout,
     )
 
     # Step 3: Determine status

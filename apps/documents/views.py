@@ -1,6 +1,8 @@
+import logging
 import mimetypes
 import os
 import shutil
+import socket
 from decimal import Decimal
 from urllib.parse import urlsplit
 
@@ -36,6 +38,8 @@ from apps.documents.services.checklist import mark_checklist_present as mark_che
 from apps.documents.services.google_drive import archive_file_link
 
 from .models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink, DocumentUpload
+
+logger = logging.getLogger("documents.views")
 
 
 def _is_valid_google_drive_url(value):
@@ -326,6 +330,17 @@ def process_single_document_file(request, transaction, document_type, upload_fil
     tmp_name = fs.save(upload_file.name, upload_file)
     tmp_path = fs.path(tmp_name)
     extracted_temp_dir = ""
+
+    # Track objects created inside the atomic block so they can be updated
+    # (or retried) after the transaction commits without re-opening the DB
+    # connection.  This is the same pattern as link_followup_document in
+    # paket_spm/services.py: Drive work stays outside the transaction so a
+    # timeout/failure never erases the local save.
+    drive_result = {"status": "pending", "error_message": ""}
+    main_link = None
+    is_reused = False
+    document_upload = None
+
     try:
         if DocumentDriveLink.objects.filter(
             transaction_detail=transaction,
@@ -334,8 +349,16 @@ def process_single_document_file(request, transaction, document_type, upload_fil
         ).exists():
             messages.warning(request, "Dokumen sudah pernah diupload untuk transaksi ini. Commit ulang dibatalkan agar tidak duplikat.")
             return {"skipped": True}
+
+        # ================================================================
+        # ATOMIC BLOCK: all DB work — fast, no network calls
+        # Google Drive upload happens AFTER this block so a Drive timeout
+        # (Cloudflare 524) never rolls back the local save.
+        # ================================================================
         with db_transaction.atomic():
-            document_upload = create_document_upload(transaction, upload_file, tmp_path, document_type, request.user)
+            document_upload = create_document_upload(
+                transaction, upload_file, tmp_path, document_type, request.user
+            )
             parsed = parse_uploaded_document(tmp_path, upload_file.name, document_type, use_ocr)
             extracted_temp_dir = parsed.get("temp_dir", "")
             metadata = collect_metadata(parsed)
@@ -346,24 +369,41 @@ def process_single_document_file(request, transaction, document_type, upload_fil
                     transaction.sp2d_raw = matched_sp2d
                     transaction.save(update_fields=["sp2d_raw", "updated_at"])
 
-            drive_result, main_link, is_reused = archive_file_link(
-                tmp_path,
+            # Create a placeholder DocumentDriveLink with the local archive path.
+            # Drive URL is filled in after the atomic block.
+            # This mirrors the link_followup_document pattern: placeholder first,
+            # Drive outside, then update-in-place.
+            main_link = _create_drive_link_placeholder(
+                file_path=tmp_path,
+                transaction=transaction,
+                document_type=document_type,
+                upload_file=upload_file,
+                parsed=parsed,
+                metadata=metadata,
                 user=request.user,
-                jenis_dokumen=document_type,
-                nama_file=upload_file.name,
-                satker_code=transaction.satker_code,
-                nomor_spm=transaction.nomor_spm,
-                no_drpp=transaction.no_drpp,
-                no_kuitansi=transaction.no_kuitansi,
-                catatan_extra=build_archive_note(parsed, metadata, transaction),
-                transaction_detail=transaction,
             )
-            archive_extracted_files(parsed, request.user, transaction)
+
+            # Persist DRPP groups and mark checklist inside atomic — fast local work.
             persist_drpp_groups(parsed, transaction, document_upload, request.user)
             update_checklist_from_parsed(transaction, document_type, parsed, request.user)
             refresh_transaction_document_status(transaction, verified_document_type=document_type)
 
-        if drive_result["status"] not in {"uploaded", "local_archived"}:
+        # ================================================================
+        # OUTSIDE ATOMIC: Google Drive work (network call — may be slow/fail)
+        # If Drive times out the transaction is already committed.
+        # ================================================================
+        drive_result, main_link, is_reused = _archive_document_to_drive(
+            tmp_path,
+            transaction=transaction,
+            document_type=document_type,
+            upload_file=upload_file,
+            parsed=parsed,
+            metadata=metadata,
+            user=request.user,
+            existing_link=main_link,
+        )
+
+        if drive_result["status"] not in {"uploaded", "reused", "local_archived"}:
             messages.warning(request, drive_result["error_message"] or "Dokumen tersimpan, tetapi arsip Drive perlu dicek.")
 
         if metadata.get("updated_fields"):
@@ -374,14 +414,112 @@ def process_single_document_file(request, transaction, document_type, upload_fil
             messages.warning(request, "OCR belum yakin membaca dokumen; status Perlu Review OCR.")
         if metadata.get("missing_note"):
             messages.warning(request, metadata["missing_note"])
-        return {"archive_status": drive_result["status"], "needs_review": bool(metadata.get("ocr_review") or metadata.get("missing_note"))}
+
+        return {
+            "archive_status": drive_result["status"],
+            "needs_review": bool(metadata.get("ocr_review") or metadata.get("missing_note")),
+        }
+
     finally:
+        # Clean up temp file — happens AFTER Drive work so the file is still
+        # available if Drive is still in progress (or in the background retry path).
         try:
             fs.delete(tmp_name)
         except Exception:
             pass
         if extracted_temp_dir and os.path.exists(extracted_temp_dir):
             shutil.rmtree(extracted_temp_dir, ignore_errors=True)
+
+
+def _create_drive_link_placeholder(file_path, transaction, document_type, upload_file, parsed, metadata, user):
+    """
+    Create a DocumentDriveLink placeholder with the local archive path.
+    The google_drive_url is intentionally left empty — it will be filled
+    by _archive_document_to_drive after this function returns.
+
+    This function is always called INSIDE a db_transaction.atomic() block.
+    """
+    from apps.documents.services.google_drive import archive_file_locally
+
+    # Archive to local storage immediately so the file is accessible even if
+    # Drive is unavailable.  This ensures DocumentDriveLink has a valid URL
+    # even when Drive upload fails.
+    local_archive = archive_file_locally(file_path, display_name=upload_file.name)
+    local_url = local_archive.get("url", "") or ""
+
+    catatan = build_archive_note(parsed, metadata, transaction)
+
+    link = DocumentDriveLink.objects.create(
+        transaction_detail=transaction,
+        satker_code=transaction.satker_code or "",
+        nomor_spm=transaction.nomor_spm or "",
+        no_kuitansi=transaction.no_kuitansi or "",
+        no_drpp=transaction.no_drpp or "",
+        jenis_dokumen=document_type or "",
+        nama_file=upload_file.name,
+        google_drive_url=local_url,
+        status=(
+            DocumentDriveLink.Status.PERLU_DICEK
+            if not local_url
+            else DocumentDriveLink.Status.AKTIF
+        ),
+        catatan=f"{catatan}; [DRIVE ARCHIVE] placeholder created",
+        created_by=user,
+    )
+    return link
+
+
+def _archive_document_to_drive(file_path, transaction, document_type, upload_file, parsed, metadata, user, existing_link):
+    """
+    Attempt to upload a document to Google Drive and update the existing
+    DocumentDriveLink placeholder in-place.
+
+    This function is always called OUTSIDE any db_transaction.atomic() block.
+    A Drive timeout (Cloudflare 524) will NOT roll back any DB work.
+
+    Returns (drive_result, link, is_reused) — same shape as archive_file_link.
+    """
+    try:
+        # Bounded timeout: if Drive is slow/fails within 15s, we fail fast with
+        # status='timeout' and the DB state (already committed) remains intact.
+        # This prevents a Cloudflare 524 on the user-facing request.
+        drive_result, updated_link, is_reused = archive_file_link(
+            file_path,
+            user=user,
+            jenis_dokumen=document_type,
+            nama_file=upload_file.name,
+            satker_code=transaction.satker_code,
+            nomor_spm=transaction.nomor_spm,
+            no_drpp=transaction.no_drpp,
+            no_kuitansi=transaction.no_kuitansi,
+            catatan_extra=build_archive_note(parsed, metadata, transaction),
+            transaction_detail=transaction,
+            existing_link=existing_link,
+            timeout=15,  # seconds — fail fast, don't wait for Cloudflare timeout
+        )
+        return drive_result, updated_link, is_reused
+    except socket.timeout:
+        # Raised directly if httplib2 socket timeout fires before our catch in
+        # upload_file_to_drive.  Placeholder link (with local URL) is already saved.
+        logger.warning("[DOCUMENT DRIVE] socket timeout for transaction=%s file=%s — local link preserved.", transaction.pk, upload_file.name)
+        return {
+            "status": "timeout",
+            "error_message": "Google Drive tidak merespon dalam 15 detik. File tersimpan lokal.",
+            "web_view_link": existing_link.google_drive_url if existing_link else "",
+        }, existing_link, False
+    except Exception as exc:
+        logger.warning(
+            "[DOCUMENT DRIVE] Failed for transaction=%s file=%s — local link remains. "
+            "Exception: %s",
+            transaction.pk, upload_file.name, exc,
+        )
+        # The placeholder link (created inside the atomic block) already has
+        # the local archive URL.  Drive failure is non-fatal.
+        return {
+            "status": "failed",
+            "error_message": f"Drive upload gagal: {exc}",
+            "web_view_link": existing_link.google_drive_url if existing_link else "",
+        }, existing_link, False
 
 
 def create_document_upload(transaction, upload_file, tmp_path, document_type, user):

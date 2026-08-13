@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 import datetime
@@ -24,6 +25,8 @@ from apps.documents.models import DocumentDriveLink
 
 from .models import DRPPItem, DRPPUpload, DRPPImportBatch
 from .services import prepare_drpp_rows, classify_drpp_rows, commit_drpp_rows
+
+logger = logging.getLogger("drpp.views")
 
 
 def _validate_drpp_upload(upload_file, upload_files):
@@ -222,6 +225,9 @@ def drpp_preview(request):
     user_corrections = preview_state.get("user_corrections", {})
 
     if request.method == "POST":
+        # Compute classified_rows here so it's available to all POST actions
+        classified_rows = classify_drpp_rows(prep["rows"], user_corrections)
+        active_parent = get_active_parent_for_user(request=request, user=request.user)
         action = request.POST.get("action")
         
         if action == "cancel":
@@ -243,20 +249,96 @@ def drpp_preview(request):
             request.session["drpp_preview"] = preview_state
             messages.success(request, "Koreksi disimpan, silakan verifikasi tabel di bawah.")
             return redirect("drpp:preview")
-            
-        elif action == "commit":
-            # Parse and classify again
-            result = commit_drpp_rows(
-                zip_path=file_path, 
-                ocr=ocr, 
-                satker_code=satker_code, 
-                tahun=tahun, 
-                user=request.user, 
-                filename=preview_state["original_filename"],
-                original_filename=preview_state["original_filename"],
-                user_corrections=user_corrections
+
+        elif action == "inherit_spm":
+            # User manually entered a Nomor SPM — look up the exact parent package
+            # by current DRPP context (satker + tahun + nomor_spm) and inherit SPM
+            # fields into the classified rows.  This works for any DRPP/SPM combination.
+            manual_nomor_spm = (request.POST.get("nomor_spm") or "").strip()
+            if not manual_nomor_spm:
+                messages.warning(request, "Masukkan Nomor SPM untuk mencari parent.")
+                return redirect("drpp:preview")
+
+            from apps.core.services import get_package_by_identity, validate_parent_compatibility
+
+            manual_pkg = get_package_by_identity(
+                satker_code=satker_code or "",
+                tahun=int(tahun) if tahun else 0,
+                nomor_spm=manual_nomor_spm,
             )
-            
+            if not manual_pkg:
+                messages.warning(
+                    request,
+                    f"SPM {manual_nomor_spm} tidak ditemukan untuk satker {satker_code or '(kosong)'} "
+                    f"tahun {tahun or '(kosong)'}. Pastikan Nomor SPM dan satker benar."
+                )
+                return redirect("drpp:preview")
+
+            is_compatible, conflict_msg = validate_parent_compatibility(
+                package=manual_pkg,
+                drpp_satker=satker_code or None,
+                drpp_tahun=int(tahun) if tahun else None,
+                drpp_nomor_spm=None,
+            )
+            if not is_compatible:
+                messages.warning(request, f"SPM {manual_nomor_spm} tidak cocok dengan DRPP ini: {conflict_msg}")
+                return redirect("drpp:preview")
+
+            # Inherit SPM fields into classified rows
+            inherited = _inherit_spm_fields(classified_rows, manual_pkg)
+            if inherited:
+                messages.info(request, f"Field SPM diwariskan dari {manual_nomor_spm}: {', '.join(inherited)}")
+                # Re-classify with inherited fields so status reflects the new data
+                classified_rows = classify_drpp_rows(prep["rows"], user_corrections)
+                _inherit_spm_fields(classified_rows, manual_pkg)
+            else:
+                messages.info(request, f"SPM {manual_nomor_spm} ditemukan tetapi tidak ada field baru untuk diwariskan.")
+
+            # Store inheritance in session so it persists across re-renders
+            preview_state["inherited_spm_package_id"] = manual_pkg.pk
+            preview_state["inherited_spm_fields"] = inherited
+            request.session["drpp_preview"] = preview_state
+
+            context = permission_context(request.user)
+            context.update({
+                "page_title": "Preview DRPP",
+                "page_subtitle": "Nomor SPM berhasil diset. Periksa hasil di bawah sebelum commit.",
+                "rows": classified_rows,
+                "satker_code": satker_code,
+                "tahun": tahun,
+                "can_commit": bool(classified_rows),
+                "warnings": preview_state.get("warnings", []),
+                "active_parent": active_parent,
+            })
+            return render(request, "drpp/preview.html", context)
+
+        elif action == "commit":
+            # Load inherited SPM package from session (if user selected one)
+            inherited_spm_package = None
+            inherited_pkg_id = preview_state.get("inherited_spm_package_id")
+            if inherited_pkg_id:
+                from apps.core.models import TransactionPackage
+                inherited_spm_package = TransactionPackage.objects.filter(pk=inherited_pkg_id).first()
+
+            # Parse and classify again
+            try:
+                result = commit_drpp_rows(
+                    zip_path=file_path,
+                    ocr=ocr,
+                    satker_code=satker_code,
+                    tahun=tahun,
+                    user=request.user,
+                    filename=preview_state["original_filename"],
+                    original_filename=preview_state["original_filename"],
+                    user_corrections=user_corrections,
+                    inherited_spm_package=inherited_spm_package,
+                )
+            except Exception as exc:
+                logger.exception("[DRPP COMMIT] Unexpected error during commit: %s", exc)
+                messages.error(request, f"Gagal menyimpan DRPP: {exc}")
+                _discard_preview(request, preview_state)
+                return redirect("drpp:list")
+
             if not result["ok"]:
                 messages.error(request, f"Gagal saat parsing/commit: {', '.join(result.get('error', []))}")
                 _discard_preview(request, preview_state)
@@ -312,14 +394,131 @@ def drpp_preview(request):
             messages.error(request, f"Error saat memproses file: {exc}")
         _discard_preview(request, preview_state)
         return redirect("drpp:list")
-    
+
     if not prep["ok"]:
         _discard_preview(request, preview_state)
         messages.error(request, "; ".join(prep["warnings"]))
         return redirect("drpp:list")
-        
+
+    # Store warnings in session so POST actions can access them without re-parsing
+    preview_state["warnings"] = prep["warnings"]
+    request.session["drpp_preview"] = preview_state
+
+    from apps.core.services import (
+        get_active_parent_for_user,
+        validate_parent_compatibility,
+        get_package_by_identity,
+    )
+
+    # ================================================================
+    # STEP 1: Classify rows first (with raw OCR data)
+    # ================================================================
     classified_rows = classify_drpp_rows(prep["rows"], user_corrections)
-    
+
+    # ================================================================
+    # STEP 2: ACTIVE PARENT SPM INHERITANCE
+    # Inherit SPM fields from active parent BEFORE row-level warnings are computed.
+    # Inheritance must happen BEFORE the second classify call.
+    # ================================================================
+    active_parent = get_active_parent_for_user(request=request, user=request.user)
+    parent_inherited_fields = []
+    manual_inherited_fields = []
+    parent_conflict = None
+
+    def _inherit_spm_fields(rows, parent_pkg):
+        """Inherit SPM fields into classified DRPP rows where fields are blank.
+
+        Does NOT force status/message changes — the existing classifier will
+        recompute correct status when called after inheritance.
+        """
+        if not rows or not parent_pkg:
+            return []
+        inherited = []
+        for row in rows:
+            changed = False
+            if not row.get("nomor_spm") and parent_pkg.nomor_spm:
+                row["nomor_spm"] = parent_pkg.nomor_spm
+                inherited.append("nomor_spm")
+                changed = True
+            if not row.get("tanggal_spm") and parent_pkg.tanggal_spm:
+                if hasattr(parent_pkg.tanggal_spm, "isoformat"):
+                    row["tanggal_spm"] = parent_pkg.tanggal_spm.isoformat()
+                else:
+                    row["tanggal_spm"] = str(parent_pkg.tanggal_spm)
+                inherited.append("tanggal_spm")
+                changed = True
+            if not row.get("jenis_spm") and parent_pkg.jenis_spm:
+                row["jenis_spm"] = parent_pkg.jenis_spm
+                inherited.append("jenis_spm")
+                changed = True
+            # Do NOT force row["message"] = "" or row["status"] = "OK" here.
+            # The classifier handles status correctly after re-classify.
+            # Truthful warnings (kuitansi missing, akun missing) are preserved naturally.
+            # Conditional "SPM utama belum ada di D_K" is handled in the template via active_parent context.
+        return inherited
+
+    # Try active parent first
+    if active_parent and active_parent.transaction_package:
+        parent_pkg = active_parent.transaction_package
+        is_compatible, conflict_msg = validate_parent_compatibility(
+            package=parent_pkg,
+            drpp_satker=satker_code or None,
+            drpp_tahun=int(tahun) if tahun else None,
+            drpp_nomor_spm=None,
+        )
+        if is_compatible:
+            parent_inherited_fields = _inherit_spm_fields(classified_rows, parent_pkg)
+            if parent_inherited_fields:
+                messages.info(request, f"Field SPM diwariskan dari SPM parent aktif: {', '.join(parent_inherited_fields)}")
+        else:
+            parent_conflict = conflict_msg
+            messages.warning(request, conflict_msg)
+
+    # Manual SPM fallback: user typed Nomor SPM in the form
+    manual_nomor_spm = (request.POST.get("nomor_spm") or "").strip()
+    if manual_nomor_spm and not parent_inherited_fields:
+        manual_pkg = get_package_by_identity(
+            satker_code=satker_code or "",
+            tahun=int(tahun) if tahun else 0,
+            nomor_spm=manual_nomor_spm,
+        )
+        if manual_pkg:
+            is_compatible, conflict_msg = validate_parent_compatibility(
+                package=manual_pkg,
+                drpp_satker=satker_code or None,
+                drpp_tahun=int(tahun) if tahun else None,
+                drpp_nomor_spm=None,
+            )
+            if is_compatible:
+                manual_inherited_fields = _inherit_spm_fields(classified_rows, manual_pkg)
+                if manual_inherited_fields:
+                    messages.info(request, f"Field SPM diisi dari pencarian manual ({manual_nomor_spm}): {', '.join(manual_inherited_fields)}")
+            else:
+                messages.warning(request, f"SPM {manual_nomor_spm} tidak cocok dengan DRPP ini: {conflict_msg}")
+        else:
+            messages.warning(request, f"SPM {manual_nomor_spm} tidak ditemukan untuk satker {satker_code or '(kosong)'} tahun {tahun or '(kosong)'}. Pastikan Nomor SPM dan satker benar.")
+
+    # ================================================================
+    # STEP 3: Re-classify AFTER inheritance so status/warnings reflect inherited fields
+    # ================================================================
+    if parent_inherited_fields or manual_inherited_fields:
+        classified_rows = classify_drpp_rows(prep["rows"], user_corrections)
+        # Re-apply inheritance to the freshly classified rows
+        if parent_inherited_fields:
+            _inherit_spm_fields(classified_rows, active_parent.transaction_package)
+        elif manual_inherited_fields and manual_nomor_spm:
+            manual_pkg = get_package_by_identity(
+                satker_code=satker_code or "",
+                tahun=int(tahun) if tahun else 0,
+                nomor_spm=manual_nomor_spm,
+            )
+            if manual_pkg:
+                _inherit_spm_fields(classified_rows, manual_pkg)
+
+    can_commit = bool(classified_rows)
+
+    classified_rows = classify_drpp_rows(prep["rows"], user_corrections)
+
     can_commit = bool(classified_rows)
 
     context = permission_context(request.user)
@@ -330,7 +529,8 @@ def drpp_preview(request):
         "satker_code": satker_code,
         "tahun": tahun,
         "can_commit": can_commit,
-        "warnings": prep["warnings"]
+        "warnings": prep["warnings"],
+        "active_parent": active_parent,
     })
     return render(request, "drpp/preview.html", context)
 

@@ -33,7 +33,7 @@ from apps.core.dk_draft_adapter import (
 from apps.core.document_policy import SPMFamily, normalize_spm_family
 from apps.core.ocr import check_ocr_environment
 from apps.core.parsers import classify_document, extract_pdf_text, parse_date, parse_drpp_pdf, parse_month, parse_paket_spm_zip, parse_spm_pdf, make_json_safe
-from apps.core.satker import get_official_satker_code
+from apps.core.satker import get_official_satker_code, get_unit_code_from_satker
 from apps.core.services import (
     find_or_create_package,
     enrich_from_spm,
@@ -1019,17 +1019,6 @@ def paket_spm_preview(request):
                 # using get_official_satker_code() so the comparison is safe whether the D_K row stores
                 # unit_code ("1300") or canonical satker ("019937").  Do NOT mutate the D_K row.
                 _mt_pk = _matched_tx.get("id") if isinstance(_matched_tx, dict) else None
-                if _mt_pk:
-                    try:
-                        _dk = TransactionDetail.objects.get(id=_mt_pk)
-                        # Resolve both sides to canonical satker for comparison
-                        _dk_canonical = get_official_satker_code(normalize_key(_dk.satker_code or "")) or normalize_key(_dk.satker_code or "")
-                        _parent_canonical = get_official_satker_code(normalize_key(satker_code)) or normalize_key(satker_code)
-                        _year_match = getattr(_dk.tanggal_spm, "year", None) == int(tahun) or _dk.tanggal_spm is None
-                        if _dk_canonical == _parent_canonical and _year_match:
-                            existing_dk_rows = [_dk]
-                    except TransactionDetail.DoesNotExist:
-                        pass
 
                 package, package_created = find_or_create_package(
                     satker_code=satker_code,
@@ -1049,9 +1038,14 @@ def paket_spm_preview(request):
                     user=request.user,
                 )
 
-                # 4. Find and enrich existing TransactionDetail rows for this package
+                # 4. Find and enrich existing TransactionDetail rows for this package.
                 #
-                # Try to find D_K rows using the matched TransactionDetail's pk.
+                # Strategy: always populate existing_dk_rows with the correct D_K rows
+                # for the canonical identity (satker_code + tahun + nomor_spm).
+                # First, try the PK-based lookup from build_package_decision result.
+                # Then, as a fallback, query by canonical identity using the validated
+                # nomor_spm (from D_K/SP2D evidence) to handle satker-code variants
+                # (e.g. D_K stores "1300", document shows "019937").
                 existing_dk_rows = []
                 _mt_pk = _matched_tx.get("id") if isinstance(_matched_tx, dict) else None
                 if _mt_pk:
@@ -1061,6 +1055,42 @@ def paket_spm_preview(request):
                         )
                     except Exception:
                         pass
+
+                # Fallback: query by canonical identity (satker + tahun + validated nomor_spm).
+                # This catches D_K rows even when the satker stored in D_K differs
+                # from the document satker (e.g. "1300" vs "019937").
+                # Only run when satker_code is populated.  An empty satker must not
+                # trigger cross-satker matching.
+                if not existing_dk_rows and satker_code and tahun and nomor_spm:
+                    try:
+                        # Resolve canonical satker for the D_K query.
+                        # The document may carry the official 6-digit satker (e.g. "019937")
+                        # while the existing D_K may carry the unit code (e.g. "1300").
+                        # Try canonical first (for D_Ks created with official satker).
+                        canonical_for_dk = get_official_satker_code(satker_code)
+                        query_satker = canonical_for_dk if canonical_for_dk else satker_code
+                        existing_dk_rows = list(
+                            TransactionDetail.objects.filter(
+                                satker_code=query_satker,
+                                nomor_spm__iexact=nomor_spm,
+                                tanggal_spm__year=int(tahun),
+                            ).order_by("id")
+                        )
+                        # Fallback: if canonical didn't find anything, try the unit code
+                        # (for D_Ks created with unit-code satker, e.g. "1300").
+                        if not existing_dk_rows and canonical_for_dk:
+                            unit_code = get_unit_code_from_satker(canonical_for_dk)
+                            if unit_code:
+                                existing_dk_rows = list(
+                                    TransactionDetail.objects.filter(
+                                        satker_code=unit_code,
+                                        nomor_spm__iexact=nomor_spm,
+                                        tanggal_spm__year=int(tahun),
+                                    ).order_by("id")
+                                )
+                    except Exception:
+                        pass
+
                 if existing_dk_rows:
                     # Link SPM to existing D_K rows
                     for dk_row in existing_dk_rows:
@@ -1080,7 +1110,8 @@ def paket_spm_preview(request):
                     except Exception as link_exc:
                         logger.warning("[SPM PARENT] Document link failed (D_K exists), continuing: %s", link_exc)
                 else:
-                    # No existing D_K — just create a standalone SPM document link
+                    # No existing D_K — still mark checklist for the package identity
+                    # (D_K will be created later when DRPP is committed).
                     try:
                         link_paket_spm_source_document(
                             paket,
