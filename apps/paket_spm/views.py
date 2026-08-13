@@ -49,7 +49,7 @@ from apps.core.services import (
 from apps.documents.services.checklist import mark_checklist_present
 from apps.dk.services import refresh_transaction_document_status
 from apps.dk.models import TransactionDetail
-from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, normalize_key, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, resolve_satker_from_existing_dk, short_document_number, upsert_drpp_group
+from apps.paket_spm.services import build_drpp_batch_rows, build_package_decision, build_transaction_rows_from_package, clean_optional, exact_transactions_for_package, is_gup, is_tup, lampiran_warnings, link_existing_package_documents, link_followup_document, link_paket_spm_source_document, merge_followup_into_existing_dk, money_value, normalize_key, parse_user_decimal, parsed_from_identity_probe, preview_blank_fields, preview_item_value, preview_review_fields, probe_package_identity, resolve_satker_from_existing_dk, short_document_number, upsert_drpp_group
 from apps.sp2d.models import SP2DRaw
 
 from .models import PaketSPMUpload
@@ -633,80 +633,75 @@ def paket_spm_preview(request):
                             user=request.user,
                         )
                     else:
-                        # Inherit SPM fields where blank in preview_rows
-                        inherited_fields = []
-                        # Initialize _meta safely before the try so it's always defined for line 719+.
-                        # Then apply inheritance on top (inherited values override existing _meta values).
-                        # Safe JSON conversion of _meta["bulan_sp2d"] / _meta["total_pembayaran"] AFTER inheritance.
-                        try:
-                            _meta = parsed["spm"]["metadata"]  # always exists after init
+                        if not isinstance(parsed.get("spm"), dict):
+                            parsed["spm"] = {}
+                        _meta = parsed["spm"].get("metadata")
+                        if not isinstance(_meta, dict):
+                            _meta = {}
+                            parsed["spm"]["metadata"] = _meta
 
-                            # Inherit SPM fields where blank in preview_rows
-                            inherited_fields = []
-                            if preview_rows:
-                                first = preview_rows[0]
-                                if not first.get("nomor_spm") and parent_package.nomor_spm:
-                                    first["nomor_spm"] = parent_package.nomor_spm
-                                    inherited_fields.append("nomor_spm")
-                                if not first.get("tanggal_spm") and parent_package.tanggal_spm:
-                                    first["tanggal_spm"] = parent_package.tanggal_spm
-                                    inherited_fields.append("tanggal_spm")
-                                if not first.get("jenis_spm") and parent_package.jenis_spm:
-                                    first["jenis_spm"] = parent_package.jenis_spm
-                                    inherited_fields.append("jenis_spm")
-                                if not first.get("cara_pembayaran") and getattr(parent_package, "cara_pembayaran", None):
-                                    first["cara_pembayaran"] = parent_package.cara_pembayaran
-                                    inherited_fields.append("cara_pembayaran")
-
-                            # Inherit into _meta so build_transaction_rows_from_package finds it on recalculate
-                            if not _meta.get("nomor_spm") and parent_package.nomor_spm:
-                                _meta["nomor_spm"] = parent_package.nomor_spm
-                            if not _meta.get("tanggal_spm") and parent_package.tanggal_spm:
-                                _meta["tanggal_spm"] = parent_package.tanggal_spm
-                            if not _meta.get("jenis_spm") and parent_package.jenis_spm:
-                                _meta["jenis_spm"] = parent_package.jenis_spm
-                            if not _meta.get("cara_pembayaran") and getattr(parent_package, "cara_pembayaran", None):
-                                _meta["cara_pembayaran"] = parent_package.cara_pembayaran
-
-                            # Inherit into drpp_groups items
-                            if parsed.get("drpp_groups"):
-                                for group in parsed["drpp_groups"]:
-                                    if not group.get("items"):
-                                        continue
-                                    for item in group["items"]:
-                                        if "nomor_spm" not in item and parent_package.nomor_spm:
-                                            item["nomor_spm"] = parent_package.nomor_spm
-                                        if "tanggal_spm" not in item and parent_package.tanggal_spm:
-                                            item["tanggal_spm"] = parent_package.tanggal_spm
-                                        if "jenis_spm" not in item and parent_package.jenis_spm:
-                                            item["jenis_spm"] = parent_package.jenis_spm
-
-                            # _meta may contain non-string types (Decimal, date, int) that fail JSON serialization
-                            # in create_drpp_preview_state(preview_data=parsed). Convert them to strings here.
-                            if _meta.get("bulan_sp2d") is not None:
-                                val = _meta["bulan_sp2d"]
-                                if not isinstance(val, str):
-                                    try:
-                                        _meta["bulan_sp2d"] = str(val)
-                                    except Exception:
-                                        pass
-                            if _meta.get("total_pembayaran") is not None:
-                                val = _meta["total_pembayaran"]
-                                if not isinstance(val, str):
-                                    try:
-                                        _meta["total_pembayaran"] = str(val)
-                                    except Exception:
-                                        pass
-
-                            logger.info(
-                                "[INHERIT] inherited_fields=%s _meta=%s",
-                                inherited_fields, _meta,
+                        parent_cara_pembayaran = clean_optional(getattr(parent_package, "cara_pembayaran", ""))
+                        if not parent_cara_pembayaran and parent_package.jenis_spm:
+                            parent_cara_pembayaran = (
+                                "UP/TUP"
+                                if (is_gup(parent_package.jenis_spm) or is_tup(parent_package.jenis_spm))
+                                else parent_package.jenis_spm
                             )
-                        except Exception as exc:
-                            logger.exception("[INHERIT] inheritance block crashed: %s", exc)
-                            messages.error(request, f"Gagal mewariskan SPM parent: {exc}")
-                            inherited_fields = []
-                            _meta = {}  # safe fallback for line 719+
+                        parent_bulan_sp2d = getattr(getattr(parent_package, "tanggal_sp2d", None), "month", None)
+
+                        inherited_fields = []
+                        if preview_rows:
+                            first = preview_rows[0]
+                            if not first.get("nomor_spm") and parent_package.nomor_spm:
+                                first["nomor_spm"] = parent_package.nomor_spm
+                                inherited_fields.append("nomor_spm")
+                            if not first.get("tanggal_spm") and parent_package.tanggal_spm:
+                                first["tanggal_spm"] = parent_package.tanggal_spm
+                                inherited_fields.append("tanggal_spm")
+                            if not first.get("jenis_spm") and parent_package.jenis_spm:
+                                first["jenis_spm"] = parent_package.jenis_spm
+                                inherited_fields.append("jenis_spm")
+                            if not first.get("bulan_sp2d") and parent_bulan_sp2d:
+                                first["bulan_sp2d"] = parent_bulan_sp2d
+                                inherited_fields.append("bulan_sp2d")
+                            if not first.get("cara_pembayaran") and parent_cara_pembayaran:
+                                first["cara_pembayaran"] = parent_cara_pembayaran
+                                inherited_fields.append("cara_pembayaran")
+
+                        if not _meta.get("nomor_spm") and parent_package.nomor_spm:
+                            _meta["nomor_spm"] = parent_package.nomor_spm
+                        if not _meta.get("tanggal_spm") and parent_package.tanggal_spm:
+                            _meta["tanggal_spm"] = parent_package.tanggal_spm
+                        if not _meta.get("jenis_spm") and parent_package.jenis_spm:
+                            _meta["jenis_spm"] = parent_package.jenis_spm
+                        if not _meta.get("bulan_sp2d") and parent_bulan_sp2d:
+                            _meta["bulan_sp2d"] = parent_bulan_sp2d
+                        if not _meta.get("cara_pembayaran") and parent_cara_pembayaran:
+                            _meta["cara_pembayaran"] = parent_cara_pembayaran
+
+                        if parsed.get("drpp_groups"):
+                            for group in parsed["drpp_groups"]:
+                                if not group.get("items"):
+                                    continue
+                                for item in group["items"]:
+                                    if not item.get("nomor_spm") and parent_package.nomor_spm:
+                                        item["nomor_spm"] = parent_package.nomor_spm
+                                    if not item.get("tanggal_spm") and parent_package.tanggal_spm:
+                                        item["tanggal_spm"] = parent_package.tanggal_spm
+                                    if not item.get("jenis_spm") and parent_package.jenis_spm:
+                                        item["jenis_spm"] = parent_package.jenis_spm
+                                    if not item.get("bulan_sp2d") and parent_bulan_sp2d:
+                                        item["bulan_sp2d"] = parent_bulan_sp2d
+                                    if not item.get("cara_pembayaran") and parent_cara_pembayaran:
+                                        item["cara_pembayaran"] = parent_cara_pembayaran
+
+                        if inherited_fields:
+                            messages.info(request, f"Field SPM diwariskan dari parent aktif: {', '.join(inherited_fields)}")
+
+                        logger.info(
+                            "[INHERIT] inherited_fields=%s _meta=%s",
+                            inherited_fields, _meta,
+                        )
 
                         # Create DRPPPreviewState as canonical frozen parent (DB-backed)
                         preview_state = create_drpp_preview_state(
@@ -1343,7 +1338,6 @@ def paket_spm_preview(request):
     drpp_rows = build_drpp_rows(parsed)
     kw_rows = build_kw_rows(parsed)
     document_checklist = build_document_checklist(parsed, decision)
-    from apps.paket_spm.services import is_gup, is_tup, money_value
     spm_bruto = money_value(spm_meta.get("jumlah_pengeluaran"))
     spm_netto = money_value(spm_meta.get("total_pembayaran"))
     spm_potongan = money_value(spm_meta.get("jumlah_potongan"))

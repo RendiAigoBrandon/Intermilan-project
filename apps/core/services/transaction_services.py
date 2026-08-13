@@ -23,6 +23,7 @@ from apps.core.models import (
     TransactionPackage,
     TransactionProvenance,
 )
+from apps.core.parsers import make_json_safe
 from apps.accounts.access import get_profile
 
 logger = logging.getLogger(__name__)
@@ -552,7 +553,7 @@ def create_drpp_preview_state(
             "frozen_satker_code": parent_package.satker_code,
             "frozen_tahun": parent_package.tahun,
             "frozen_nomor_spm": parent_package.nomor_spm,
-            "preview_data": preview_data,
+            "preview_data": make_json_safe(preview_data or {}),
             "selection_conflict": conflict,
             "conflict_message": conflict_message,
             "status": DRPPPreviewState.Status.PENDING,

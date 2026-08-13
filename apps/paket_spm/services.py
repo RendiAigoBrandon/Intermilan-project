@@ -1213,7 +1213,7 @@ def transaction_from_values(values, defaults, user=None, sp2d_raw=None, document
         akun=clean_optional(values.get("akun"))[:32],
         kategori="",
         bulan_sp2d=parse_month_number(values.get("bulan_sp2d")) or defaults.get("bulan_sp2d"),
-        cara_pembayaran=clean_optional(values.get("cara_pembayaran"))[:100],
+        cara_pembayaran=clean_optional(values.get("cara_pembayaran") or defaults.get("cara_pembayaran"))[:100],
         nomor_spm=clean_optional(values.get("nomor_spm") or defaults["nomor_spm"])[:100],
         tanggal_spm=date_value(values.get("tanggal_spm")) or defaults["tanggal_spm"],
         jenis_spm=clean_optional(values.get("jenis_spm") or defaults["jenis_spm"])[:100],
@@ -1398,9 +1398,14 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
         "nomor_spm": nomor_spm,
         "tanggal_spm": tanggal_spm,
         "jenis_spm": meta["jenis_spm"] or paket.jenis_spm_label or paket.jenis_spm_asli,
+        "cara_pembayaran": (
+            "UP/TUP" if (is_gup(meta["jenis_spm"]) or is_tup(meta["jenis_spm"]))
+            else (meta.get("cara_pembayaran") or meta["jenis_spm"])
+        ),
         "bulan_sp2d": (
             getattr(sp2d_raw, "bulan_sp2d", None)
             or getattr(meta.get("tanggal_sp2d"), "month", None)
+            or parse_month_number(spm_meta.get("bulan_sp2d"))
             or paket.bulan
         ),
     }
@@ -1585,7 +1590,7 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
                 sp2d_raw=sp2d_raw,
                 akun=g_item["akun"],
                 kategori="",
-                bulan_sp2d=getattr(meta.get("tanggal_sp2d"), "month", None) or paket.bulan,
+                bulan_sp2d=getattr(meta.get("tanggal_sp2d"), "month", None) or parse_month_number(spm_meta.get("bulan_sp2d")) or paket.bulan,
                 cara_pembayaran="UP/TUP" if (is_gup(meta["jenis_spm"]) or is_tup(meta["jenis_spm"])) else (meta.get("cara_pembayaran") or meta["jenis_spm"]),
                 nomor_spm=nomor_spm,
                 tanggal_spm=tanggal_spm,

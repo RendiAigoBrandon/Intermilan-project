@@ -13,14 +13,16 @@ Tests cover:
 - Drive failure preserves local checklist + DocumentDriveLink
 - Ganti clears parent + redirects; Lepas clears parent only
 """
+import json
 import tempfile
 import os
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.urls import reverse
 from unittest.mock import patch, MagicMock
 
 from apps.core.models import (
@@ -295,6 +297,248 @@ class DRPPPreviewInheritanceTests(TestCase, SPMParentTestMixin):
             drpp_satker="019937",
             drpp_tahun=2025,  # Different year
             drpp_nomor_spm="SPM-Y",
+        )
+        self.assertFalse(compatible)
+
+
+class DRPPParentRevalidationHTTPRegressionTests(TestCase, SPMParentTestMixin):
+    """Regression coverage for active SPM parent inheritance through revalidation."""
+
+    preview_fields = [
+        "akun",
+        "bulan_sp2d",
+        "cara_pembayaran",
+        "nomor_spm",
+        "tanggal_spm",
+        "jenis_spm",
+        "no_kuitansi",
+        "no_drpp",
+        "deskripsi",
+        "nilai_bruto",
+        "nilai_netto",
+        "pembebanan",
+        "fp",
+        "pph21",
+    ]
+
+    def setUp(self):
+        self.user = self.make_admin_user("drpp_parent_revalidation")
+        self.client.force_login(self.user)
+        self.pkg, self.session = self.make_active_parent(self.user)
+        self.pkg.tanggal_sp2d = date(2026, 1, 20)
+        self.pkg.save(update_fields=["tanggal_sp2d"])
+
+    def tearDown(self):
+        ActiveParentSession.objects.filter(user=self.user).delete()
+        TransactionPackage.objects.filter(satker_code__in=["019937", "029999"], tahun=2026).delete()
+        TransactionDetail.objects.filter(satker_code__in=["019937", "029999"]).delete()
+        ChecklistStatus.objects.all().delete()
+        DocumentDriveLink.objects.all().delete()
+        DRPPPreviewState.objects.all().delete()
+        PaketSPMUpload.objects.filter(uploaded_by=self.user).delete()
+
+    def base_row(self, **overrides):
+        row = {
+            "akun": "5111",
+            "bulan_sp2d": "",
+            "cara_pembayaran": "",
+            "nomor_spm": "",
+            "tanggal_spm": "",
+            "jenis_spm": "",
+            "no_kuitansi": "KW-1",
+            "no_drpp": "00025",
+            "deskripsi": "Belanja ATK",
+            "nilai_bruto": "1000",
+            "nilai_netto": "1000",
+            "pembebanan": "2886.EBA.994.001.5111",
+            "fp": "",
+            "pph21": "0",
+        }
+        row.update(overrides)
+        return row
+
+    def parsed_drpp(self, spm_shape=None, row=None):
+        row = row or self.base_row()
+        drpp = {
+            "file_name": "DRPP 00025.pdf",
+            "status": "parsed_text",
+            "metadata": {"nomor_drpp": "00025", "satker_code": "019937", "tahun": 2026},
+            "items": [],
+        }
+        return {
+            "ok": True,
+            "files": [{"file_name": "DRPP 00025.pdf", "type": "DRPP"}],
+            "spm": spm_shape,
+            "drpp": drpp,
+            "drpps": [drpp],
+            "drpp_groups": [{
+                "group_key": "00025",
+                "no_drpp": "00025",
+                "drpp": drpp,
+                "items": [dict(row)],
+                "validation": {"status": "LENGKAP", "can_commit": True, "errors": []},
+                "status": "LENGKAP",
+            }],
+            "kw_by_drpp": {"00025": [dict(row)]},
+            "kw_items": [dict(row)],
+            "preview_rows": [dict(row)],
+            "paket_context": {"satker_code": "019937", "tahun": 2026, "bulan": 1},
+            "warnings": [],
+        }
+
+    def open_preview(self, parsed):
+        paket = PaketSPMUpload.objects.create(
+            original_filename="DRPP 00025.zip",
+            satker_code="019937",
+            tahun=2026,
+            status=PaketSPMUpload.Status.PREVIEW,
+            uploaded_by=self.user,
+            parsed_data=parsed,
+        )
+        session = self.client.session
+        session["paket_spm_preview_id"] = paket.id
+        session.save()
+        return paket
+
+    def post_rows(self, row=None, action="recalculate", commit_choice=""):
+        row = row or self.base_row()
+        data = {
+            "action": action,
+            "preview_row_count": "1",
+            "nomor_spm": row.get("nomor_spm", ""),
+            "satker_code": "019937",
+            "tahun": "2026",
+        }
+        if commit_choice:
+            data["commit_choice"] = commit_choice
+        for field in self.preview_fields:
+            data[f"rows-0-{field}"] = row.get(field, "")
+        return data
+
+    def test_recalculate_inherits_active_parent_when_spm_is_none(self):
+        paket = self.open_preview(self.parsed_drpp(spm_shape=None))
+
+        response = self.client.post(reverse("paket_spm:preview"), self.post_rows())
+
+        self.assertNotEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 302)
+        state = DRPPPreviewState.objects.get(user=self.user, nomor_drpp="00025")
+        meta = state.preview_data["spm"]["metadata"]
+        self.assertEqual(meta["nomor_spm"], "SPM-X")
+        self.assertEqual(meta["tanggal_spm"], "2026-01-15")
+        self.assertEqual(meta["jenis_spm"], "GUP")
+        self.assertEqual(meta["bulan_sp2d"], 1)
+        self.assertEqual(meta["cara_pembayaran"], "UP/TUP")
+
+        paket.refresh_from_db()
+        saved_meta = paket.parsed_data["spm"]["metadata"]
+        self.assertEqual(saved_meta["nomor_spm"], "SPM-X")
+        self.assertEqual(saved_meta["tanggal_spm"], "2026-01-15")
+        self.assertEqual(saved_meta["jenis_spm"], "GUP")
+
+    def test_recalculate_normalizes_missing_metadata_before_inheritance(self):
+        paket = self.open_preview(self.parsed_drpp(spm_shape={}))
+
+        response = self.client.post(reverse("paket_spm:preview"), self.post_rows())
+
+        self.assertEqual(response.status_code, 302)
+        paket.refresh_from_db()
+        meta = paket.parsed_data["spm"]["metadata"]
+        self.assertEqual(meta["nomor_spm"], "SPM-X")
+        self.assertEqual(meta["tanggal_spm"], "2026-01-15")
+        self.assertEqual(meta["jenis_spm"], "GUP")
+        self.assertEqual(meta["cara_pembayaran"], "UP/TUP")
+
+    def test_preview_state_json_safes_decimal_date_and_datetime_values(self):
+        from apps.core.services import create_drpp_preview_state
+
+        state = create_drpp_preview_state(
+            request=_make_request(user=self.user),
+            nomor_drpp="00025",
+            satker_code="019937",
+            tahun=2026,
+            parent_package=self.pkg,
+            preview_data={
+                "spm": {
+                    "metadata": {
+                        "tanggal_spm": date(2026, 1, 15),
+                        "total_pembayaran": Decimal("1000.50"),
+                        "parser_seen_at": datetime(2026, 1, 15, 8, 30, 0),
+                    },
+                },
+            },
+            user=self.user,
+        )
+
+        json.dumps(state.preview_data)
+        meta = state.preview_data["spm"]["metadata"]
+        self.assertEqual(meta["tanggal_spm"], "2026-01-15")
+        self.assertEqual(meta["total_pembayaran"], "1000.50")
+        self.assertEqual(meta["parser_seen_at"], "2026-01-15T08:30:00")
+
+    def test_recalculate_then_commit_keeps_inherited_values_in_dk(self):
+        TransactionDetail.objects.create(
+            satker_code="019937",
+            nomor_spm="SPM-X",
+            tanggal_spm=date(2026, 1, 15),
+            jenis_spm="",
+            akun="5111",
+            bulan_sp2d=1,
+            cara_pembayaran="",
+            nilai_bruto=Decimal("1000"),
+            nilai_netto=Decimal("1000"),
+            status_detail=TransactionDetail.StatusDetail.DRAFT,
+        )
+        paket = self.open_preview(self.parsed_drpp(spm_shape=None))
+
+        recalc = self.client.post(reverse("paket_spm:preview"), self.post_rows())
+        self.assertEqual(recalc.status_code, 302)
+        paket.refresh_from_db()
+        row = paket.parsed_data["preview_rows"][0]
+
+        with patch("apps.paket_spm.services.link_followup_document"):
+            committed = self.client.post(
+                reverse("paket_spm:preview"),
+                self.post_rows(row=row, action="commit", commit_choice="update_existing"),
+            )
+
+        self.assertEqual(committed.status_code, 302)
+        dk = TransactionDetail.objects.get(satker_code="019937", nomor_spm="SPM-X")
+        self.assertEqual(dk.tanggal_spm, date(2026, 1, 15))
+        self.assertEqual(dk.jenis_spm, "GUP")
+        self.assertEqual(dk.bulan_sp2d, 1)
+        self.assertEqual(dk.cara_pembayaran, "UP/TUP")
+        self.assertEqual(dk.no_kuitansi, "KW-1")
+        self.assertEqual(dk.no_drpp, "00025")
+
+    def test_explicit_conflicting_spm_evidence_is_not_overwritten(self):
+        from apps.core.services import validate_parent_compatibility
+
+        row = self.base_row(nomor_spm="SPM-OTHER", tanggal_spm="2026-01-15", jenis_spm="GUP")
+        parsed = self.parsed_drpp(
+            spm_shape={
+                "metadata": {
+                    "nomor_spm": "SPM-OTHER",
+                    "satker_code": "019937",
+                    "tahun": 2026,
+                    "tanggal_spm": "2026-01-15",
+                    "jenis_spm": "GUP",
+                },
+            },
+            row=row,
+        )
+        paket = self.open_preview(parsed)
+
+        response = self.client.post(reverse("paket_spm:preview"), self.post_rows(row=row))
+
+        self.assertEqual(response.status_code, 302)
+        paket.refresh_from_db()
+        self.assertEqual(paket.parsed_data["spm"]["metadata"]["nomor_spm"], "SPM-OTHER")
+        compatible, _msg = validate_parent_compatibility(
+            package=self.pkg,
+            drpp_satker="019937",
+            drpp_tahun=2026,
+            drpp_nomor_spm="SPM-OTHER",
         )
         self.assertFalse(compatible)
 
