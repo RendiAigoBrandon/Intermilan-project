@@ -67,7 +67,12 @@
           </td>
           <td>
             {% if link.archive_url_valid %}
-            <a href="{{ link.google_drive_url }}" target="_blank" rel="noopener noreferrer">Buka Google Drive</a>
+            <a href="{{ link.google_drive_url }}" target="_blank" rel="noopener noreferrer">Buka Drive</a>
+            {% elif link.supporting_attachment %}
+            <form method="post" action="{% url 'documents:sync_attachment_drive' link.supporting_attachment.id %}" style="display:inline;">
+              {% csrf_token %}
+              <button type="submit" class="btn small">Sinkronkan ke Drive</button>
+            </form>
             {% else %}
             <span class="muted">Belum tersedia</span>
             {% endif %}

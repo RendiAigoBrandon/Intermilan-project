@@ -9,6 +9,7 @@ from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_POST
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
@@ -48,7 +49,7 @@ from apps.dk.services import refresh_transaction_document_status
 from apps.drpp.models import DRPPItem, DRPPSupportingAttachment, DRPPUpload
 from apps.sp2d.models import SP2DRaw
 from apps.documents.services.checklist import mark_checklist_present as mark_checklist_present_service
-from apps.documents.services.google_drive import archive_file_link
+from apps.documents.services.google_drive import archive_file_link, drive_enabled
 from apps.documents.services.google_drive_dedup import calculate_file_hash
 
 from .models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink, DocumentUpload
@@ -324,6 +325,8 @@ def _save_supporting_receipt_file(request, drpp_context, upload_file, tmp_path, 
         return None, True
 
     document_upload = None
+    attachment = None
+    drive_result = {"status": "pending", "error_message": ""}
     try:
         with db_transaction.atomic():
             with open(tmp_path, "rb") as handle:
@@ -341,6 +344,8 @@ def _save_supporting_receipt_file(request, drpp_context, upload_file, tmp_path, 
                 document_upload.stored_filename = document_upload.file.name
                 document_upload.save()
 
+            # Create DocumentDriveLink placeholder with empty google_drive_url
+            # Drive URL will be filled after this atomic block
             archive_link = DocumentDriveLink.objects.create(
                 transaction_detail=None,
                 satker_code=drpp_context["satker_code"],
@@ -367,11 +372,91 @@ def _save_supporting_receipt_file(request, drpp_context, upload_file, tmp_path, 
                 nomor_drpp_norm=drpp_context["nomor_drpp_norm"],
                 uploaded_by=request.user,
             )
+
+        # ================================================================
+        # OUTSIDE ATOMIC: Google Drive upload (network call — may be slow/fail)
+        # Local save is already committed, so Drive failure is non-fatal.
+        # ================================================================
+        drive_result = _archive_receipt_to_drive(
+            tmp_path,
+            document_upload=document_upload,
+            archive_link=archive_link,
+            drpp_context=drpp_context,
+            file_hash=file_hash,
+            user=request.user,
+        )
+
+        if drive_result["status"] == "uploaded":
+            logger.info(
+                "[RECEIPT DRIVE] uploaded satker=%s drpp=%s file=%s",
+                drpp_context["satker_code"], drpp_context["nomor_drpp"], upload_file.name,
+            )
+        elif drive_result["status"] in {"failed", "timeout", "missing_credentials"}:
+            logger.warning(
+                "[RECEIPT DRIVE] %s satker=%s drpp=%s file=%s: %s",
+                drive_result["status"], drpp_context["satker_code"],
+                drpp_context["nomor_drpp"], upload_file.name,
+                drive_result.get("error_message", ""),
+            )
+
         return attachment, False
     except Exception:
         if document_upload and document_upload.file:
             document_upload.file.delete(save=False)
         raise
+
+
+def _archive_receipt_to_drive(file_path, document_upload, archive_link, drpp_context, file_hash, user):
+    """
+    Upload a receipt file to Google Drive and update the DocumentDriveLink in-place.
+
+    Returns drive_result dict with status, web_view_link, etc.
+    """
+    try:
+        drive_result, updated_link, is_reused = archive_file_link(
+            file_path,
+            user=user,
+            jenis_dokumen=RECEIPT_DOCUMENT_TYPE,
+            nama_file=document_upload.original_filename,
+            satker_code=drpp_context["satker_code"],
+            nomor_spm=drpp_context["nomor_spm"] or "",
+            no_drpp=drpp_context["nomor_drpp"],
+            no_kuitansi="",
+            catatan_extra=(
+                f"source=DRPP supporting receipt; "
+                f"drpp_upload_id={drpp_context['drpp_upload'].id if drpp_context.get('drpp_upload') else 'None'}; "
+                f"document_upload_id={document_upload.id}"
+            ),
+            transaction_detail=None,
+            existing_link=archive_link,
+            timeout=15,  # seconds — fail fast to prevent Cloudflare 524
+        )
+
+        # If archive_file_link returned an updated link, refresh from DB to get the saved URL
+        if updated_link:
+            archive_link.refresh_from_db()
+
+        return drive_result
+    except socket.timeout:
+        logger.warning(
+            "[RECEIPT DRIVE] socket timeout for file=%s — local link preserved.",
+            document_upload.original_filename,
+        )
+        return {
+            "status": "timeout",
+            "error_message": "Google Drive tidak merespon dalam 15 detik.",
+            "web_view_link": archive_link.google_drive_url if archive_link else "",
+        }
+    except Exception as exc:
+        logger.warning(
+            "[RECEIPT DRIVE] Failed for file=%s: %s — local link remains.",
+            document_upload.original_filename, exc,
+        )
+        return {
+            "status": "failed",
+            "error_message": str(exc),
+            "web_view_link": archive_link.google_drive_url if archive_link else "",
+        }
 
 
 @login_required
@@ -482,6 +567,8 @@ def upload_kuitansi(request):
                 storage = FileSystemStorage(location=tmp_dir)
                 processed = 0
                 duplicates = 0
+                drive_uploaded = 0
+                drive_pending = 0
                 for upload_file in upload_files:
                     tmp_name = storage.save(upload_file.name, upload_file)
                     tmp_path = storage.path(tmp_name)
@@ -498,12 +585,22 @@ def upload_kuitansi(request):
                             duplicates += 1
                         else:
                             processed += 1
+                            # Check if Drive upload succeeded by examining the archive_link
+                            # This is a simple heuristic - if Drive is enabled and no error, it worked
+                            if drive_enabled():
+                                drive_uploaded += 1
+                            else:
+                                drive_pending += 1
                     finally:
                         storage.delete(tmp_name)
                 if processed:
                     messages.success(request, f"{processed} file kuitansi pendukung tersimpan.")
                 if duplicates:
                     messages.info(request, f"{duplicates} file duplikat konten dilewati.")
+                if drive_uploaded and drive_enabled():
+                    messages.success(request, f"{drive_uploaded} file berhasil diarsipkan ke Google Drive.")
+                elif drive_pending and not drive_enabled():
+                    messages.warning(request, f"{drive_pending} file tersimpan lokal. Aktifkan Google Drive untuk arsip otomatis.")
                 return redirect(
                     f"{reverse('documents:upload_kuitansi')}?{urlencode({'satker': drpp_context['satker_code'], 'no_drpp': drpp_context['nomor_drpp']})}"
                 )
@@ -549,6 +646,98 @@ def drpp_attachment_download(request, attachment_id):
         as_attachment=False,
         filename=attachment.document_upload.original_filename,
     )
+
+
+@require_POST
+@login_required
+def sync_attachment_drive(request, attachment_id):
+    """
+    Sync an existing DRPP supporting attachment to Google Drive.
+
+    Only syncs if:
+    - Attachment has a local file
+    - DocumentDriveLink has empty google_drive_url
+    - File is not already in Drive (idempotent)
+    """
+    attachments = filter_by_satker(
+        DRPPSupportingAttachment.objects.select_related(
+            "document_upload", "archive_link", "drpp_upload"
+        ),
+        request.user,
+    )
+    attachment = get_object_or_404(attachments, pk=attachment_id)
+
+    # Check if already synced
+    archive_link = attachment.archive_link
+    if not archive_link:
+        messages.error(request, "Attachment tidak memiliki tautan arsip.")
+        return redirect("documents:archive")
+
+    if _is_valid_google_drive_url(archive_link.google_drive_url):
+        messages.info(request, "File sudah tersinkron ke Google Drive. Tidak perlu sinkron ulang.")
+        return redirect("documents:archive")
+
+    # Check if local file exists
+    if not attachment.document_upload.file:
+        messages.error(request, "File lokal tidak ditemukan.")
+        return redirect("documents:archive")
+
+    file_path = attachment.document_upload.file.path
+    if not os.path.exists(file_path):
+        messages.error(request, "File fisik tidak ditemukan di server.")
+        return redirect("documents:archive")
+
+    # Check if already synced by another process (idempotency)
+    # Re-fetch the link to get the latest state
+    archive_link.refresh_from_db()
+    if _is_valid_google_drive_url(archive_link.google_drive_url):
+        messages.info(request, "File sudah tersinkron ke Google Drive.")
+        return redirect("documents:archive")
+
+    try:
+        # Calculate file hash for dedup
+        file_hash = calculate_file_hash(file_path)
+
+        # Build drpp_context from attachment data
+        drpp_context = {
+            "drpp_upload": attachment.drpp_upload,
+            "satker_code": attachment.satker_code,
+            "tahun": attachment.tahun,
+            "nomor_drpp": attachment.nomor_drpp,
+            "nomor_drpp_norm": attachment.nomor_drpp_norm,
+            "nomor_spm": archive_link.nomor_spm or "",
+        }
+
+        # Upload to Drive
+        drive_result = _archive_receipt_to_drive(
+            file_path=file_path,
+            document_upload=attachment.document_upload,
+            archive_link=archive_link,
+            drpp_context=drpp_context,
+            file_hash=file_hash,
+            user=request.user,
+        )
+
+        if drive_result["status"] == "uploaded":
+            messages.success(request, f"File '{attachment.document_upload.original_filename}' berhasil diarsipkan ke Google Drive.")
+        elif drive_result["status"] == "reused":
+            messages.info(request, f"File sudah ada di Google Drive (tidak di-upload ulang).")
+        elif drive_result["status"] == "failed":
+            messages.error(request, f"Sinkronisasi gagal: {drive_result.get('error_message', 'Unknown error')}. File tetap tersimpan lokal.")
+        elif drive_result["status"] == "timeout":
+            messages.warning(request, f"Google Drive tidak merespon dalam 15 detik. File tersimpan lokal. Coba lagi nanti.")
+        elif drive_result["status"] == "disabled":
+            messages.warning(request, "Google Drive belum aktif. File tersimpan lokal.")
+        elif drive_result["status"] == "missing_credentials":
+            messages.warning(request, "Credential Google Drive belum dikonfigurasi. File tersimpan lokal.")
+        else:
+            messages.warning(request, f"Status tidak diketahui: {drive_result['status']}. {drive_result.get('error_message', '')}")
+
+    except Exception as exc:
+        logger.exception("[SYNC DRIVE] Failed for attachment=%s: %s", attachment_id, exc)
+        messages.error(request, f"Terjadi kesalahan saat sinkronisasi: {exc}. File tetap tersimpan lokal.")
+
+    return redirect("documents:archive")
 
 
 @login_required

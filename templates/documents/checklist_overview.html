@@ -108,17 +108,27 @@
   <div class="card-head"><h2>Kuitansi Pendukung DRPP</h2><span class="muted">{{ drpp_supporting_count }} file</span></div>
   <div class="table-wrap">
     <table class="data-table compact table-documents">
-      <thead><tr><th>Nama File</th><th>Uploaded By</th><th>Waktu</th><th>Aksi</th></tr></thead>
+      <thead><tr><th>Nama File</th><th>Google Drive</th><th>Uploaded By</th><th>Waktu</th><th>Aksi</th></tr></thead>
       <tbody>
         {% for attachment in drpp_supporting_attachments %}
         <tr>
           <td>{{ attachment.document_upload.original_filename|dash }}</td>
+          <td>
+            {% if attachment.archive_link.google_drive_url %}
+              <a href="{{ attachment.archive_link.google_drive_url }}" target="_blank" rel="noopener noreferrer">Buka Drive</a>
+            {% else %}
+              <form method="post" action="{% url 'documents:sync_attachment_drive' attachment.id %}" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn tiny">Sinkronkan ke Drive</button>
+              </form>
+            {% endif %}
+          </td>
           <td>{{ attachment.uploaded_by|default:"-" }}</td>
           <td>{{ attachment.created_at|date:"Y-m-d H:i" }}</td>
           <td><a class="btn tiny ghost" href="{% url 'documents:drpp_attachment_download' attachment.id %}" target="_blank" rel="noopener noreferrer">Buka File</a></td>
         </tr>
         {% empty %}
-        <tr><td colspan="4" class="empty">Belum ada kuitansi pendukung DRPP.</td></tr>
+        <tr><td colspan="5" class="empty">Belum ada kuitansi pendukung DRPP.</td></tr>
         {% endfor %}
       </tbody>
     </table>
