@@ -349,6 +349,104 @@ class SP2DHardeningTests(TestCase):
             1,
         )
 
+    def test_late_sp2d_reprocess_ignores_legacy_summary_detail(self):
+        from apps.dk.models import TransactionDetail, TransactionChangeLog
+
+        self.client.login(username="test_upload", password="password")
+        tx1, tx2, other_satker = self._create_existing_dk_for_late_sp2d()
+        raw = SP2DRaw.objects.create(
+            identity_key=generate_identity_key(
+                "019937",
+                "260100000030107",
+                "00166T",
+                "00166T",
+                "2026-06-17",
+                "2026-06-15",
+                "52249851",
+                "2026",
+            ),
+            satker_code="019937",
+            satker_name="BPS Provinsi Sumatera Barat",
+            no_sp2d="260100000030107",
+            nomor_spm_extracted="00166T",
+            nomor_invoice="00166T",
+            tgl_sp2d="2026-06-17",
+            tanggal_invoice="2026-06-15",
+            tahun=2026,
+            bulan_sp2d=6,
+            jenis_spm="GUP",
+            nilai_spm=Decimal("52249851"),
+            nilai_sp2d=Decimal("52249851"),
+            potongan=Decimal("0"),
+            created_by=self.user,
+        )
+        summary = TransactionDetail.objects.create(
+            sp2d_raw=raw,
+            satker_code="019937",
+            akun="",
+            bulan_sp2d=6,
+            nomor_spm="00166T",
+            tanggal_spm="2026-06-17",
+            jenis_spm="GUP",
+            deskripsi="PENGGANTIAN UANG PERSEDIAAN",
+            nilai_bruto=Decimal("52249851"),
+            nilai_netto=Decimal("52249851"),
+            pph21=0,
+            created_by=self.user,
+        )
+
+        first_response = self._post_late_sp2d_preview_commit("legacy_summary_first.xlsx")
+        self.assertRedirects(first_response, reverse("dk:transaction_list"))
+        second_response = self._post_late_sp2d_preview_commit("legacy_summary_second.xlsx")
+        self.assertRedirects(second_response, reverse("dk:transaction_list"))
+
+        raw.refresh_from_db()
+        tx1.refresh_from_db()
+        tx2.refresh_from_db()
+        other_satker.refresh_from_db()
+        summary.refresh_from_db()
+
+        self.assertEqual(SP2DRaw.objects.filter(no_sp2d="260100000030107").count(), 1)
+        self.assertEqual(tx1.sp2d_raw_id, raw.id)
+        self.assertEqual(tx2.sp2d_raw_id, raw.id)
+        self.assertIsNone(other_satker.sp2d_raw_id)
+        self.assertEqual(tx1.helper, "52215100243/KW/019937/2026")
+        self.assertEqual(tx2.helper, "52111500246/KW/019937/2026")
+        self.assertEqual(tx1.nilai_bruto, Decimal("1800000"))
+        self.assertEqual(tx2.nilai_bruto, Decimal("1000000"))
+        self.assertEqual(summary.sp2d_raw_id, raw.id)
+        self.assertEqual(summary.akun, "")
+        self.assertEqual(summary.no_kuitansi, "")
+        self.assertEqual(summary.nilai_bruto, Decimal("52249851"))
+        self.assertEqual(
+            TransactionDetail.objects.filter(
+                sp2d_raw=raw,
+                akun="",
+                no_kuitansi="",
+                nilai_bruto=Decimal("52249851"),
+            ).count(),
+            1,
+        )
+        self.assertEqual(TransactionDetail.objects.filter(satker_code="019937", nomor_spm="00166T").count(), 3)
+        self.assertIn("49449851", raw.cek_akun)
+        self.assertNotIn("2800000", raw.cek_akun)
+        self.assertEqual(
+            TransactionChangeLog.objects.filter(
+                transaction=tx1,
+                field_name="sp2d_raw",
+                new_value=str(raw.id),
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            TransactionChangeLog.objects.filter(
+                transaction=tx2,
+                field_name="sp2d_raw",
+                new_value=str(raw.id),
+            ).count(),
+            1,
+        )
+
     def test_identity_key_formula(self):
         """Verifikasi formula identity_key untuk data dengan no_sp2d."""
         from apps.sp2d.services import build_identity_result
