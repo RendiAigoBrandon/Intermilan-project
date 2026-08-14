@@ -16,6 +16,12 @@ BULAN_CHOICES = [
     ('9', 'September'), ('10', 'Oktober'), ('11', 'November'), ('12', 'Desember'),
 ]
 
+
+def coerce_optional_int(value):
+    if value in (None, ""):
+        return None
+    return int(value)
+
 CARA_PEMBAYARAN_CHOICES = [
     ('', '--- Opsional / Pilih Cara Pembayaran ---'),
     ('UP/TUP', 'UP/TUP'),
@@ -35,7 +41,13 @@ class TransactionDetailForm(forms.ModelForm):
             "autocomplete": "off",
         }),
     )
-    bulan_sp2d = forms.ChoiceField(choices=BULAN_CHOICES, required=False, label="Bulan SP2D")
+    bulan_sp2d = forms.TypedChoiceField(
+        choices=BULAN_CHOICES,
+        coerce=coerce_optional_int,
+        empty_value=None,
+        required=False,
+        label="Bulan SP2D",
+    )
     cara_pembayaran = forms.ChoiceField(choices=CARA_PEMBAYARAN_CHOICES, required=False, label="Cara Pembayaran")
     tanggal_spm = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}), required=False, label="Tanggal SPM")
     sp2d_raw_id = forms.ChoiceField(choices=[('', '--- Opsional / Tanpa SP2D ---')], required=False, label="No SP2D")

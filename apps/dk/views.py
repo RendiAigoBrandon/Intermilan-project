@@ -1,3 +1,5 @@
+import logging
+
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.db import connection
@@ -14,6 +16,7 @@ from .models import MasterAkun, TransactionDetail
 
 
 PAGE_SIZE_OPTIONS = (20, 50, 100)
+logger = logging.getLogger(__name__)
 
 
 @login_required
@@ -284,55 +287,68 @@ def transaction_create(request):
             satker_code = form.cleaned_data.get('satker_code')
             if not can_edit_satker(request.user, satker_code):
                 raise PermissionDenied("Anda tidak memiliki izin pada satker ini.")
-            instance = form.save(commit=False)
-            instance.created_by = request.user
-            
-            # SP2D Linkage only on create
-            sp2d_raw_id = form.cleaned_data.get("sp2d_raw_id")
-            linked_sp2d = None
-            if sp2d_raw_id:
-                sp2d = filter_by_satker(SP2DRaw.objects, request.user).filter(id=sp2d_raw_id).first()
-                if sp2d and sp2d.satker_code == instance.satker_code and can_edit_satker(request.user, sp2d.satker_code):
-                    instance.sp2d_raw = sp2d
-                    instance.status_detail = TransactionDetail.StatusDetail.DRAFT
-                    linked_sp2d = sp2d
-                else:
-                    form.add_error(None, "SP2D tidak ditemukan atau beda satker.")
-                    context = permission_context(request.user)
-                    context.update({'form': form, 'page_title': 'Tambah Baris D_K'})
-                    return render(request, 'dk/form.html', context)
+            try:
+                instance = form.save(commit=False)
+                instance.created_by = request.user
 
-            instance.save()
-            
-            # Log fields that were filled
-            for field in form.cleaned_data:
-                new_val = form.cleaned_data.get(field)
-                if new_val is not None and new_val != "":
+                # SP2D Linkage only on create
+                sp2d_raw_id = form.cleaned_data.get("sp2d_raw_id")
+                linked_sp2d = None
+                if sp2d_raw_id:
+                    sp2d = filter_by_satker(SP2DRaw.objects, request.user).filter(id=sp2d_raw_id).first()
+                    if sp2d and sp2d.satker_code == instance.satker_code and can_edit_satker(request.user, sp2d.satker_code):
+                        instance.sp2d_raw = sp2d
+                        instance.status_detail = TransactionDetail.StatusDetail.DRAFT
+                        linked_sp2d = sp2d
+                    else:
+                        form.add_error(None, "SP2D tidak ditemukan atau beda satker.")
+                        context = permission_context(request.user)
+                        context.update({'form': form, 'page_title': 'Tambah Baris D_K'})
+                        return render(request, 'dk/form.html', context)
+
+                instance.save()
+
+                # Log fields that were filled
+                for field in form.cleaned_data:
+                    new_val = form.cleaned_data.get(field)
+                    if new_val is not None and new_val != "":
+                        TransactionChangeLog.objects.create(
+                            transaction=instance,
+                            field_name=field,
+                            old_value="",
+                            new_value=str(new_val),
+                            change_source=TransactionChangeLog.ChangeSource.MANUAL,
+                            changed_by=request.user
+                        )
+
+                if linked_sp2d:
                     TransactionChangeLog.objects.create(
                         transaction=instance,
-                        field_name=field,
+                        field_name="sp2d_raw",
                         old_value="",
-                        new_value=str(new_val),
+                        new_value=str(linked_sp2d.id),
                         change_source=TransactionChangeLog.ChangeSource.MANUAL,
                         changed_by=request.user
                     )
-            
-            if linked_sp2d:
-                TransactionChangeLog.objects.create(
-                    transaction=instance,
-                    field_name="sp2d_raw",
-                    old_value="",
-                    new_value=str(linked_sp2d.id),
-                    change_source=TransactionChangeLog.ChangeSource.MANUAL,
-                    changed_by=request.user
+                    from apps.sp2d.services import reconcile_sp2d_with_dk
+                    reconcile_sp2d_with_dk(linked_sp2d, request.user)
+
+                messages.success(request, "Baris D_K berhasil ditambahkan.")
+                if "save_and_add" in request.POST:
+                    return redirect('dk:transaction_create')
+                return redirect('dk:transaction_list')
+            except Exception:
+                logger.exception(
+                    "Unexpected error while creating D_K transaction.",
+                    extra={
+                        "user_id": getattr(request.user, "id", None),
+                        "satker_code": satker_code,
+                        "akun": form.cleaned_data.get("akun"),
+                        "nomor_spm": form.cleaned_data.get("nomor_spm"),
+                        "has_sp2d_raw_id": bool(form.cleaned_data.get("sp2d_raw_id")),
+                    },
                 )
-                from apps.sp2d.services import reconcile_sp2d_with_dk
-                reconcile_sp2d_with_dk(linked_sp2d, request.user)
-                    
-            messages.success(request, "Baris D_K berhasil ditambahkan.")
-            if "save_and_add" in request.POST:
-                return redirect('dk:transaction_create')
-            return redirect('dk:transaction_list')
+                raise
     else:
         initial_data = {}
         sp2d_id = request.GET.get("sp2d_raw_id")

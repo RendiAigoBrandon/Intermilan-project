@@ -147,6 +147,53 @@ class DKTests(TestCase):
         self.assertEqual(transaction.akun, "521115")
         self.assertEqual(transaction.helper, "52111500243/KW/019937/2026")
 
+    def test_manual_create_production_payload_without_sp2d_and_blank_optional_fields(self):
+        operator = User.objects.create_user(username="op_019937_repro", password="password")
+        Profile.objects.filter(user=operator).update(
+            role=Profile.Role.SATKER,
+            satker_code="019937",
+            satker_name="BPS Provinsi Sumatera Barat",
+        )
+
+        self.client.login(username="op_019937_repro", password="password")
+        response = self.client.post(
+            reverse("dk:transaction_create"),
+            self.valid_transaction_payload(
+                satker_code="019937",
+                sp2d_raw_id="",
+                akun="522151",
+                bulan_sp2d="",
+                cara_pembayaran="",
+                nomor_spm="00166T",
+                tanggal_spm="2026-06-15",
+                jenis_spm="GUP",
+                no_kuitansi="00243/KW/019937/2026",
+                no_drpp="00042/DRPP/019937/2026",
+                deskripsi="Repro produksi Tambah Baris D_K tanpa SP2D",
+                nilai_bruto="1800000",
+                nilai_netto="1800000",
+                pembebanan="",
+                fp="",
+                pph21="0",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        transaction = TransactionDetail.objects.get(nomor_spm="00166T", satker_code="019937")
+        self.assertIsNone(transaction.sp2d_raw_id)
+        self.assertEqual(transaction.akun, "522151")
+        self.assertIsNone(transaction.bulan_sp2d)
+        self.assertEqual(transaction.cara_pembayaran, "")
+        self.assertEqual(transaction.tanggal_spm.isoformat(), "2026-06-15")
+        self.assertEqual(transaction.jenis_spm, "GUP")
+        self.assertEqual(transaction.no_kuitansi, "00243/KW/019937/2026")
+        self.assertEqual(transaction.no_drpp, "00042/DRPP/019937/2026")
+        self.assertEqual(transaction.nilai_bruto, 1800000)
+        self.assertEqual(transaction.nilai_netto, 1800000)
+        self.assertEqual(transaction.pembebanan, "")
+        self.assertEqual(transaction.fp, "")
+        self.assertEqual(transaction.pph21, 0)
+
     def test_account_suggestions_do_not_depend_on_sp2d(self):
         SP2DRaw.objects.all().delete()
 
