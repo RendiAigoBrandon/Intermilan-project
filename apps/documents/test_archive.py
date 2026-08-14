@@ -299,6 +299,11 @@ class DRPPSupportingAttachmentTests(TestCase):
         self.addCleanup(self.media_override.disable)
         self.addCleanup(shutil.rmtree, self.media_tmp, True)
 
+        self.admin = User.objects.create_superuser(
+            username="receipt-admin",
+            password="password",
+            email="",
+        )
         self.operator = User.objects.create_user(username="operator-019937", password="password")
         self.operator.profile.role = Profile.Role.SATKER
         self.operator.profile.satker_code = "019937"
@@ -313,6 +318,7 @@ class DRPPSupportingAttachmentTests(TestCase):
         self.sp2d = SP2DRaw.objects.create(
             tahun=2026,
             satker_code="019937",
+            satker_name="BPS Provinsi Sumatera Barat",
             no_sp2d="260100000030107",
             nomor_spm_extracted="00166T",
             nilai_sp2d=Decimal("52249851"),
@@ -358,6 +364,17 @@ class DRPPSupportingAttachmentTests(TestCase):
     def receipt_file(self, name="kuitansi.pdf", content=b"%PDF-1.4 receipt"):
         return SimpleUploadedFile(name, content, content_type="application/pdf")
 
+    def create_other_satker_transaction(self):
+        return TransactionDetail.objects.create(
+            satker_code="020000",
+            akun="521111",
+            nomor_spm="00999T",
+            tanggal_spm=date(2026, 6, 15),
+            no_drpp="00999/DRPP/020000/2026",
+            nilai_bruto=1,
+            nilai_netto=1,
+        )
+
     def upload_receipts(self, files, drpp_upload=None, follow=False):
         drpp_upload = drpp_upload or self.drpp_upload
         return self.client.post(
@@ -371,6 +388,30 @@ class DRPPSupportingAttachmentTests(TestCase):
             },
             follow=follow,
         )
+
+    def test_admin_satker_dropdown_uses_existing_dk_satkers(self):
+        DRPPUpload.objects.all().delete()
+        self.client.force_login(self.admin)
+
+        response = self.client.get(reverse("documents:upload_kuitansi"))
+        codes = [item["code"] for item in response.context["satker_options"]]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("019937", codes)
+        self.assertContains(response, "019937 - BPS Provinsi Sumatera Barat")
+
+    def test_operator_satker_dropdown_is_scoped_to_own_satker(self):
+        self.create_other_satker_transaction()
+        self.client.force_login(self.operator)
+
+        response = self.client.get(reverse("documents:upload_kuitansi"))
+        codes = [item["code"] for item in response.context["satker_options"]]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("019937", codes)
+        self.assertNotIn("020000", codes)
+        self.assertContains(response, "019937 - BPS Provinsi Sumatera Barat")
+        self.assertNotContains(response, "020000")
 
     def test_drpp_found_shows_metadata(self):
         self.client.force_login(self.operator)

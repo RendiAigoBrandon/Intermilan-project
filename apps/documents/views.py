@@ -41,7 +41,7 @@ from apps.core.document_policy import (
     get_required_documents_for_akun_family,
     normalize_akun_family,
 )
-from apps.core.views import UPLOAD_COLUMNS, build_pagination_window
+from apps.core.views import UPLOAD_COLUMNS, build_pagination_window, build_satker_options
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
 from apps.drpp.models import DRPPItem, DRPPSupportingAttachment, DRPPUpload
@@ -212,15 +212,17 @@ def _resolve_drpp_context(user, satker_code="", nomor_drpp="", drpp_upload_id=No
 
 
 def _supporting_receipt_satker_options(user):
-    scoped = filter_by_satker(DRPPUpload.objects.exclude(satker_code=""), user)
-    codes = list(scoped.values_list("satker_code", flat=True).distinct().order_by("satker_code"))
-    user_satker = get_user_satker_code(user)
-    if user_satker and user_satker not in codes:
-        codes.append(user_satker)
-    names = get_satker_name_map(codes)
+    scoped = filter_by_satker(TransactionDetail.objects.exclude(satker_code=""), user)
     return [
-        {"code": code, "label": f"{code} - {names[code]}" if names.get(code) else code}
-        for code in codes
+        {
+            "code": item["satker_code"],
+            "label": (
+                f"{item['satker_code']} - {item['satker_name']}"
+                if item.get("satker_name")
+                else item["satker_code"]
+            ),
+        }
+        for item in build_satker_options(scoped)
     ]
 
 
