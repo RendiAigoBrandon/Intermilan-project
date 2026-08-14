@@ -248,7 +248,12 @@ def build_drive_service(credentials, timeout=None):
     """
     from googleapiclient.discovery import build
 
-    http = credentials.authorize(httplib2.Http(timeout=timeout)) if timeout else None
+    # Modern google-auth: pass credentials directly, don't use deprecated authorize()
+    http = None
+    if timeout:
+        import httplib2
+        http = httplib2.Http(timeout=timeout)
+        http = credentials.authorize(http)
     return build("drive", "v3", credentials=credentials, http=http, cache_discovery=False)
 
 
