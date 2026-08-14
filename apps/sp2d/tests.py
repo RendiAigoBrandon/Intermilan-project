@@ -76,6 +76,99 @@ class SP2DHardeningTests(TestCase):
         mem.seek(0)
         return mem.read()
 
+    def _create_existing_dk_for_late_sp2d(self):
+        from apps.dk.models import TransactionDetail
+
+        tx1 = TransactionDetail.objects.create(
+            satker_code="019937",
+            akun="522151",
+            nomor_spm="00166T",
+            tanggal_spm="2026-06-15",
+            jenis_spm="GUP",
+            no_kuitansi="00243/KW/019937/2026",
+            no_drpp="00042/DRPP/019937/2026",
+            deskripsi="Honor Narasumber Rapat Pembinaan PPID 7 Mei 2026",
+            nilai_bruto=Decimal("1800000"),
+            nilai_netto=Decimal("1800000"),
+            pph21=0,
+            created_by=self.user,
+        )
+        tx2 = TransactionDetail.objects.create(
+            satker_code="019937",
+            akun="521115",
+            nomor_spm="00166T",
+            tanggal_spm="2026-06-15",
+            jenis_spm="GUP",
+            no_kuitansi="00246/KW/019937/2026",
+            no_drpp="00042",
+            nilai_bruto=Decimal("1000000"),
+            nilai_netto=Decimal("1000000"),
+            pph21=0,
+            created_by=self.user,
+        )
+        other_satker = TransactionDetail.objects.create(
+            satker_code="428041",
+            akun="522151",
+            nomor_spm="00166T",
+            tanggal_spm="2026-06-15",
+            jenis_spm="GUP",
+            no_kuitansi="00243/KW/428041/2026",
+            nilai_bruto=Decimal("1800000"),
+            nilai_netto=Decimal("1800000"),
+            pph21=0,
+            created_by=self.user,
+        )
+        return tx1, tx2, other_satker
+
+    def _post_late_sp2d_preview_commit(self, filename):
+        excel_data = self._create_mock_excel([
+            [
+                "019937",
+                "BPS Provinsi Sumatera Barat",
+                "260100000030107",
+                "2026-06-17",
+                52249851,
+                0,
+                52249851,
+                "00166T",
+                "GUP",
+                "PENGGANTIAN UANG PERSEDIAAN",
+            ],
+        ])
+        uploaded = SimpleUploadedFile(
+            filename,
+            excel_data,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        upload_response = self.client.post(
+            reverse("sp2d:list"),
+            {"tahun": "2026", "bulan": "6", "file_sp2d": uploaded},
+        )
+        self.assertEqual(upload_response.status_code, 302)
+
+        return self.client.post(reverse("sp2d:preview"), {
+            "action": "commit",
+            "satker_code[]": ["019937"],
+            "satker_name[]": ["BPS Provinsi Sumatera Barat"],
+            "no_sp2d[]": ["260100000030107"],
+            "tahun[]": ["2026"],
+            "bulan_sp2d[]": ["6"],
+            "nomor_spm[]": ["00166T"],
+            "tgl_spm[]": ["2026-06-17"],
+            "jenis_spm[]": ["GUP"],
+            "cara_pembayaran[]": [""],
+            "akun[]": [""],
+            "deskripsi[]": ["PENGGANTIAN UANG PERSEDIAAN"],
+            "nilai_bruto[]": ["52249851"],
+            "nilai_netto[]": ["52249851"],
+            "potongan[]": ["0"],
+            "no_kuitansi[]": [""],
+            "no_drpp[]": [""],
+            "pembebanan[]": [""],
+            "fp[]": [""],
+            "pph21[]": ["0"],
+        })
+
     def test_service_classify_baru(self):
         """Test classify_sp2d_rows returns BARU for new row."""
         from apps.sp2d.services import classify_sp2d_rows
@@ -155,6 +248,106 @@ class SP2DHardeningTests(TestCase):
         })
         self.assertEqual(response.status_code, 302)
         self.assertIn("preview", response.url)
+
+    def test_late_sp2d_upload_links_existing_dk_without_overwriting_transactions(self):
+        from apps.dk.models import TransactionDetail
+        from apps.dk.views import attach_source_labels
+
+        self.client.login(username="test_upload", password="password")
+        tx1, tx2, other_satker = self._create_existing_dk_for_late_sp2d()
+
+        response = self._post_late_sp2d_preview_commit("late_sp2d.xlsx")
+        self.assertRedirects(response, reverse("dk:transaction_list"))
+
+        raw = SP2DRaw.objects.get(no_sp2d="260100000030107")
+        tx1.refresh_from_db()
+        tx2.refresh_from_db()
+        other_satker.refresh_from_db()
+
+        self.assertEqual(tx1.sp2d_raw_id, raw.id)
+        self.assertEqual(tx2.sp2d_raw_id, raw.id)
+        self.assertIsNone(other_satker.sp2d_raw_id)
+        self.assertEqual(tx1.helper, "52215100243/KW/019937/2026")
+        self.assertEqual(tx2.helper, "52111500246/KW/019937/2026")
+        self.assertEqual(tx1.nilai_bruto, Decimal("1800000"))
+        self.assertEqual(tx2.nilai_bruto, Decimal("1000000"))
+        self.assertEqual(
+            TransactionDetail.objects.filter(
+                satker_code="019937",
+                akun="522151",
+                no_kuitansi="00243/KW/019937/2026",
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            TransactionDetail.objects.filter(
+                satker_code="019937",
+                akun="521115",
+                no_kuitansi="00246/KW/019937/2026",
+            ).count(),
+            1,
+        )
+
+        attach_source_labels([tx1, tx2])
+        self.assertEqual(tx1.display_no_sp2d, "260100000030107")
+        self.assertEqual(tx2.display_no_sp2d, "260100000030107")
+        self.assertNotEqual(tx1.reconciliation_status_label, "Belum ada SP2D pembanding")
+        self.assertNotEqual(tx2.reconciliation_status_label, "Belum ada SP2D pembanding")
+
+    def test_late_sp2d_upload_reconciliation_is_idempotent(self):
+        from apps.dk.models import TransactionDetail, TransactionChangeLog
+
+        self.client.login(username="test_upload", password="password")
+        tx1, tx2, other_satker = self._create_existing_dk_for_late_sp2d()
+
+        first_response = self._post_late_sp2d_preview_commit("late_sp2d_first.xlsx")
+        self.assertRedirects(first_response, reverse("dk:transaction_list"))
+        second_response = self._post_late_sp2d_preview_commit("late_sp2d_second.xlsx")
+        self.assertRedirects(second_response, reverse("dk:transaction_list"))
+
+        raw = SP2DRaw.objects.get(no_sp2d="260100000030107")
+        tx1.refresh_from_db()
+        tx2.refresh_from_db()
+        other_satker.refresh_from_db()
+
+        self.assertEqual(SP2DRaw.objects.filter(no_sp2d="260100000030107").count(), 1)
+        self.assertEqual(tx1.sp2d_raw_id, raw.id)
+        self.assertEqual(tx2.sp2d_raw_id, raw.id)
+        self.assertIsNone(other_satker.sp2d_raw_id)
+        self.assertEqual(tx1.nilai_bruto, Decimal("1800000"))
+        self.assertEqual(tx2.nilai_bruto, Decimal("1000000"))
+        self.assertEqual(
+            TransactionDetail.objects.filter(
+                satker_code="019937",
+                akun="522151",
+                no_kuitansi="00243/KW/019937/2026",
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            TransactionDetail.objects.filter(
+                satker_code="019937",
+                akun="521115",
+                no_kuitansi="00246/KW/019937/2026",
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            TransactionChangeLog.objects.filter(
+                transaction=tx1,
+                field_name="sp2d_raw",
+                new_value=str(raw.id),
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            TransactionChangeLog.objects.filter(
+                transaction=tx2,
+                field_name="sp2d_raw",
+                new_value=str(raw.id),
+            ).count(),
+            1,
+        )
 
     def test_identity_key_formula(self):
         """Verifikasi formula identity_key untuk data dengan no_sp2d."""

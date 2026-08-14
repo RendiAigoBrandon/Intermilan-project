@@ -86,6 +86,11 @@ LOGGING = {
             "level": "ERROR",
             "propagate": False,
         },
+        "apps.sp2d": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
     },
 }
 

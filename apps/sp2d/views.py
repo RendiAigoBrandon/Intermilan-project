@@ -353,6 +353,8 @@ def sp2d_preview(request):
                                 sp2d_raw = next((r for r in raw_records if r.nomor_spm_extracted == row["nomor_spm"]), None)
                                 
                         if sp2d_raw:
+                            if TransactionDetail.objects.filter(sp2d_raw=sp2d_raw).exists():
+                                continue
                             detail, created = TransactionDetail.objects.update_or_create(
                                 sp2d_raw=sp2d_raw,
                                 defaults={

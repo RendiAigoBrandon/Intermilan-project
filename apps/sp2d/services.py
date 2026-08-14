@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from decimal import Decimal
 from django.db import transaction, IntegrityError
 from django.db.models import Sum
@@ -7,6 +8,9 @@ from apps.core.satker import resolve_sp2d_satker, normalize_satker_code
 
 from apps.sp2d.models import SP2DRaw, SP2DImportBatch
 from apps.dk.models import TransactionDetail, TransactionChangeLog
+
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_sp2d_year(row, batch_tahun):
@@ -495,6 +499,14 @@ def reconcile_sp2d_with_dk(sp2d_record, user):
     if not sp2d_record.satker_code or not sp2d_record.nomor_spm_extracted or not sp2d_record.tahun:
         sp2d_record.status = SP2DRaw.Status.PERLU_DETAIL
         sp2d_record.save(update_fields=['status'])
+        logger.warning(
+            "SP2D reconciliation skipped: missing key sp2d_id=%s no_sp2d=%s satker=%s tahun=%s nomor_spm=%s",
+            sp2d_record.id,
+            sp2d_record.no_sp2d,
+            sp2d_record.satker_code,
+            sp2d_record.tahun,
+            sp2d_record.nomor_spm_extracted,
+        )
         return
 
     dk_items = list(TransactionDetail.objects.filter(
@@ -529,22 +541,34 @@ def reconcile_sp2d_with_dk(sp2d_record, user):
         sp2d_record.status = SP2DRaw.Status.TIDAK_COCOK
         sp2d_record.cek_akun = "Konflik: D_K terhubung ke SP2D lain"
         sp2d_record.save(update_fields=['status', 'cek_akun'])
+        logger.warning(
+            "SP2D reconciliation skipped: conflicting DK link sp2d_id=%s no_sp2d=%s satker=%s tahun=%s nomor_spm=%s candidate_count=%s",
+            sp2d_record.id,
+            sp2d_record.no_sp2d,
+            sp2d_record.satker_code,
+            sp2d_record.tahun,
+            sp2d_record.nomor_spm_extracted,
+            len(dk_items),
+        )
         return
         
     if has_dk:
+        linked_count = 0
+        for item in dk_items:
+            if item.sp2d_raw_id != sp2d_record.id:
+                TransactionChangeLog.objects.create(
+                    transaction=item,
+                    field_name="sp2d_raw",
+                    old_value=str(item.sp2d_raw_id) if item.sp2d_raw_id else "",
+                    new_value=str(sp2d_record.id),
+                    change_source=TransactionChangeLog.ChangeSource.SYSTEM,
+                    changed_by=user
+                )
+                item.sp2d_raw = sp2d_record
+                item.save(update_fields=['sp2d_raw'])
+                linked_count += 1
+
         if diff_bruto <= 1 and diff_netto <= 1 and diff_potongan <= 1:
-            for item in dk_items:
-                if item.sp2d_raw_id != sp2d_record.id:
-                    TransactionChangeLog.objects.create(
-                        transaction=item,
-                        field_name="sp2d_raw",
-                        old_value=str(item.sp2d_raw_id) if item.sp2d_raw_id else "",
-                        new_value=str(sp2d_record.id),
-                        change_source=TransactionChangeLog.ChangeSource.SYSTEM,
-                        changed_by=user
-                    )
-                    item.sp2d_raw = sp2d_record
-                    item.save(update_fields=['sp2d_raw'])
             sp2d_record.status = SP2DRaw.Status.COCOK
             sp2d_record.cek_akun = ""
             sp2d_record.save(update_fields=['status', 'cek_akun'])
@@ -552,6 +576,27 @@ def reconcile_sp2d_with_dk(sp2d_record, user):
             sp2d_record.status = SP2DRaw.Status.TIDAK_COCOK
             sp2d_record.cek_akun = f"Total D_K tidak sama dengan SP2D (Bruto diff: {diff_bruto}, Netto diff: {diff_netto}, Potongan diff: {diff_potongan})"
             sp2d_record.save(update_fields=['status', 'cek_akun'])
+            logger.warning(
+                "SP2D reconciliation linked DK candidates with total mismatch sp2d_id=%s no_sp2d=%s satker=%s tahun=%s nomor_spm=%s candidate_count=%s linked_count=%s diff_bruto=%s diff_netto=%s diff_potongan=%s",
+                sp2d_record.id,
+                sp2d_record.no_sp2d,
+                sp2d_record.satker_code,
+                sp2d_record.tahun,
+                sp2d_record.nomor_spm_extracted,
+                len(dk_items),
+                linked_count,
+                diff_bruto,
+                diff_netto,
+                diff_potongan,
+            )
     else:
         sp2d_record.status = SP2DRaw.Status.PERLU_DETAIL
         sp2d_record.save(update_fields=['status'])
+        logger.warning(
+            "SP2D reconciliation found no DK candidates sp2d_id=%s no_sp2d=%s satker=%s tahun=%s nomor_spm=%s",
+            sp2d_record.id,
+            sp2d_record.no_sp2d,
+            sp2d_record.satker_code,
+            sp2d_record.tahun,
+            sp2d_record.nomor_spm_extracted,
+        )
