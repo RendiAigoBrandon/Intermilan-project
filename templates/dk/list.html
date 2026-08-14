@@ -88,12 +88,7 @@
           <td class="col-status">{{ row.reconciliation_status_label|dash }}</td>
           <td class="col-aksi">
             {% if is_role_admin %}
-            {% if row.status_detail != "DIARSIPKAN" %}
-            <form method="post" action="{% url 'dk:transaction_archive' row.id %}" style="display:inline;" onsubmit="return confirm('Yakin ingin mengarsipkan baris ini?');">
-                {% csrf_token %}
-                <button type="submit" class="btn tiny danger">Arsipkan</button>
-            </form>
-            {% else %}
+            {% if row.status_detail == "DIARSIPKAN" %}
             <form method="post" action="{% url 'dk:transaction_restore' row.id %}" style="display:inline;" onsubmit="return confirm('Yakin ingin memulihkan baris arsip ini?');">
                 {% csrf_token %}
                 <button type="submit" class="btn tiny warning">Pulihkan</button>
