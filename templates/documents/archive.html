@@ -31,6 +31,11 @@
         </div>
       </form>
     </div>
+    <div class="toolbar-row">
+      <div class="action-bar">
+        <a class="btn primary" href="{% url 'documents:upload_kuitansi' %}">Upload Kuitansi Pendukung</a>
+      </div>
+    </div>
   </div>
 
   <div class="table-wrap wide-table-wrap">
@@ -38,11 +43,14 @@
       <thead>
         <tr>
           <th>No. SPM / Kuitansi</th>
-          <th>URL</th>
+          <th>File Lokal</th>
+          <th>Google Drive</th>
           <th>Satker</th>
           <th>No. DRPP</th>
           <th>Jenis Dokumen</th>
           <th>Nama File</th>
+          <th>Uploaded By</th>
+          <th>Tanggal Upload</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -51,20 +59,29 @@
         <tr>
           <td>{{ link.archive_number|default:"-" }}</td>
           <td>
+            {% if link.supporting_attachment %}
+            <a href="{% url 'documents:drpp_attachment_download' link.supporting_attachment.id %}" target="_blank" rel="noopener noreferrer">Buka File</a>
+            {% else %}
+            <span class="muted">-</span>
+            {% endif %}
+          </td>
+          <td>
             {% if link.archive_url_valid %}
             <a href="{{ link.google_drive_url }}" target="_blank" rel="noopener noreferrer">Buka Google Drive</a>
             {% else %}
-            <span class="muted">{{ link.google_drive_url|default:"URL tidak tersedia" }}</span>
+            <span class="muted">Belum tersedia</span>
             {% endif %}
           </td>
           <td>{{ link.satker_code|default:"-" }}</td>
           <td>{{ link.no_drpp|default:"-" }}</td>
           <td>{{ link.jenis_dokumen|default:"-" }}</td>
           <td>{{ link.nama_file|default:"-" }}</td>
+          <td>{{ link.archive_uploaded_by|default:"-" }}</td>
+          <td>{{ link.archive_uploaded_at|date:"Y-m-d H:i"|default:"-" }}</td>
           <td><span class="badge {% if link.archive_status == 'AKTIF' %}green{% elif link.archive_status == 'PERLU_DICEK' %}orange{% endif %}">{{ link.archive_status }}</span></td>
         </tr>
         {% empty %}
-        <tr><td colspan="7" class="empty">Belum ada data arsip yang sesuai. Impor data UPLOAD KK_1300 atau ubah filter pencarian.</td></tr>
+        <tr><td colspan="10" class="empty">Belum ada data arsip yang sesuai. Impor data UPLOAD KK_1300 atau ubah filter pencarian.</td></tr>
         {% endfor %}
       </tbody>
     </table>

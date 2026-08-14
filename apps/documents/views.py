@@ -1,30 +1,42 @@
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import socket
 from decimal import Decimal
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
+from django.core.exceptions import PermissionDenied
 from django.core.paginator import Paginator
 from django.core.files import File
 from django.core.files.storage import FileSystemStorage
 from django.db import transaction as db_transaction
 from django.db.models import Q
+from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils.dateparse import parse_date
 
-from apps.accounts.access import can_upload_document, filter_by_satker, permission_context
+from apps.accounts.access import (
+    can_edit_satker,
+    can_upload_document,
+    filter_by_satker,
+    get_user_satker_code,
+    permission_context,
+)
 from apps.core.parsers import (
     classify_document,
     extract_pdf_text,
+    normalized_bukti_key,
     parse_drpp_pdf,
     parse_paket_spm_zip,
     parse_spm_pdf,
 )
+from apps.core.satker import get_satker_name_map
 from apps.core.document_policy import (
     get_required_documents_for_akun_family,
     normalize_akun_family,
@@ -32,14 +44,26 @@ from apps.core.document_policy import (
 from apps.core.views import UPLOAD_COLUMNS, build_pagination_window
 from apps.dk.models import TransactionDetail
 from apps.dk.services import refresh_transaction_document_status
-from apps.drpp.models import DRPPItem, DRPPUpload
+from apps.drpp.models import DRPPItem, DRPPSupportingAttachment, DRPPUpload
 from apps.sp2d.models import SP2DRaw
 from apps.documents.services.checklist import mark_checklist_present as mark_checklist_present_service
 from apps.documents.services.google_drive import archive_file_link
+from apps.documents.services.google_drive_dedup import calculate_file_hash
 
 from .models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink, DocumentUpload
 
 logger = logging.getLogger("documents.views")
+
+RECEIPT_DOCUMENT_TYPE = "Kuitansi"
+RECEIPT_UPLOAD_FIELD = "receipt_files"
+BLOCKED_UPLOAD_MIME_TYPES = {
+    "application/x-msdownload",
+    "application/x-msdos-program",
+    "application/x-executable",
+    "application/x-sh",
+    "application/x-bat",
+    "text/x-python",
+}
 
 
 def _is_valid_google_drive_url(value):
@@ -54,6 +78,222 @@ def _is_valid_google_drive_url(value):
     }
 
 
+def _extract_year(value):
+    matches = re.findall(r"\b(19\d{2}|20\d{2})\b", str(value or ""))
+    return int(matches[-1]) if matches else None
+
+
+def _transaction_matches_drpp_year(transaction, tahun):
+    if not tahun:
+        return True
+    if transaction.tanggal_spm and transaction.tanggal_spm.year == tahun:
+        return True
+    return str(tahun) in (transaction.no_drpp or "")
+
+
+def _drpp_upload_matches_number(drpp_upload, nomor_drpp_norm):
+    current_norm = drpp_upload.nomor_drpp_norm or normalized_bukti_key(drpp_upload.nomor_drpp)
+    return current_norm == nomor_drpp_norm
+
+
+def _transactions_for_drpp_upload(drpp_upload, user):
+    nomor_drpp_norm = drpp_upload.nomor_drpp_norm or normalized_bukti_key(drpp_upload.nomor_drpp)
+    candidates = filter_by_satker(
+        TransactionDetail.objects.select_related("sp2d_raw").filter(satker_code=drpp_upload.satker_code),
+        user,
+    ).order_by("id")
+    return [
+        transaction
+        for transaction in candidates
+        if normalized_bukti_key(transaction.no_drpp) == nomor_drpp_norm
+        and _transaction_matches_drpp_year(transaction, drpp_upload.tahun)
+    ]
+
+
+def _drpp_upload_for_transaction(transaction, user):
+    nomor_drpp_norm = normalized_bukti_key(transaction.no_drpp)
+    if not nomor_drpp_norm or not transaction.satker_code:
+        return None
+    tahun = (
+        transaction.tanggal_spm.year
+        if transaction.tanggal_spm
+        else _extract_year(transaction.no_drpp)
+    )
+    queryset = filter_by_satker(
+        DRPPUpload.objects.filter(satker_code=transaction.satker_code),
+        user,
+    )
+    if tahun:
+        queryset = queryset.filter(tahun=tahun)
+    matches = [
+        item
+        for item in queryset.order_by("-uploaded_at", "-id")[:50]
+        if _drpp_upload_matches_number(item, nomor_drpp_norm)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _supporting_attachments_for_transaction(transaction, user):
+    drpp_upload = _drpp_upload_for_transaction(transaction, user)
+    if not drpp_upload:
+        return DRPPSupportingAttachment.objects.none()
+    return DRPPSupportingAttachment.objects.filter(drpp_upload=drpp_upload).select_related(
+        "document_upload",
+        "uploaded_by",
+        "archive_link",
+    )
+
+
+def _drpp_context(drpp_upload, transactions):
+    spm_numbers = sorted({(item.nomor_spm or "").strip() for item in transactions if item.nomor_spm})
+    if len(spm_numbers) > 1:
+        return None, "DRPP memiliki lebih dari satu Nomor SPM. Upload kuitansi dibatalkan agar tidak salah kait."
+    satker_name = get_satker_name_map([drpp_upload.satker_code]).get(drpp_upload.satker_code, "")
+    attachments = DRPPSupportingAttachment.objects.filter(drpp_upload=drpp_upload).select_related(
+        "document_upload",
+        "uploaded_by",
+        "archive_link",
+    )
+    return {
+        "drpp_upload": drpp_upload,
+        "satker_code": drpp_upload.satker_code,
+        "satker_name": satker_name,
+        "nomor_drpp": drpp_upload.nomor_drpp,
+        "nomor_spm": spm_numbers[0] if spm_numbers else drpp_upload.nomor_spm,
+        "transaction_count": len(transactions),
+        "attachment_count": attachments.count(),
+        "attachments": attachments,
+    }, ""
+
+
+def _resolve_drpp_context(user, satker_code="", nomor_drpp="", drpp_upload_id=None, for_upload=False):
+    if drpp_upload_id:
+        drpp_upload = DRPPUpload.objects.filter(pk=drpp_upload_id).first()
+        if not drpp_upload:
+            return None, "DRPP tidak ditemukan pada data D_K."
+        if for_upload and not can_edit_satker(user, drpp_upload.satker_code):
+            raise PermissionDenied("Anda tidak memiliki akses ke DRPP satker ini.")
+        scoped = filter_by_satker(DRPPUpload.objects.all(), user).filter(pk=drpp_upload_id).first()
+        if not scoped:
+            return None, "DRPP tidak ditemukan pada data D_K."
+    else:
+        nomor_drpp = (nomor_drpp or "").strip()
+        satker_code = (satker_code or get_user_satker_code(user) or "").strip()
+        if not satker_code:
+            return None, "Pilih Satker terlebih dahulu."
+        if not nomor_drpp:
+            return None, "Masukkan No. DRPP terlebih dahulu."
+        if for_upload and not can_edit_satker(user, satker_code):
+            raise PermissionDenied("Anda tidak memiliki akses ke satker ini.")
+
+        nomor_drpp_norm = normalized_bukti_key(nomor_drpp)
+        tahun = _extract_year(nomor_drpp)
+        queryset = filter_by_satker(DRPPUpload.objects.filter(satker_code=satker_code), user)
+        if tahun:
+            queryset = queryset.filter(tahun=tahun)
+        matches = [
+            item
+            for item in queryset.order_by("-uploaded_at", "-id")[:200]
+            if _drpp_upload_matches_number(item, nomor_drpp_norm)
+        ]
+        if not matches:
+            return None, "DRPP tidak ditemukan pada data D_K."
+        if len(matches) > 1:
+            return None, "DRPP ditemukan lebih dari satu. Gunakan nomor DRPP lengkap beserta tahun."
+        drpp_upload = matches[0]
+
+    if for_upload and not can_upload_document(user):
+        raise PermissionDenied("Akun ini tidak memiliki akses upload dokumen.")
+
+    transactions = _transactions_for_drpp_upload(drpp_upload, user)
+    if not transactions:
+        return None, "DRPP tidak ditemukan pada data D_K."
+    return _drpp_context(drpp_upload, transactions)
+
+
+def _supporting_receipt_satker_options(user):
+    scoped = filter_by_satker(DRPPUpload.objects.exclude(satker_code=""), user)
+    codes = list(scoped.values_list("satker_code", flat=True).distinct().order_by("satker_code"))
+    user_satker = get_user_satker_code(user)
+    if user_satker and user_satker not in codes:
+        codes.append(user_satker)
+    names = get_satker_name_map(codes)
+    return [
+        {"code": code, "label": f"{code} - {names[code]}" if names.get(code) else code}
+        for code in codes
+    ]
+
+
+def _validate_receipt_uploads(upload_files):
+    upload_error = validate_upload_batch(upload_files)
+    if upload_error:
+        return upload_error
+    for upload_file in upload_files:
+        content_type = (getattr(upload_file, "content_type", "") or "").lower()
+        if content_type in BLOCKED_UPLOAD_MIME_TYPES:
+            return f"Format file tidak didukung: {upload_file.name}"
+    return ""
+
+
+def _save_supporting_receipt_file(request, drpp_context, upload_file, tmp_path, file_hash):
+    drpp_upload = drpp_context["drpp_upload"]
+    if DRPPSupportingAttachment.objects.filter(
+        drpp_upload=drpp_upload,
+        document_upload__file_hash=file_hash,
+    ).exists():
+        return None, True
+
+    document_upload = None
+    try:
+        with db_transaction.atomic():
+            with open(tmp_path, "rb") as handle:
+                document_upload = DocumentUpload(
+                    transaction_detail=None,
+                    document_type=RECEIPT_DOCUMENT_TYPE,
+                    original_filename=upload_file.name,
+                    stored_filename=upload_file.name,
+                    file_hash=file_hash,
+                    file_size=upload_file.size,
+                    mime_type=upload_file.content_type or mimetypes.guess_type(upload_file.name)[0] or "",
+                    uploaded_by=request.user,
+                )
+                document_upload.file.save(upload_file.name, File(handle), save=False)
+                document_upload.stored_filename = document_upload.file.name
+                document_upload.save()
+
+            archive_link = DocumentDriveLink.objects.create(
+                transaction_detail=None,
+                satker_code=drpp_upload.satker_code,
+                nomor_spm=drpp_context["nomor_spm"] or drpp_upload.nomor_spm or "",
+                no_kuitansi="",
+                no_drpp=drpp_upload.nomor_drpp,
+                jenis_dokumen=RECEIPT_DOCUMENT_TYPE,
+                nama_file=upload_file.name,
+                google_drive_url="",
+                status=DocumentDriveLink.Status.PERLU_DICEK,
+                catatan=(
+                    f"source=DRPP supporting receipt; drpp_upload_id={drpp_upload.id}; "
+                    f"document_upload_id={document_upload.id}; hash={file_hash}"
+                )[:2000],
+                created_by=request.user,
+            )
+            attachment = DRPPSupportingAttachment.objects.create(
+                drpp_upload=drpp_upload,
+                document_upload=document_upload,
+                archive_link=archive_link,
+                satker_code=drpp_upload.satker_code,
+                tahun=drpp_upload.tahun,
+                nomor_drpp=drpp_upload.nomor_drpp,
+                nomor_drpp_norm=drpp_upload.nomor_drpp_norm or normalized_bukti_key(drpp_upload.nomor_drpp),
+                uploaded_by=request.user,
+            )
+        return attachment, False
+    except Exception:
+        if document_upload and document_upload.file:
+            document_upload.file.delete(save=False)
+        raise
+
+
 @login_required
 def archive(request):
     q = request.GET.get("q", "").strip()
@@ -61,7 +301,11 @@ def archive(request):
     status = request.GET.get("status", "").strip()
 
     scoped_links = filter_by_satker(
-        DocumentDriveLink.objects.select_related("created_by"),
+        DocumentDriveLink.objects.select_related(
+            "created_by",
+            "drpp_supporting_attachment__document_upload",
+            "drpp_supporting_attachment__uploaded_by",
+        ),
         request.user,
     )
     satker_options = list(
@@ -94,6 +338,17 @@ def archive(request):
         link.archive_number = link.no_kuitansi or link.nomor_spm
         link.archive_url_valid = _is_valid_google_drive_url(link.google_drive_url)
         link.archive_status = link.status if link.archive_url_valid else DocumentDriveLink.Status.PERLU_DICEK
+        link.supporting_attachment = getattr(link, "drpp_supporting_attachment", None)
+        link.archive_uploaded_by = (
+            link.supporting_attachment.uploaded_by
+            if link.supporting_attachment
+            else link.created_by
+        )
+        link.archive_uploaded_at = (
+            link.supporting_attachment.created_at
+            if link.supporting_attachment
+            else link.created_at
+        )
 
     query_params = request.GET.copy()
     query_params.pop("page", None)
@@ -113,6 +368,107 @@ def archive(request):
         }
     )
     return render(request, "documents/archive.html", context)
+
+
+@login_required
+def upload_kuitansi(request):
+    selected_satker = (
+        request.POST.get("satker")
+        or request.GET.get("satker")
+        or get_user_satker_code(request.user)
+        or ""
+    ).strip()
+    nomor_drpp = (request.POST.get("no_drpp") or request.GET.get("no_drpp") or "").strip()
+    drpp_upload_id = request.POST.get("drpp_upload_id") or request.GET.get("drpp_upload_id")
+    drpp_context = None
+    lookup_error = ""
+
+    if request.method == "POST" and request.POST.get("action") == "upload_receipts":
+        drpp_context, lookup_error = _resolve_drpp_context(
+            request.user,
+            satker_code=selected_satker,
+            nomor_drpp=nomor_drpp,
+            drpp_upload_id=drpp_upload_id,
+            for_upload=True,
+        )
+        if drpp_context:
+            upload_files = request.FILES.getlist(RECEIPT_UPLOAD_FIELD)
+            upload_error = _validate_receipt_uploads(upload_files)
+            if upload_error:
+                messages.error(request, upload_error)
+            else:
+                tmp_dir = os.path.join(settings.MEDIA_ROOT, "tmp", "drpp_receipts")
+                os.makedirs(tmp_dir, exist_ok=True)
+                storage = FileSystemStorage(location=tmp_dir)
+                processed = 0
+                duplicates = 0
+                for upload_file in upload_files:
+                    tmp_name = storage.save(upload_file.name, upload_file)
+                    tmp_path = storage.path(tmp_name)
+                    try:
+                        file_hash = calculate_file_hash(tmp_path)
+                        _, duplicate = _save_supporting_receipt_file(
+                            request,
+                            drpp_context,
+                            upload_file,
+                            tmp_path,
+                            file_hash,
+                        )
+                        if duplicate:
+                            duplicates += 1
+                        else:
+                            processed += 1
+                    finally:
+                        storage.delete(tmp_name)
+                if processed:
+                    messages.success(request, f"{processed} file kuitansi pendukung tersimpan.")
+                if duplicates:
+                    messages.info(request, f"{duplicates} file duplikat konten dilewati.")
+                return redirect(
+                    f"{reverse('documents:upload_kuitansi')}?{urlencode({'satker': drpp_context['satker_code'], 'no_drpp': drpp_context['nomor_drpp']})}"
+                )
+        else:
+            messages.error(request, lookup_error or "DRPP tidak ditemukan pada data D_K.")
+
+    elif request.GET:
+        drpp_context, lookup_error = _resolve_drpp_context(
+            request.user,
+            satker_code=selected_satker,
+            nomor_drpp=nomor_drpp,
+            drpp_upload_id=drpp_upload_id,
+        )
+
+    context = permission_context(request.user)
+    context.update(
+        {
+            "page_title": "Upload Kuitansi Pendukung",
+            "page_subtitle": "Upload bukti kuitansi level DRPP tanpa OCR atau perubahan D_K.",
+            "satker_options": _supporting_receipt_satker_options(request.user),
+            "selected_satker": selected_satker,
+            "no_drpp": nomor_drpp,
+            "drpp_context": drpp_context,
+            "lookup_error": lookup_error,
+            "can_upload_receipt": can_upload_document(request.user),
+            "receipt_upload_field": RECEIPT_UPLOAD_FIELD,
+        }
+    )
+    return render(request, "documents/upload_kuitansi.html", context)
+
+
+@login_required
+def drpp_attachment_download(request, attachment_id):
+    attachments = filter_by_satker(
+        DRPPSupportingAttachment.objects.select_related("document_upload"),
+        request.user,
+    )
+    attachment = get_object_or_404(attachments, pk=attachment_id)
+    if not attachment.document_upload.file:
+        raise Http404("File tidak ditemukan.")
+    return FileResponse(
+        attachment.document_upload.file.open("rb"),
+        as_attachment=False,
+        filename=attachment.document_upload.original_filename,
+    )
 
 
 @login_required
@@ -225,6 +581,7 @@ def checklist_detail(request, transaction_id):
     checklist_rows = statuses
     uploads = DocumentUpload.objects.filter(transaction_detail=transaction).select_related("uploaded_by")[:20]
     drive_links = DocumentDriveLink.objects.filter(transaction_detail=transaction).select_related("created_by")[:50]
+    drpp_supporting_attachments = _supporting_attachments_for_transaction(transaction, request.user)
     attach_satker_names([transaction])
     total = len(statuses)
     ada = sum(1 for item in statuses if item.status == ChecklistStatus.Status.ADA)
@@ -242,6 +599,8 @@ def checklist_detail(request, transaction_id):
             "checklist_rows": checklist_rows,
             "uploads": uploads,
             "drive_links": drive_links,
+            "drpp_supporting_attachments": drpp_supporting_attachments,
+            "drpp_supporting_count": drpp_supporting_attachments.count(),
             "can_upload_document": context_can_upload,
             "reconciliation_status": reconciliation_status,
             "document_type_options": ["SP2D", "SPM", "DRPP", "KW", "Paket SPM ZIP", "LAMPIRAN"],

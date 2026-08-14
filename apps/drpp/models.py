@@ -118,6 +118,48 @@ class DRPPUpload(models.Model):
         return self.nomor_drpp or f"DRPP #{self.pk}"
 
 
+class DRPPSupportingAttachment(models.Model):
+    drpp_upload = models.ForeignKey(
+        DRPPUpload,
+        on_delete=models.CASCADE,
+        related_name="supporting_attachments",
+    )
+    document_upload = models.OneToOneField(
+        "documents.DocumentUpload",
+        on_delete=models.CASCADE,
+        related_name="drpp_supporting_attachment",
+    )
+    archive_link = models.OneToOneField(
+        "documents.DocumentDriveLink",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="drpp_supporting_attachment",
+    )
+    satker_code = models.CharField(max_length=32, blank=True)
+    tahun = models.PositiveSmallIntegerField(null=True, blank=True)
+    nomor_drpp = models.CharField(max_length=100, blank=True)
+    nomor_drpp_norm = models.CharField(max_length=100, blank=True)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="uploaded_drpp_supporting_attachments",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["satker_code", "tahun", "nomor_drpp_norm"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return self.document_upload.original_filename
+
+
 class DRPPItem(models.Model):
     class SourceType(models.TextChoices):
         DRPP_ITEM = "DRPP_ITEM", "Item DRPP"

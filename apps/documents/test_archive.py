@@ -1,9 +1,18 @@
+import shutil
+import tempfile
+from datetime import date
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from apps.accounts.models import Profile
+from apps.core.parsers import normalized_bukti_key
 from apps.dk.models import TransactionDetail
+from apps.drpp.models import DRPPSupportingAttachment, DRPPUpload
+from apps.sp2d.models import SP2DRaw
 
 from .models import DocumentDriveLink, DocumentUpload
 
@@ -280,3 +289,250 @@ class DocumentArchiveTests(TestCase):
 
         self.assertEqual(set(response.context["drive_links"]), set(links))
         self.assertEqual(set(response.context["uploads"]), set(uploads))
+
+
+class DRPPSupportingAttachmentTests(TestCase):
+    def setUp(self):
+        self.media_tmp = tempfile.mkdtemp()
+        self.media_override = override_settings(MEDIA_ROOT=self.media_tmp)
+        self.media_override.enable()
+        self.addCleanup(self.media_override.disable)
+        self.addCleanup(shutil.rmtree, self.media_tmp, True)
+
+        self.operator = User.objects.create_user(username="operator-019937", password="password")
+        self.operator.profile.role = Profile.Role.SATKER
+        self.operator.profile.satker_code = "019937"
+        self.operator.profile.save(update_fields=["role", "satker_code"])
+
+        self.other_operator = User.objects.create_user(username="operator-020000", password="password")
+        self.other_operator.profile.role = Profile.Role.SATKER
+        self.other_operator.profile.satker_code = "020000"
+        self.other_operator.profile.save(update_fields=["role", "satker_code"])
+
+        self.no_drpp = "00043/DRPP/019937/2026"
+        self.sp2d = SP2DRaw.objects.create(
+            tahun=2026,
+            satker_code="019937",
+            no_sp2d="260100000030107",
+            nomor_spm_extracted="00166T",
+            nilai_sp2d=Decimal("52249851"),
+            status=SP2DRaw.Status.COCOK,
+        )
+        self.tx1 = TransactionDetail.objects.create(
+            sp2d_raw=self.sp2d,
+            satker_code="019937",
+            akun="522151",
+            nomor_spm="00166T",
+            tanggal_spm=date(2026, 6, 15),
+            no_kuitansi="00243/KW/019937/2026",
+            no_drpp=self.no_drpp,
+            nilai_bruto=Decimal("1800000"),
+            nilai_netto=Decimal("1800000"),
+            status_detail=TransactionDetail.StatusDetail.LENGKAP,
+            drpp_status=TransactionDetail.DRPPStatus.COCOK,
+        )
+        self.tx2 = TransactionDetail.objects.create(
+            sp2d_raw=self.sp2d,
+            satker_code="019937",
+            akun="521115",
+            nomor_spm="00166T",
+            tanggal_spm=date(2026, 6, 15),
+            no_kuitansi="00246/KW/019937/2026",
+            no_drpp="00043",
+            nilai_bruto=Decimal("1000000"),
+            nilai_netto=Decimal("1000000"),
+            status_detail=TransactionDetail.StatusDetail.LENGKAP,
+            drpp_status=TransactionDetail.DRPPStatus.COCOK,
+        )
+        self.drpp_upload = DRPPUpload.objects.create(
+            transaction_detail=self.tx1,
+            satker_code="019937",
+            tahun=2026,
+            nomor_drpp=self.no_drpp,
+            nomor_drpp_norm=normalized_bukti_key(self.no_drpp),
+            nomor_spm="00166T",
+            match_status=DRPPUpload.MatchStatus.COCOK,
+            uploaded_by=self.operator,
+        )
+
+    def receipt_file(self, name="kuitansi.pdf", content=b"%PDF-1.4 receipt"):
+        return SimpleUploadedFile(name, content, content_type="application/pdf")
+
+    def upload_receipts(self, files, drpp_upload=None, follow=False):
+        drpp_upload = drpp_upload or self.drpp_upload
+        return self.client.post(
+            reverse("documents:upload_kuitansi"),
+            {
+                "action": "upload_receipts",
+                "drpp_upload_id": drpp_upload.pk,
+                "satker": drpp_upload.satker_code,
+                "no_drpp": drpp_upload.nomor_drpp,
+                "receipt_files": files,
+            },
+            follow=follow,
+        )
+
+    def test_drpp_found_shows_metadata(self):
+        self.client.force_login(self.operator)
+
+        response = self.client.get(
+            reverse("documents:upload_kuitansi"),
+            {"satker": "019937", "no_drpp": self.no_drpp},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "DRPP ditemukan")
+        self.assertContains(response, "00166T")
+        self.assertContains(response, "Jumlah transaksi")
+        self.assertEqual(response.context["drpp_context"]["transaction_count"], 2)
+
+    def test_missing_drpp_does_not_upload(self):
+        self.client.force_login(self.operator)
+
+        response = self.client.post(
+            reverse("documents:upload_kuitansi"),
+            {
+                "action": "upload_receipts",
+                "satker": "019937",
+                "no_drpp": "99999/DRPP/019937/2026",
+                "receipt_files": [self.receipt_file()],
+            },
+            follow=True,
+        )
+
+        self.assertContains(response, "DRPP tidak ditemukan pada data D_K.")
+        self.assertEqual(DocumentUpload.objects.count(), 0)
+        self.assertEqual(DRPPSupportingAttachment.objects.count(), 0)
+
+    def test_cross_satker_upload_post_is_denied(self):
+        other_tx = TransactionDetail.objects.create(
+            satker_code="020000",
+            akun="521111",
+            nomor_spm="00166T",
+            tanggal_spm=date(2026, 6, 15),
+            no_drpp="00043/DRPP/020000/2026",
+            nilai_bruto=1,
+            nilai_netto=1,
+        )
+        other_drpp = DRPPUpload.objects.create(
+            transaction_detail=other_tx,
+            satker_code="020000",
+            tahun=2026,
+            nomor_drpp="00043/DRPP/020000/2026",
+            nomor_drpp_norm=normalized_bukti_key("00043/DRPP/020000/2026"),
+            nomor_spm="00166T",
+        )
+        self.client.force_login(self.operator)
+
+        response = self.upload_receipts([self.receipt_file()], drpp_upload=other_drpp)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(DocumentUpload.objects.count(), 0)
+        self.assertEqual(DRPPSupportingAttachment.objects.count(), 0)
+
+    def test_multifile_upload_creates_attachments_without_dk_mutation(self):
+        before_count = TransactionDetail.objects.count()
+        before = {
+            self.tx1.pk: (self.tx1.helper, self.tx1.akun, self.tx1.nilai_bruto, self.tx1.nilai_netto, self.tx1.nomor_spm, self.tx1.sp2d_raw_id, self.tx1.status_detail),
+            self.tx2.pk: (self.tx2.helper, self.tx2.akun, self.tx2.nilai_bruto, self.tx2.nilai_netto, self.tx2.nomor_spm, self.tx2.sp2d_raw_id, self.tx2.status_detail),
+        }
+        self.client.force_login(self.operator)
+
+        response = self.upload_receipts(
+            [
+                self.receipt_file("kuitansi-00243.pdf", b"%PDF-1.4 receipt one"),
+                self.receipt_file("kuitansi-00246.pdf", b"%PDF-1.4 receipt two"),
+            ],
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(DocumentUpload.objects.count(), 2)
+        self.assertEqual(DRPPSupportingAttachment.objects.count(), 2)
+        self.assertEqual(DocumentDriveLink.objects.filter(jenis_dokumen="Kuitansi").count(), 2)
+        self.assertEqual(TransactionDetail.objects.count(), before_count)
+        for transaction in (self.tx1, self.tx2):
+            transaction.refresh_from_db()
+            self.assertEqual(
+                (transaction.helper, transaction.akun, transaction.nilai_bruto, transaction.nilai_netto, transaction.nomor_spm, transaction.sp2d_raw_id, transaction.status_detail),
+                before[transaction.pk],
+            )
+        self.assertFalse(DocumentDriveLink.objects.exclude(google_drive_url="").exists())
+        self.assertFalse(DocumentDriveLink.objects.filter(transaction_detail__isnull=False).exists())
+
+    def test_receipts_appear_once_in_archive_with_local_link(self):
+        self.client.force_login(self.operator)
+        self.upload_receipts([self.receipt_file("arsip-kuitansi.pdf")])
+
+        response = self.client.get(reverse("documents:archive"))
+        links = list(response.context["page_obj"].object_list)
+        receipt_links = [link for link in links if link.jenis_dokumen == "Kuitansi"]
+        attachment = DRPPSupportingAttachment.objects.get()
+        download_url = reverse("documents:drpp_attachment_download", args=[attachment.pk])
+
+        self.assertEqual(len(receipt_links), 1)
+        self.assertEqual(receipt_links[0].google_drive_url, "")
+        self.assertContains(response, "arsip-kuitansi.pdf")
+        self.assertContains(response, download_url)
+        self.assertContains(response, "Belum tersedia")
+
+    def test_checklist_shows_drpp_level_attachments_for_same_drpp_only(self):
+        other_tx = TransactionDetail.objects.create(
+            satker_code="019937",
+            akun="521111",
+            nomor_spm="00999T",
+            tanggal_spm=date(2026, 6, 15),
+            no_drpp="00999/DRPP/019937/2026",
+            nilai_bruto=1,
+            nilai_netto=1,
+        )
+        DRPPUpload.objects.create(
+            transaction_detail=other_tx,
+            satker_code="019937",
+            tahun=2026,
+            nomor_drpp="00999/DRPP/019937/2026",
+            nomor_drpp_norm=normalized_bukti_key("00999/DRPP/019937/2026"),
+            nomor_spm="00999T",
+        )
+        self.client.force_login(self.operator)
+        self.upload_receipts([self.receipt_file("shared-kuitansi.pdf")])
+
+        tx1_response = self.client.get(reverse("documents:checklist_detail", args=[self.tx1.pk]))
+        tx2_response = self.client.get(reverse("documents:checklist_detail", args=[self.tx2.pk]))
+        other_response = self.client.get(reverse("documents:checklist_detail", args=[other_tx.pk]))
+
+        self.assertContains(tx1_response, "Kuitansi Pendukung DRPP")
+        self.assertContains(tx1_response, "shared-kuitansi.pdf")
+        self.assertContains(tx1_response, "1 file")
+        self.assertContains(tx2_response, "shared-kuitansi.pdf")
+        self.assertNotContains(other_response, "shared-kuitansi.pdf")
+
+    def test_download_respects_satker_scope(self):
+        self.client.force_login(self.operator)
+        self.upload_receipts([self.receipt_file("download-kuitansi.pdf")])
+        attachment = DRPPSupportingAttachment.objects.get()
+        url = reverse("documents:drpp_attachment_download", args=[attachment.pk])
+
+        own_response = self.client.get(url)
+        self.client.force_login(self.other_operator)
+        other_response = self.client.get(url)
+
+        self.assertEqual(own_response.status_code, 200)
+        self.assertEqual(other_response.status_code, 404)
+
+    def test_exact_duplicate_content_is_skipped_in_same_drpp(self):
+        self.client.force_login(self.operator)
+
+        response = self.upload_receipts(
+            [
+                self.receipt_file("copy-a.pdf", b"same receipt content"),
+                self.receipt_file("copy-b.pdf", b"same receipt content"),
+            ],
+            follow=True,
+        )
+
+        self.assertContains(response, "1 file duplikat konten dilewati.")
+        self.assertEqual(DocumentUpload.objects.count(), 1)
+        self.assertEqual(DRPPSupportingAttachment.objects.count(), 1)
+        self.assertEqual(DocumentDriveLink.objects.count(), 1)
+        self.assertEqual(DocumentDriveLink.objects.get().google_drive_url, "")

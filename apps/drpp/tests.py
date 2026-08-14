@@ -49,7 +49,13 @@ from apps.accounts.models import Profile
 from apps.core.parsers import normalized_bukti_key
 from apps.documents.models import DocumentDriveLink, DocumentUpload
 from apps.dk.models import MasterAkun, TransactionDetail, TransactionChangeLog
-from apps.drpp.models import DRPPUpload, DRPPItem, DRPPMatch, DRPPImportBatch
+from apps.drpp.models import (
+    DRPPImportBatch,
+    DRPPItem,
+    DRPPMatch,
+    DRPPSupportingAttachment,
+    DRPPUpload,
+)
 from apps.drpp.services import (
     commit_drpp_rows,
     classify_drpp_rows,
@@ -176,6 +182,35 @@ class DRPPModelTest(TestCase):
             source_type=DRPPItem.SourceType.KUITANSI_MANDIRI,
             no_bukti="KW-EMPTY",
         )
+        self.assertEqual(TransactionDetail.objects.count(), 0)
+
+    def test_supporting_attachment_links_drpp_parent_and_document_upload(self):
+        upload = DRPPUpload.objects.create(
+            nomor_drpp="00043/DRPP/019937/2026",
+            nomor_drpp_norm=normalized_bukti_key("00043/DRPP/019937/2026"),
+            satker_code="019937",
+            tahun=2026,
+        )
+        document = DocumentUpload.objects.create(
+            original_filename="kuitansi.pdf",
+            document_type="Kuitansi",
+            file="test/kuitansi.pdf",
+            file_hash="hash-kuitansi",
+            file_size=17,
+            mime_type="application/pdf",
+        )
+
+        attachment = DRPPSupportingAttachment.objects.create(
+            drpp_upload=upload,
+            document_upload=document,
+            satker_code="019937",
+            tahun=2026,
+            nomor_drpp=upload.nomor_drpp,
+            nomor_drpp_norm=upload.nomor_drpp_norm,
+        )
+
+        self.assertEqual(upload.supporting_attachments.get(), attachment)
+        self.assertEqual(document.drpp_supporting_attachment, attachment)
         self.assertEqual(TransactionDetail.objects.count(), 0)
 
 

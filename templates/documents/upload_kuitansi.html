@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card app-card">
+  <div class="card-head">
+    <h2>Upload Kuitansi Pendukung</h2>
+    <span class="muted">Attachment bukti level DRPP.</span>
+  </div>
+
+  <form class="filter-panel mt-small" method="get">
+    <div class="filter-grid">
+      <div class="filter-field">
+        <label for="receipt-satker">Satker</label>
+        <select id="receipt-satker" name="satker">
+          <option value="">Pilih satker</option>
+          {% for satker in satker_options %}
+          <option value="{{ satker.code }}" {% if selected_satker == satker.code %}selected{% endif %}>{{ satker.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="filter-field filter-search">
+        <label for="receipt-drpp">No. DRPP</label>
+        <input id="receipt-drpp" name="no_drpp" value="{{ no_drpp }}" placeholder="00043/DRPP/019937/2026">
+      </div>
+      <div class="filter-actions">
+        <button class="btn primary" type="submit">Cari DRPP</button>
+        <a class="btn ghost" href="{% url 'documents:archive' %}">Kembali ke Arsip</a>
+      </div>
+    </div>
+  </form>
+
+  {% if lookup_error %}
+  <div class="note-box danger mt-small">{{ lookup_error }}</div>
+  {% endif %}
+
+  {% if drpp_context %}
+  <div class="note-box mt">
+    <strong>DRPP ditemukan</strong>
+    <dl class="info-list mt-small">
+      <dt>Satker</dt><dd>{{ drpp_context.satker_code }}</dd>
+      <dt>Nama Satker</dt><dd>{{ drpp_context.satker_name|default:"-" }}</dd>
+      <dt>No. DRPP</dt><dd>{{ drpp_context.nomor_drpp }}</dd>
+      <dt>No. SPM</dt><dd>{{ drpp_context.nomor_spm|default:"-" }}</dd>
+      <dt>Jumlah transaksi</dt><dd>{{ drpp_context.transaction_count }}</dd>
+      <dt>Kuitansi Pendukung</dt><dd>{{ drpp_context.attachment_count }} file</dd>
+    </dl>
+  </div>
+
+  <form class="form-grid mt" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="upload_receipts">
+    <input type="hidden" name="drpp_upload_id" value="{{ drpp_context.drpp_upload.id }}">
+    <input type="hidden" name="satker" value="{{ drpp_context.satker_code }}">
+    <input type="hidden" name="no_drpp" value="{{ drpp_context.nomor_drpp }}">
+    <div class="form-field file-field full">
+      <label for="receipt-files">File</label>
+      <div class="upload-dropzone">
+        <strong>Pilih file kuitansi pendukung</strong>
+        <span>PDF, ZIP, JPG, JPEG, atau PNG. Bisa pilih banyak file sekaligus.</span>
+        <input id="receipt-files" class="form-control" name="{{ receipt_upload_field }}" type="file" multiple accept=".pdf,.zip,.jpg,.jpeg,.png" {% if not can_upload_receipt %}disabled{% endif %}>
+      </div>
+    </div>
+    <div class="form-actions full">
+      {% if can_upload_receipt %}
+      <button class="primary-btn" type="submit">Upload Kuitansi</button>
+      {% else %}
+      <button class="btn ghost" type="button" disabled>Read Only</button>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if drpp_context.attachments %}
+  <section class="mt">
+    <div class="card-head">
+      <h2>Kuitansi Pendukung DRPP</h2>
+      <span class="muted">{{ drpp_context.attachment_count }} file</span>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table compact table-documents">
+        <thead><tr><th>Nama File</th><th>Waktu</th><th>Aksi</th></tr></thead>
+        <tbody>
+          {% for attachment in drpp_context.attachments %}
+          <tr>
+            <td>{{ attachment.document_upload.original_filename }}</td>
+            <td>{{ attachment.created_at|date:"Y-m-d H:i" }}</td>
+            <td><a class="btn tiny ghost" href="{% url 'documents:drpp_attachment_download' attachment.id %}" target="_blank" rel="noopener noreferrer">Buka File</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

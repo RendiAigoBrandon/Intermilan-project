@@ -8,6 +8,8 @@ app_name = "documents"
 
 urlpatterns = [
     path("archive/", views.archive, name="archive"),
+    path("upload-kuitansi/", views.upload_kuitansi, name="upload_kuitansi"),
+    path("attachments/<int:attachment_id>/download/", views.drpp_attachment_download, name="drpp_attachment_download"),
     path("", views.checklist_list, name="checklist"),
     path("<int:transaction_id>/", views.checklist_detail, name="checklist_detail"),
     # Google Drive OAuth
