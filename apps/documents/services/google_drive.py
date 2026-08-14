@@ -284,6 +284,8 @@ def _upload_service_account(file_path: str, display_name: str = None,
         body=metadata,
         media_body=media,
         fields="id, webViewLink, mimeType, size",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
 
     return {
@@ -386,6 +388,8 @@ def _upload_oauth_central(file_path: str, display_name: str = None,
         body=metadata,
         media_body=media,
         fields="id, webViewLink, mimeType, size",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
 
     return {
