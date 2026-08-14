@@ -213,6 +213,29 @@ class DRPPModelTest(TestCase):
         self.assertEqual(document.drpp_supporting_attachment, attachment)
         self.assertEqual(TransactionDetail.objects.count(), 0)
 
+    def test_supporting_attachment_can_use_manual_drpp_identity_without_parent(self):
+        document = DocumentUpload.objects.create(
+            original_filename="manual-kuitansi.pdf",
+            document_type="Kuitansi",
+            file="test/manual-kuitansi.pdf",
+            file_hash="hash-manual-kuitansi",
+            file_size=17,
+            mime_type="application/pdf",
+        )
+
+        attachment = DRPPSupportingAttachment.objects.create(
+            drpp_upload=None,
+            document_upload=document,
+            satker_code="019937",
+            tahun=2026,
+            nomor_drpp="00044/DRPP/019937/2026",
+            nomor_drpp_norm="00044",
+        )
+
+        self.assertIsNone(attachment.drpp_upload)
+        self.assertEqual(document.drpp_supporting_attachment, attachment)
+        self.assertEqual(TransactionDetail.objects.count(), 0)
+
 
 # ---------------------------------------------------------------------------
 # Service-level: classify_drpp_rows

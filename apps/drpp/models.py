@@ -121,6 +121,8 @@ class DRPPUpload(models.Model):
 class DRPPSupportingAttachment(models.Model):
     drpp_upload = models.ForeignKey(
         DRPPUpload,
+        null=True,
+        blank=True,
         on_delete=models.CASCADE,
         related_name="supporting_attachments",
     )

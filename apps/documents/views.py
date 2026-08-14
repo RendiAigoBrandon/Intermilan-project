@@ -36,6 +36,7 @@ from apps.core.parsers import (
     parse_paket_spm_zip,
     parse_spm_pdf,
 )
+from apps.core.drpp_batch_parser import _normalize_drpp as normalize_drpp_number
 from apps.core.satker import get_satker_name_map
 from apps.core.document_policy import (
     get_required_documents_for_akun_family,
@@ -86,80 +87,154 @@ def _extract_year(value):
 def _transaction_matches_drpp_year(transaction, tahun):
     if not tahun:
         return True
-    if transaction.tanggal_spm and transaction.tanggal_spm.year == tahun:
-        return True
+    if transaction.tanggal_spm:
+        return transaction.tanggal_spm.year == tahun
     return str(tahun) in (transaction.no_drpp or "")
 
 
+def _drpp_lookup_key(value):
+    return normalize_drpp_number(value)
+
+
+def _drpp_lookup_variants(value):
+    return {
+        item
+        for item in {
+            str(value or "").strip(),
+            _drpp_lookup_key(value),
+            normalized_bukti_key(value),
+        }
+        if item
+    }
+
+
 def _drpp_upload_matches_number(drpp_upload, nomor_drpp_norm):
-    current_norm = drpp_upload.nomor_drpp_norm or normalized_bukti_key(drpp_upload.nomor_drpp)
-    return current_norm == nomor_drpp_norm
+    upload_keys = _drpp_lookup_variants(drpp_upload.nomor_drpp_norm) | _drpp_lookup_variants(drpp_upload.nomor_drpp)
+    return _drpp_lookup_key(nomor_drpp_norm) in upload_keys
 
 
-def _transactions_for_drpp_upload(drpp_upload, user):
-    nomor_drpp_norm = drpp_upload.nomor_drpp_norm or normalized_bukti_key(drpp_upload.nomor_drpp)
+def _transactions_for_drpp_identity(user, satker_code, nomor_drpp_norm, tahun=None):
+    if not satker_code or not nomor_drpp_norm:
+        return []
     candidates = filter_by_satker(
-        TransactionDetail.objects.select_related("sp2d_raw").filter(satker_code=drpp_upload.satker_code),
+        TransactionDetail.objects.select_related("sp2d_raw").filter(
+            satker_code=satker_code,
+        ).exclude(no_drpp=""),
         user,
     ).order_by("id")
     return [
         transaction
         for transaction in candidates
-        if normalized_bukti_key(transaction.no_drpp) == nomor_drpp_norm
-        and _transaction_matches_drpp_year(transaction, drpp_upload.tahun)
+        if _drpp_lookup_key(transaction.no_drpp) == nomor_drpp_norm
+        and _transaction_matches_drpp_year(transaction, tahun)
     ]
 
 
-def _drpp_upload_for_transaction(transaction, user):
-    nomor_drpp_norm = normalized_bukti_key(transaction.no_drpp)
+def _matching_drpp_uploads(user, satker_code, nomor_drpp_norm, tahun=None):
+    queryset = filter_by_satker(
+        DRPPUpload.objects.filter(satker_code=satker_code),
+        user,
+    )
+    if tahun:
+        queryset = queryset.filter(tahun=tahun)
+    return [
+        item
+        for item in queryset.order_by("-uploaded_at", "-id")[:200]
+        if _drpp_upload_matches_number(item, nomor_drpp_norm)
+    ]
+
+
+def _drpp_identity_for_transaction(transaction):
+    nomor_drpp_norm = _drpp_lookup_key(transaction.no_drpp)
     if not nomor_drpp_norm or not transaction.satker_code:
-        return None
+        return "", None, ""
     tahun = (
         transaction.tanggal_spm.year
         if transaction.tanggal_spm
         else _extract_year(transaction.no_drpp)
     )
-    queryset = filter_by_satker(
-        DRPPUpload.objects.filter(satker_code=transaction.satker_code),
+    return transaction.satker_code, tahun, nomor_drpp_norm
+
+
+def _supporting_attachments_for_identity(user, drpp_upload=None, satker_code="", tahun=None, nomor_drpp_norm=""):
+    query = Q(pk__in=[])
+    if drpp_upload:
+        query |= Q(drpp_upload=drpp_upload)
+    if satker_code and tahun and nomor_drpp_norm:
+        query |= Q(
+            satker_code=satker_code,
+            tahun=tahun,
+            nomor_drpp_norm__in=_drpp_lookup_variants(nomor_drpp_norm),
+        )
+    if not query:
+        return DRPPSupportingAttachment.objects.none()
+    return filter_by_satker(
+        DRPPSupportingAttachment.objects.filter(query),
         user,
-    )
-    if tahun:
-        queryset = queryset.filter(tahun=tahun)
-    matches = [
-        item
-        for item in queryset.order_by("-uploaded_at", "-id")[:50]
-        if _drpp_upload_matches_number(item, nomor_drpp_norm)
-    ]
-    return matches[0] if len(matches) == 1 else None
+    ).select_related(
+        "document_upload",
+        "uploaded_by",
+        "archive_link",
+    ).distinct()
 
 
 def _supporting_attachments_for_transaction(transaction, user):
-    drpp_upload = _drpp_upload_for_transaction(transaction, user)
-    if not drpp_upload:
-        return DRPPSupportingAttachment.objects.none()
-    return DRPPSupportingAttachment.objects.filter(drpp_upload=drpp_upload).select_related(
-        "document_upload",
-        "uploaded_by",
-        "archive_link",
+    satker_code, tahun, nomor_drpp_norm = _drpp_identity_for_transaction(transaction)
+    matches = _matching_drpp_uploads(user, satker_code, nomor_drpp_norm, tahun)[:1]
+    drpp_upload = matches[0] if matches else None
+    return _supporting_attachments_for_identity(
+        user,
+        drpp_upload=drpp_upload,
+        satker_code=satker_code,
+        tahun=tahun,
+        nomor_drpp_norm=nomor_drpp_norm,
     )
 
 
-def _drpp_context(drpp_upload, transactions):
+def _drpp_context(user, transactions, drpp_upload=None, satker_code="", tahun=None, nomor_drpp="", nomor_drpp_norm=""):
+    transaction_years = sorted(
+        {
+            item.tanggal_spm.year if item.tanggal_spm else _extract_year(item.no_drpp)
+            for item in transactions
+            if item.tanggal_spm or _extract_year(item.no_drpp)
+        }
+    )
+    if not tahun and len(transaction_years) > 1:
+        return None, "DRPP ditemukan pada lebih dari satu tahun. Gunakan nomor DRPP lengkap beserta tahun."
     spm_numbers = sorted({(item.nomor_spm or "").strip() for item in transactions if item.nomor_spm})
     if len(spm_numbers) > 1:
         return None, "DRPP memiliki lebih dari satu Nomor SPM. Upload kuitansi dibatalkan agar tidak salah kait."
-    satker_name = get_satker_name_map([drpp_upload.satker_code]).get(drpp_upload.satker_code, "")
-    attachments = DRPPSupportingAttachment.objects.filter(drpp_upload=drpp_upload).select_related(
-        "document_upload",
-        "uploaded_by",
-        "archive_link",
+    satker_code = satker_code or (drpp_upload.satker_code if drpp_upload else "") or transactions[0].satker_code
+    tahun = tahun or (drpp_upload.tahun if drpp_upload else None) or (transaction_years[0] if transaction_years else None)
+    nomor_drpp_norm = _drpp_lookup_key(
+        nomor_drpp_norm
+        or (drpp_upload.nomor_drpp_norm if drpp_upload else "")
+        or nomor_drpp
+    )
+    transaction_drpp_values = [(item.no_drpp or "").strip() for item in transactions if item.no_drpp]
+    full_transaction_drpp = next((value for value in transaction_drpp_values if "/" in value), "")
+    nomor_drpp = (
+        nomor_drpp
+        or full_transaction_drpp
+        or (drpp_upload.nomor_drpp if drpp_upload else "")
+        or (transaction_drpp_values[0] if transaction_drpp_values else "")
+    )
+    satker_name = get_satker_name_map([satker_code]).get(satker_code, "")
+    attachments = _supporting_attachments_for_identity(
+        user,
+        drpp_upload=drpp_upload,
+        satker_code=satker_code,
+        tahun=tahun,
+        nomor_drpp_norm=nomor_drpp_norm,
     )
     return {
         "drpp_upload": drpp_upload,
-        "satker_code": drpp_upload.satker_code,
+        "satker_code": satker_code,
         "satker_name": satker_name,
-        "nomor_drpp": drpp_upload.nomor_drpp,
-        "nomor_spm": spm_numbers[0] if spm_numbers else drpp_upload.nomor_spm,
+        "tahun": tahun,
+        "nomor_drpp": nomor_drpp,
+        "nomor_drpp_norm": nomor_drpp_norm,
+        "nomor_spm": spm_numbers[0] if spm_numbers else (drpp_upload.nomor_spm if drpp_upload else ""),
         "transaction_count": len(transactions),
         "attachment_count": attachments.count(),
         "attachments": attachments,
@@ -176,6 +251,10 @@ def _resolve_drpp_context(user, satker_code="", nomor_drpp="", drpp_upload_id=No
         scoped = filter_by_satker(DRPPUpload.objects.all(), user).filter(pk=drpp_upload_id).first()
         if not scoped:
             return None, "DRPP tidak ditemukan pada data D_K."
+        satker_code = drpp_upload.satker_code
+        tahun = drpp_upload.tahun or _extract_year(drpp_upload.nomor_drpp)
+        nomor_drpp = drpp_upload.nomor_drpp
+        nomor_drpp_norm = _drpp_lookup_key(drpp_upload.nomor_drpp_norm or drpp_upload.nomor_drpp)
     else:
         nomor_drpp = (nomor_drpp or "").strip()
         satker_code = (satker_code or get_user_satker_code(user) or "").strip()
@@ -186,29 +265,26 @@ def _resolve_drpp_context(user, satker_code="", nomor_drpp="", drpp_upload_id=No
         if for_upload and not can_edit_satker(user, satker_code):
             raise PermissionDenied("Anda tidak memiliki akses ke satker ini.")
 
-        nomor_drpp_norm = normalized_bukti_key(nomor_drpp)
+        nomor_drpp_norm = _drpp_lookup_key(nomor_drpp)
         tahun = _extract_year(nomor_drpp)
-        queryset = filter_by_satker(DRPPUpload.objects.filter(satker_code=satker_code), user)
-        if tahun:
-            queryset = queryset.filter(tahun=tahun)
-        matches = [
-            item
-            for item in queryset.order_by("-uploaded_at", "-id")[:200]
-            if _drpp_upload_matches_number(item, nomor_drpp_norm)
-        ]
-        if not matches:
-            return None, "DRPP tidak ditemukan pada data D_K."
-        if len(matches) > 1:
-            return None, "DRPP ditemukan lebih dari satu. Gunakan nomor DRPP lengkap beserta tahun."
-        drpp_upload = matches[0]
+        matches = _matching_drpp_uploads(user, satker_code, nomor_drpp_norm, tahun)
+        drpp_upload = matches[0] if len(matches) == 1 else None
 
     if for_upload and not can_upload_document(user):
         raise PermissionDenied("Akun ini tidak memiliki akses upload dokumen.")
 
-    transactions = _transactions_for_drpp_upload(drpp_upload, user)
+    transactions = _transactions_for_drpp_identity(user, satker_code, nomor_drpp_norm, tahun)
     if not transactions:
         return None, "DRPP tidak ditemukan pada data D_K."
-    return _drpp_context(drpp_upload, transactions)
+    return _drpp_context(
+        user,
+        transactions,
+        drpp_upload=drpp_upload,
+        satker_code=satker_code,
+        tahun=tahun,
+        nomor_drpp=nomor_drpp,
+        nomor_drpp_norm=nomor_drpp_norm,
+    )
 
 
 def _supporting_receipt_satker_options(user):
@@ -240,7 +316,9 @@ def _validate_receipt_uploads(upload_files):
 def _save_supporting_receipt_file(request, drpp_context, upload_file, tmp_path, file_hash):
     drpp_upload = drpp_context["drpp_upload"]
     if DRPPSupportingAttachment.objects.filter(
-        drpp_upload=drpp_upload,
+        satker_code=drpp_context["satker_code"],
+        tahun=drpp_context["tahun"],
+        nomor_drpp_norm__in=_drpp_lookup_variants(drpp_context["nomor_drpp_norm"]),
         document_upload__file_hash=file_hash,
     ).exists():
         return None, True
@@ -265,16 +343,16 @@ def _save_supporting_receipt_file(request, drpp_context, upload_file, tmp_path, 
 
             archive_link = DocumentDriveLink.objects.create(
                 transaction_detail=None,
-                satker_code=drpp_upload.satker_code,
-                nomor_spm=drpp_context["nomor_spm"] or drpp_upload.nomor_spm or "",
+                satker_code=drpp_context["satker_code"],
+                nomor_spm=drpp_context["nomor_spm"] or "",
                 no_kuitansi="",
-                no_drpp=drpp_upload.nomor_drpp,
+                no_drpp=drpp_context["nomor_drpp"],
                 jenis_dokumen=RECEIPT_DOCUMENT_TYPE,
                 nama_file=upload_file.name,
                 google_drive_url="",
                 status=DocumentDriveLink.Status.PERLU_DICEK,
                 catatan=(
-                    f"source=DRPP supporting receipt; drpp_upload_id={drpp_upload.id}; "
+                    f"source=DRPP supporting receipt; drpp_upload_id={drpp_upload.id if drpp_upload else 'None'}; "
                     f"document_upload_id={document_upload.id}; hash={file_hash}"
                 )[:2000],
                 created_by=request.user,
@@ -283,10 +361,10 @@ def _save_supporting_receipt_file(request, drpp_context, upload_file, tmp_path, 
                 drpp_upload=drpp_upload,
                 document_upload=document_upload,
                 archive_link=archive_link,
-                satker_code=drpp_upload.satker_code,
-                tahun=drpp_upload.tahun,
-                nomor_drpp=drpp_upload.nomor_drpp,
-                nomor_drpp_norm=drpp_upload.nomor_drpp_norm or normalized_bukti_key(drpp_upload.nomor_drpp),
+                satker_code=drpp_context["satker_code"],
+                tahun=drpp_context["tahun"],
+                nomor_drpp=drpp_context["nomor_drpp"],
+                nomor_drpp_norm=drpp_context["nomor_drpp_norm"],
                 uploaded_by=request.user,
             )
         return attachment, False
