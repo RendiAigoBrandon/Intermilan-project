@@ -91,6 +91,7 @@ class SP2DHardeningTests(TestCase):
             nilai_bruto=Decimal("1800000"),
             nilai_netto=Decimal("1800000"),
             pph21=0,
+            status_detail=TransactionDetail.StatusDetail.LENGKAP,
             created_by=self.user,
         )
         tx2 = TransactionDetail.objects.create(
@@ -104,6 +105,7 @@ class SP2DHardeningTests(TestCase):
             nilai_bruto=Decimal("1000000"),
             nilai_netto=Decimal("1000000"),
             pph21=0,
+            status_detail=TransactionDetail.StatusDetail.LENGKAP,
             created_by=self.user,
         )
         other_satker = TransactionDetail.objects.create(
@@ -351,6 +353,7 @@ class SP2DHardeningTests(TestCase):
 
     def test_late_sp2d_reprocess_ignores_legacy_summary_detail(self):
         from apps.dk.models import TransactionDetail, TransactionChangeLog
+        from apps.dk.views import attach_source_labels
 
         self.client.login(username="test_upload", password="password")
         tx1, tx2, other_satker = self._create_existing_dk_for_late_sp2d()
@@ -427,6 +430,18 @@ class SP2DHardeningTests(TestCase):
             ).count(),
             1,
         )
+        attach_source_labels([tx1, tx2, summary])
+        self.assertEqual(tx1.source_data_label, "D_K")
+        self.assertEqual(tx2.source_data_label, "D_K")
+        self.assertEqual(tx1.document_status_label, "Lengkap")
+        self.assertEqual(tx2.document_status_label, "Lengkap")
+        self.assertNotEqual(tx1.reconciliation_status_label, "Data awal dari SP2D")
+        self.assertNotEqual(tx2.reconciliation_status_label, "Data awal dari SP2D")
+        self.assertIn("Tidak Cocok", tx1.reconciliation_status_label)
+        self.assertIn("Tidak Cocok", tx2.reconciliation_status_label)
+        self.assertEqual(summary.source_data_label, "SP2D Excel")
+        self.assertEqual(summary.document_status_label, "Belum Lengkap")
+        self.assertEqual(summary.reconciliation_status_label, "Data awal dari SP2D")
         self.assertEqual(TransactionDetail.objects.filter(satker_code="019937", nomor_spm="00166T").count(), 3)
         self.assertIn("49449851", raw.cek_akun)
         self.assertNotIn("2800000", raw.cek_akun)

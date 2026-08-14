@@ -232,6 +232,8 @@ def attach_satker_names(rows):
 
 
 def attach_source_labels(rows):
+    from apps.sp2d.services import is_legacy_sp2d_summary_detail
+
     row_ids = [row.id for row in rows]
     package_items = {
         item.matched_transaction_id: item
@@ -244,10 +246,17 @@ def attach_source_labels(rows):
             row.document_status_label = row.get_status_detail_display()
             row.reconciliation_status_label = extract_note_value(package_item.catatan, "Status Rekonsiliasi") or "Belum ada SP2D pembanding"
             row.display_no_sp2d = row.sp2d_raw.no_sp2d if row.sp2d_raw_id and row.sp2d_raw else "Belum ada SP2D pembanding"
-        elif row.sp2d_raw_id:
+        elif row.sp2d_raw_id and row.sp2d_raw and is_legacy_sp2d_summary_detail(row, row.sp2d_raw):
             row.source_data_label = "SP2D Excel"
             row.document_status_label = "Belum Lengkap"
             row.reconciliation_status_label = "Data awal dari SP2D"
+            row.display_no_sp2d = row.sp2d_raw.no_sp2d if row.sp2d_raw else "-"
+        elif row.sp2d_raw_id:
+            row.source_data_label = "D_K"
+            row.document_status_label = row.get_status_detail_display()
+            row.reconciliation_status_label = row.sp2d_raw.get_status_display() if row.sp2d_raw else "Belum ada SP2D pembanding"
+            if row.sp2d_raw and row.sp2d_raw.status == SP2DRaw.Status.TIDAK_COCOK and row.sp2d_raw.cek_akun:
+                row.reconciliation_status_label = f"{row.sp2d_raw.get_status_display()}: {row.sp2d_raw.cek_akun}"
             row.display_no_sp2d = row.sp2d_raw.no_sp2d if row.sp2d_raw else "-"
         else:
             row.source_data_label = "D_K"
