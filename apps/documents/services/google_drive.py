@@ -18,7 +18,6 @@ ARCHITECTURE: Central Archive
 - Token central: media/drive_tokens/archive_oauth.json
 """
 
-import httplib2
 import io
 import json
 import logging
@@ -240,21 +239,15 @@ def build_drive_service(credentials, timeout=None):
     Build Google Drive service with given credentials.
 
     Args:
-        credentials: google-auth credentials object
-        timeout: Optional socket timeout in seconds. If provided, the underlying HTTP
-            client will raise socket.timeout after this many seconds.  This bounds
-            the Drive API call for user-facing requests and prevents Cloudflare 524
-            timeouts from being triggered by a slow Drive upload.
+        credentials: google-auth credentials object (service_account.Credentials)
+        timeout: Optional socket timeout in seconds. Not used - modern google-auth
+            handles timeouts differently via the credentials object.
     """
     from googleapiclient.discovery import build
 
-    # Modern google-auth: pass credentials directly, don't use deprecated authorize()
-    http = None
-    if timeout:
-        import httplib2
-        http = httplib2.Http(timeout=timeout)
-        http = credentials.authorize(http)
-    return build("drive", "v3", credentials=credentials, http=http, cache_discovery=False)
+    # Modern google-auth: pass credentials directly to build()
+    # No need for authorize() - googleapiclient handles it internally
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
 def _upload_service_account(file_path: str, display_name: str = None,
