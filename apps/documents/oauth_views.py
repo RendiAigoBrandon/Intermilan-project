@@ -65,35 +65,35 @@ def drive_oauth_authorize(request):
     5. Redirect user to Google
     """
     # ========================================================================
-    # COMPREHENSIVE DEBUG LOGGING
+    # COMPREHENSIVE DEBUG LOGGING - Use BOTH print() and logger
+    # print() goes to stdout - guaranteed to appear in container logs
     # ========================================================================
-    logger.warning("=" * 60)
-    logger.warning("[OAUTH DEBUG] drive_oauth_authorize() called")
-    logger.warning("[OAUTH DEBUG] User info:")
-    logger.warning("  username: %s", request.user.username)
-    logger.warning("  is_authenticated: %s", request.user.is_authenticated)
-    logger.warning("  is_superuser: %s", request.user.is_superuser)
-    logger.warning("  is_staff: %s", request.user.is_staff)
-    logger.warning("  is_admin_user(): %s", is_admin_user(request.user))
-    logger.warning("=" * 60)
+    import sys
+
+    print("=" * 60, file=sys.stderr)
+    print("[OAUTH] drive_oauth_authorize() called", file=sys.stderr)
+    print(f"[OAUTH] User: username={request.user.username}", file=sys.stderr)
+    print(f"[OAUTH]       is_authenticated={request.user.is_authenticated}", file=sys.stderr)
+    print(f"[OAUTH]       is_superuser={request.user.is_superuser}", file=sys.stderr)
+    print(f"[OAUTH]       is_staff={request.user.is_staff}", file=sys.stderr)
+    print(f"[OAUTH]       is_admin_user()={is_admin_user(request.user)}", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
 
     # Check OAuth conditions
     _oauth_enabled = oauth_enabled()
     _is_configured = is_oauth_configured()
     _has_token = has_central_token()
 
-    logger.warning("[OAUTH DEBUG] OAuth conditions:")
-    logger.warning("  oauth_enabled(): %s", _oauth_enabled)
-    logger.warning("  is_oauth_configured(): %s", _is_configured)
-    logger.warning("  has_central_token(): %s", _has_token)
-    logger.warning("=" * 60)
+    print(f"[OAUTH] oauth_enabled()={_oauth_enabled}", file=sys.stderr)
+    print(f"[OAUTH] is_oauth_configured()={_is_configured}", file=sys.stderr)
+    print(f"[OAUTH] has_central_token()={_has_token}", file=sys.stderr)
 
     # ========================================================================
     # CHECK CONDITIONS - Each one causes redirect to dashboard
     # ========================================================================
 
     if not _oauth_enabled:
-        logger.warning("[OAUTH DEBUG] >>> REDIRECT #1: oauth_enabled() = False")
+        print("[OAUTH] REDIRECT #1: oauth_enabled()=False - OAuth not enabled", file=sys.stderr)
         messages.error(
             request,
             "Google Drive OAuth belum dikonfigurasi. "
@@ -102,7 +102,7 @@ def drive_oauth_authorize(request):
         return redirect("core:dashboard")
 
     if not _is_configured:
-        logger.warning("[OAUTH DEBUG] >>> REDIRECT #2: is_oauth_configured() = False")
+        print("[OAUTH] REDIRECT #2: is_oauth_configured()=False - OAuth not configured", file=sys.stderr)
         messages.error(
             request,
             "OAuth credentials belum disetel. "
@@ -111,7 +111,7 @@ def drive_oauth_authorize(request):
         return redirect("core:dashboard")
 
     if _has_token:
-        logger.warning("[OAUTH DEBUG] >>> REDIRECT #3: has_central_token() = True (already authorized)")
+        print("[OAUTH] REDIRECT #3: has_central_token()=True - Already authorized", file=sys.stderr)
         messages.info(
             request,
             "Google Drive sudah terotorisasi. "
@@ -123,13 +123,12 @@ def drive_oauth_authorize(request):
     for key in (_SESSION_KEY_OAUTH_STATE, _SESSION_KEY_OAUTH_CODE_VERIFIER, _SESSION_KEY_OAUTH_CLIENT_CONFIG):
         request.session.pop(key, None)
 
-    logger.warning("[OAUTH DEBUG] All conditions passed! Proceeding to generate auth URL...")
+    print("[OAUTH] All conditions passed! Proceeding to generate auth URL...", file=sys.stderr)
 
     try:
-        logger.warning("[OAUTH DEBUG] >>> Calling get_authorization_url_with_flow()")
+        print("[OAUTH] Calling get_authorization_url_with_flow()...", file=sys.stderr)
         state, auth_url, flow, client_config = get_authorization_url_with_flow()
-        logger.warning("[OAUTH DEBUG] >>> SUCCESS - got auth URL!")
-        logger.warning("[OAUTH DEBUG] auth_url (first 80 chars): %s", auth_url[:80])
+        print(f"[OAUTH] SUCCESS - got auth URL: {auth_url[:80]}...", file=sys.stderr)
 
         # Store PKCE code_verifier and client config in session so callback can restore them.
         # IMPORTANT: store client_config (with "web" top-level key), NOT flow.client_config
@@ -141,26 +140,21 @@ def drive_oauth_authorize(request):
         request.session[_SESSION_KEY_OAUTH_CLIENT_CONFIG] = client_config
         logger.info("[OAuth] authorize — state stored, code_verifier present=%s", bool(flow.code_verifier))
 
-        logger.warning("[OAUTH DEBUG] >>> REDIRECT #4: Redirecting to Google OAuth!")
-        logger.warning("[OAUTH DEBUG] Full auth_url: %s", auth_url)
-        logger.warning("=" * 60)
+        print("[OAUTH] REDIRECT #4: Redirecting to Google OAuth!", file=sys.stderr)
+        print(f"[OAUTH] Full auth_url: {auth_url}", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
         return redirect(auth_url)
 
     except OAuthCredentialsNotConfigured as e:
-        logger.error("[OAUTH DEBUG] >>> EXCEPTION #1: OAuthCredentialsNotConfigured")
-        logger.error("[OAUTH DEBUG] Exception type: OAuthCredentialsNotConfigured")
-        logger.error("[OAUTH DEBUG] Exception message: %s", str(e))
-        logger.error("[OAUTH DEBUG] Stack trace will follow in server logs")
+        print(f"[OAUTH] EXCEPTION #1: OAuthCredentialsNotConfigured: {e}", file=sys.stderr)
         messages.error(request, f"OAuth configuration error: {e}")
         logger.error(f"OAuth auth_url failed: {e}")
         return redirect("core:dashboard")
 
     except Exception as e:
-        logger.error("[OAUTH DEBUG] >>> EXCEPTION #2: Generic Exception")
-        logger.error("[OAUTH DEBUG] Exception type: %s", type(e).__name__)
-        logger.error("[OAUTH DEBUG] Exception message: %s", str(e))
         import traceback
-        logger.error("[OAUTH DEBUG] Stack trace:\n%s", traceback.format_exc())
+        print(f"[OAUTH] EXCEPTION #2: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"[OAUTH] Stack trace:\n{traceback.format_exc()}", file=sys.stderr)
         messages.error(request, f"Failed to start OAuth flow: {e}")
         logger.error(f"OAuth auth_url exception: {e}")
         return redirect("core:dashboard")
