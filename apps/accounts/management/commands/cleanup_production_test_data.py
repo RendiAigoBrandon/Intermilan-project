@@ -21,7 +21,7 @@ Data that WILL be deleted:
     - dk_transactiondetail with test SPM numbers
     - sp2d_sp2draw with test SAT codes
     - dk_masterakun with dummy account codes
-    - core_activeparentsession orphan records
+    - core_activeparentsession test sessions (test_key, satker 019937 with DEBUG SPM)
 
 Data that will ONLY be DISPLAYED (not deleted):
     - core_transactionpackage (info only)
@@ -142,26 +142,32 @@ class Command(BaseCommand):
         }
 
         # =====================================================================
-        # 4. ActiveParentSession - Orphan records
+        # 4. ActiveParentSession - Test data
         # =====================================================================
         self.stdout.write("")
         self.stdout.write(self.style.WARNING("-" * 70))
-        self.stdout.write(self.style.WARNING("  4. Core ActiveParentSession (Orphan)"))
+        self.stdout.write(self.style.WARNING("  4. Core ActiveParentSession (Test Data)"))
         self.stdout.write(self.style.WARNING("-" * 70))
 
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-        valid_user_ids = list(User.objects.values_list("id", flat=True))
+        # Filter test sessions:
+        # - session_key='test_key'
+        # - OR satker=019937 with SPM DEBUG
+        test_sessions = ActiveParentSession.objects.filter(
+            session_key='test_key'
+        ) | ActiveParentSession.objects.filter(
+            satker_code='019937',
+            nomor_spm__icontains='DEBUG'
+        )
+        test_sessions = test_sessions.distinct()
 
-        orphan_sessions = ActiveParentSession.objects.exclude(user_id__in=valid_user_ids)
-
-        self.stdout.write(f"  Records found: {orphan_sessions.count()}")
-        for session in orphan_sessions:
-            self.stdout.write(f"    - ID={session.id}: session_key={session.session_key[:20] if session.session_key else 'None'}..., user_id={session.user_id}")
+        self.stdout.write(f"  Records found: {test_sessions.count()}")
+        for session in test_sessions:
+            self.stdout.write(f"    - ID={session.id}: session_key={session.session_key[:20] if session.session_key else 'None'}...")
+            self.stdout.write(f"      satker={session.satker_code}, SPM={session.nomor_spm}")
 
         deletion_plan["core.ActiveParentSession"] = {
-            "count": orphan_sessions.count(),
-            "queryset": orphan_sessions,
+            "count": test_sessions.count(),
+            "queryset": test_sessions,
         }
 
         # =====================================================================
