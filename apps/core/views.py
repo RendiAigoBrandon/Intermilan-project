@@ -9,7 +9,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.accounts.access import can_access_audit_data, can_edit_satker, can_view_all_satker, filter_by_satker, get_profile, permission_context
+from apps.accounts.access import can_access_audit_data, can_edit_satker, can_view_all_satker, filter_by_satker, get_profile, get_user_official_satker_code, permission_context
 from apps.core.models import MonitoringSummary
 from apps.core.satker import get_satker_name_map
 from apps.core.document_policy import get_required_documents, normalize_akun_family
@@ -1045,11 +1045,13 @@ def build_dashboard_summary_rows(scoped_queryset, tahun, bulan, satker_filter=No
     # 1. BUILD ALLOWED SATKER CODES FROM PERMISSION SCOPE
     allowed_satker_codes = None
     if user and not can_view_all_satker(user):
-        profile = get_profile(user)
-        if profile and profile.is_satker and profile.satker_code:
-            allowed_satker_codes = {profile.satker_code}
-            fa16_query = fa16_query.filter(satker_code=profile.satker_code)
+        # Gunakan 6-digit official satker_code untuk filtering
+        official_code = get_user_official_satker_code(user)
+        if official_code:
+            allowed_satker_codes = {official_code}
+            fa16_query = fa16_query.filter(satker_code=official_code)
         else:
+            # Mapping gagal - user tidak punya akses
             allowed_satker_codes = set()
             fa16_query = fa16_query.none()
 
@@ -1331,9 +1333,10 @@ def get_satker_options_for_dashboard(scoped_queryset, user=None):
     # Include FA16 satkers
     fa16_query = MonitoringSummary.objects.all()
     if user and not can_view_all_satker(user):
-        profile = get_profile(user)
-        if profile and profile.is_satker and profile.satker_code:
-            fa16_query = fa16_query.filter(satker_code=profile.satker_code)
+        # Gunakan 6-digit official satker_code untuk filtering
+        official_code = get_user_official_satker_code(user)
+        if official_code:
+            fa16_query = fa16_query.filter(satker_code=official_code)
         else:
             fa16_query = fa16_query.none()
 

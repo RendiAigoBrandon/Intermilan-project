@@ -1,6 +1,9 @@
 from django.core.exceptions import PermissionDenied
+import logging
 
 from .models import Profile
+
+logger = logging.getLogger(__name__)
 
 
 def get_profile(user):
@@ -8,6 +11,53 @@ def get_profile(user):
         return None
     profile, _ = Profile.objects.get_or_create(user=user)
     return profile
+
+
+def get_user_satker_code(user):
+    """Get raw 4-digit satker_code dari profile (untuk display."""
+    profile = get_profile(user)
+    return profile.satker_code if profile else ""
+
+
+def get_user_official_satker_code(user):
+    """
+    Ambil 6-digit official satker_code dari profile user.
+
+    Konversi dari 4-digit unit_code jika perlu via SatkerMaster mapping.
+
+    Returns:
+        6-digit satker_code jika sukses mapping
+        "" (empty) jika gagal mapping (dengan WARNING log)
+
+    CATATAN: Tidak ada silent fallback - jika mapping gagal, log WARNING dan return empty.
+    """
+    profile = get_profile(user)
+    if not profile or not profile.satker_code:
+        logger.warning(
+            f"User {getattr(user, 'username', 'unknown')}: profile atau satker_code kosong"
+        )
+        return ""
+
+    # Jika sudah 6-digit (format official BPS), return langsung
+    if len(profile.satker_code) == 6:
+        return profile.satker_code
+
+    # Convert 4-digit ke 6-digit via SatkerMaster
+    from apps.core.models import SatkerMaster
+    try:
+        satker = SatkerMaster.objects.get(unit_code=profile.satker_code)
+        official_code = satker.satker_code
+        logger.debug(
+            f"User {getattr(user, 'username', 'unknown')}: "
+            f"Converted {profile.satker_code} -> {official_code}"
+        )
+        return official_code
+    except SatkerMaster.DoesNotExist:
+        logger.warning(
+            f"User {getattr(user, 'username', 'unknown')}: "
+            f"FAILED mapping {profile.satker_code} - SatkerMaster not found. Akses DITOLAK."
+        )
+        return ""  # Gagal mapping - return empty (access denied)
 
 
 def is_admin(user):
@@ -33,11 +83,6 @@ def is_viewer(user):
     return bool(profile and profile.is_viewer)
 
 
-def get_user_satker_code(user):
-    profile = get_profile(user)
-    return profile.satker_code if profile else ""
-
-
 def get_user_scope_label(user):
     profile = get_profile(user)
     if not profile:
@@ -61,7 +106,8 @@ def can_view_transaction(user, transaction):
         return True
     profile = get_profile(user)
     if profile and profile.is_satker:
-        return profile.satker_code == getattr(transaction, "satker_code", "")
+        official_code = get_user_official_satker_code(user)
+        return official_code == getattr(transaction, "satker_code", "")
     return False
 
 
@@ -123,11 +169,17 @@ def can_export_data(user):
 
 
 def filter_by_satker(queryset, user, field_name="satker_code"):
+    """Filter queryset berdasarkan satker user login."""
     profile = get_profile(user)
     if not profile or is_admin(user):
         return queryset
     if profile.is_satker:
-        return queryset.filter(**{field_name: profile.satker_code})
+        # Gunakan official 6-digit satker_code
+        official_code = get_user_official_satker_code(user)
+        if not official_code:
+            # Mapping gagal - return empty queryset (tidak ada akses)
+            return queryset.none()
+        return queryset.filter(**{field_name: official_code})
     return queryset
 
 
@@ -137,13 +189,17 @@ def require_write_access(user):
 
 
 def can_edit_satker(user, satker_code):
+    """Cek apakah user boleh edit data satker tertentu."""
     if is_admin(user):
         return True
     profile = get_profile(user)
     if not profile:
         return False
     if profile.is_satker:
-        return profile.satker_code == satker_code
+        official_code = get_user_official_satker_code(user)
+        if not official_code:
+            return False  # Mapping gagal - ditolak
+        return official_code == satker_code
     return False
 
 
