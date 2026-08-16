@@ -257,10 +257,11 @@ def dashboard(request):
     selected_year_int = int(selected_year) if selected_year.isdigit() else 2026
     selected_month_int = int(selected_month)
 
-    # Scoped querysets
-    sp2d_qs = filter_by_satker(SP2DRaw.objects.all(), request.user)
-    dk_qs = filter_by_satker(TransactionDetail.objects.all(), request.user)
-    drpp_qs = filter_by_satker(DRPPUpload.objects.all(), request.user)
+    # Unscoped querysets for cross-satker reporting (view-only)
+    # Write operations still use filter_by_satker() for access control
+    sp2d_qs = SP2DRaw.objects.all()
+    dk_qs = TransactionDetail.objects.all()
+    drpp_qs = DRPPUpload.objects.all()
 
     # Stats cards
     totals = dk_qs.aggregate(nilai_bruto=Sum("nilai_bruto"), nilai_netto=Sum("nilai_netto"))
@@ -339,7 +340,8 @@ def monitoring(request):
         "bulan": request.GET.get("bulan", "").strip(),
         "status": request.GET.get("status", "").strip(),
     }
-    scoped_summary_qs = filter_by_satker(MonitoringSummary.objects.all(), request.user)
+    # Unscoped for cross-satker reporting (view-only)
+    scoped_summary_qs = MonitoringSummary.objects.all()
     summary_qs = scoped_summary_qs
     if filters["tahun"].isdigit():
         summary_qs = summary_qs.filter(tahun=int(filters["tahun"]))
@@ -367,7 +369,8 @@ def monitoring(request):
         source_label = "MonitoringSummary"
     else:
         # Only show data created by users (exclude legacy data from SQLite import)
-        scoped_transactions = filter_by_satker(TransactionDetail.objects.filter(created_by__isnull=False), request.user)
+        # Unscoped for cross-satker reporting (view-only)
+        scoped_transactions = TransactionDetail.objects.filter(created_by__isnull=False)
         queryset = scoped_transactions
         if filters["satker"]:
             queryset = queryset.filter(satker_code=filters["satker"])
