@@ -9,124 +9,208 @@ from django.db import connection, transaction
 from django.utils import timezone
 
 from apps.accounts.models import Profile
-from apps.core.models import MonitoringSummary
+from apps.auditlog.models import AuditLog
+from apps.core.models import (
+    ActiveParentSession,
+    DRPPPreviewState,
+    MonitoringSummary,
+    SatkerMaster,
+    TransactionPackage,
+    TransactionProvenance,
+)
 from apps.dk.models import MasterAkun, TransactionChangeLog, TransactionDetail
-from apps.documents.models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink, DocumentUpload
-from apps.drpp.models import DRPPImportBatch, DRPPItem, DRPPMatch, DRPPUpload
+from apps.documents.models import (
+    ChecklistStatus,
+    ChecklistTemplate,
+    DocumentDriveLink,
+    DocumentUpload,
+)
+from apps.drpp.models import (
+    DRPPImportBatch,
+    DRPPItem,
+    DRPPMatch,
+    DRPPUpload,
+    DRPPSupportingAttachment,
+)
 from apps.paket_spm.models import PaketSPMPreviewItem, PaketSPMUpload
 from apps.sp2d.models import SP2DImportBatch, SP2DRaw
 
 
 CONFIRM_TOKEN = "RESET_INTERMILAN"
 
+# All operational models - these will be deleted
+# Format: (app_label.ModelName, ModelClass)
 OPERATIONAL_MODELS = [
-    ChecklistStatus,
-    DRPPMatch,
-    DRPPItem,
-    PaketSPMPreviewItem,
-    DocumentUpload,
-    DocumentDriveLink,
-    DRPPUpload,
-    DRPPImportBatch,
-    PaketSPMUpload,
-    TransactionChangeLog,
-    TransactionDetail,
-    SP2DRaw,
-    SP2DImportBatch,
-    MonitoringSummary,
+    # DK
+    ("dk.TransactionDetail", TransactionDetail),
+    ("dk.TransactionChangeLog", TransactionChangeLog),
+    # SP2D
+    ("sp2d.SP2DRaw", SP2DRaw),
+    ("sp2d.SP2DImportBatch", SP2DImportBatch),
+    # DRPP
+    ("drpp.DRPPUpload", DRPPUpload),
+    ("drpp.DRPPItem", DRPPItem),
+    ("drpp.DRPPMatch", DRPPMatch),
+    ("drpp.DRPPImportBatch", DRPPImportBatch),
+    ("drpp.DRPPSupportingAttachment", DRPPSupportingAttachment),
+    # Documents
+    ("documents.DocumentUpload", DocumentUpload),
+    ("documents.DocumentDriveLink", DocumentDriveLink),
+    ("documents.ChecklistStatus", ChecklistStatus),
+    ("documents.ChecklistTemplate", ChecklistTemplate),
+    # Paket SPM
+    ("paket_spm.PaketSPMUpload", PaketSPMUpload),
+    ("paket_spm.PaketSPMPreviewItem", PaketSPMPreviewItem),
+    # Core
+    ("core.TransactionPackage", TransactionPackage),
+    ("core.ActiveParentSession", ActiveParentSession),
+    ("core.DRPPPreviewState", DRPPPreviewState),
+    ("core.MonitoringSummary", MonitoringSummary),
+    ("core.TransactionProvenance", TransactionProvenance),
+    # Audit
+    ("audit.AuditLog", AuditLog),
 ]
 
-RETAINED_MODELS = [
-    ("User", get_user_model()),
-    ("Profile", Profile),
-    ("MasterAkun", MasterAkun),
-    ("ChecklistTemplate", ChecklistTemplate),
+# Protected models - these will NOT be deleted
+PROTECTED_MODELS = [
+    ("auth.User", get_user_model()),
+    ("accounts.Profile", Profile),
+    ("core.SatkerMaster", SatkerMaster),
+    ("dk.MasterAkun", MasterAkun),
 ]
 
 
 class Command(BaseCommand):
-    help = "Dry-run/reset data operasional INTERMILAN tanpa menghapus auth, migration, dan master/reference."
+    help = "Reset ALL operational data to simulate fresh deployment. Deletes data from dk, sp2d, drpp, documents, paket_spm, core, and audit apps."
 
     def add_arguments(self, parser):
-        parser.add_argument("--dry-run", action="store_true", help="Tampilkan rencana tanpa menghapus. Ini default.")
-        parser.add_argument("--execute", action="store_true", help="Minta penghapusan nyata; wajib pakai --confirm.")
-        parser.add_argument("--confirm", default="", help=f"Token penghapusan nyata: {CONFIRM_TOKEN}")
-        parser.add_argument("--include-files", action="store_true", help="Saat execute, hapus file media/cache terkait.")
+        parser.add_argument("--dry-run", action="store_true", help="Show plan without deleting. This is the default.")
+        parser.add_argument("--execute", action="store_true", help="Actually delete data; requires --confirm.")
+        parser.add_argument("--confirm", default="", help=f"Confirmation token for actual deletion: {CONFIRM_TOKEN}")
+        parser.add_argument("--include-files", action="store_true", help="When executing, also delete related media/cache files.")
 
     def handle(self, *args, **options):
         execute = bool(options["execute"] or options["confirm"])
         if execute and options["confirm"] != CONFIRM_TOKEN:
-            raise CommandError(f"Penghapusan nyata ditolak. Token harus persis {CONFIRM_TOKEN}.")
+            raise CommandError(f"Actual deletion denied. Token must be exactly: {CONFIRM_TOKEN}")
 
-        counts_before = self._model_counts(OPERATIONAL_MODELS)
-        retained_counts = self._named_counts(RETAINED_MODELS)
+        # Gather counts
+        operational_counts = self._model_counts(OPERATIONAL_MODELS)
+        protected_counts = self._model_counts(PROTECTED_MODELS)
         file_paths = self._collect_file_paths()
         file_total = self._file_size(file_paths)
 
-        self.stdout.write(self.style.WARNING("Mode: EXECUTE") if execute else self.style.WARNING("Mode: DRY-RUN"))
-        self.stdout.write("Data operasional yang akan dihapus:")
-        self._print_counts(counts_before)
-        self.stdout.write("")
-        self.stdout.write("Urutan penghapusan:")
-        for index, model in enumerate(OPERATIONAL_MODELS, start=1):
-            self.stdout.write(f"{index}. {model._meta.label} ({model._meta.db_table})")
-        self.stdout.write("")
-        self.stdout.write("Master/system yang dipertahankan:")
-        self._print_counts(retained_counts)
-        self.stdout.write(f"File/cache/temp kandidat: {len(file_paths)} file, {file_total} byte")
+        self.stdout.write(self.style.WARNING("\n=== MODE: EXECUTE ===\n") if execute else self.style.WARNING("\n=== MODE: DRY-RUN ===\n"))
 
+        # Split into "to delete" (has records) and "empty" (no records)
+        to_delete = {k: v for k, v in operational_counts.items() if v > 0}
+        empty = {k: v for k, v in operational_counts.items() if v == 0}
+
+        # Print DATA TO DELETE section
+        self.stdout.write(self.style.WARNING("DATA TO DELETE:"))
+        if to_delete:
+            for label, count in sorted(to_delete.items()):
+                self.stdout.write(f"  {label}: {count}")
+        else:
+            self.stdout.write("  (none - database is already empty)")
+        self.stdout.write("")
+
+        # Print EMPTY section
+        self.stdout.write(self.style.WARNING("EMPTY:"))
+        if empty:
+            for label, count in sorted(empty.items()):
+                self.stdout.write(f"  {label}: {count}")
+        else:
+            self.stdout.write("  (none - all tables have data)")
+        self.stdout.write("")
+
+        # Print PROTECTED section
+        self.stdout.write(self.style.WARNING("PROTECTED:"))
+        for label, count in sorted(protected_counts.items()):
+            self.stdout.write(f"  {label}: {count}")
+        self.stdout.write("")
+
+        # Summary
+        total_to_delete = sum(to_delete.values())
+        self.stdout.write(f"Total records to delete: {total_to_delete}")
+        self.stdout.write(f"File candidates for deletion: {len(file_paths)} ({file_total:,} bytes)")
+        self.stdout.write("")
+
+        # Build manifest
         manifest = {
             "timestamp": timezone.localtime().isoformat(),
             "mode": "execute" if execute else "dry-run",
-            "models": counts_before,
-            "retained": retained_counts,
+            "to_delete": to_delete,
+            "empty": empty,
+            "protected": protected_counts,
+            "total_to_delete": total_to_delete,
             "file_count": len(file_paths),
             "file_total_bytes": file_total,
             "files": [str(path) for path in file_paths],
         }
 
         if not execute:
-            self.stdout.write(self.style.SUCCESS("Dry-run selesai. Tidak ada database/file yang dihapus."))
+            self.stdout.write(self.style.SUCCESS("Dry-run complete. No data was deleted."))
+            self._save_manifest(manifest)
             return
 
-        backup_file, manifest_file = self._backup_operational_data(manifest)
+        # Execute deletion
+        self.stdout.write(self.style.WARNING("Starting deletion..."))
+        backup_file = self._backup_operational_data(manifest)
+
         deleted_counts = {}
         with transaction.atomic():
-            for model in OPERATIONAL_MODELS:
-                deleted_counts[model.__name__] = model.objects.count()
-                model.objects.all().delete()
-            self._reset_sequences(OPERATIONAL_MODELS)
+            for label, model in reversed(OPERATIONAL_MODELS):
+                count = model.objects.count()
+                if count > 0:
+                    deleted_counts[label] = count
+                    model.objects.all().delete()
+                    self.stdout.write(f"  Deleted {count} from {label}")
+            self._reset_sequences([m for _, m in OPERATIONAL_MODELS])
 
+        # Delete files if requested
         deleted_files, failed_files = [], []
         if options["include_files"]:
+            self.stdout.write("")
+            self.stdout.write("Deleting files...")
             for path in file_paths:
                 try:
                     if path.exists() and self._is_under_media(path):
                         path.unlink()
                         deleted_files.append(str(path))
+                        self.stdout.write(f"  Deleted file: {path}")
                 except OSError as exc:
                     failed_files.append({"path": str(path), "error": str(exc)})
+                    self.stdout.write(self.style.ERROR(f"  Failed to delete: {path} - {exc}"))
 
+        # Final summary
         counts_after = self._model_counts(OPERATIONAL_MODELS)
+        remaining = sum(counts_after.values())
+
         self.stdout.write("")
-        self.stdout.write("Data setelah reset:")
-        self._print_counts(counts_after)
-        self.stdout.write(f"Record terhapus: {sum(deleted_counts.values())}")
-        self.stdout.write(f"File berhasil dihapus: {len(deleted_files)}")
-        self.stdout.write(f"File gagal dihapus: {len(failed_files)}")
+        self.stdout.write(self.style.SUCCESS("=" * 50))
+        self.stdout.write(self.style.SUCCESS("RESET COMPLETE"))
+        self.stdout.write(self.style.SUCCESS("=" * 50))
+        self.stdout.write(f"Records deleted: {total_to_delete}")
+        self.stdout.write(f"Files deleted: {len(deleted_files)}")
+        self.stdout.write(f"Files failed: {len(failed_files)}")
+        self.stdout.write(f"Remaining operational records: {remaining}")
         self.stdout.write(f"Backup: {backup_file}")
-        self.stdout.write(f"Manifest: {manifest_file}")
-        self.stdout.write(self.style.SUCCESS("Reset operasional selesai."))
+        self.stdout.write(self.style.SUCCESS("All operational data has been reset."))
 
     def _model_counts(self, models):
-        return {model.__name__: model.objects.count() for model in models}
+        """Get counts for models specified as (label, model) tuples.
 
-    def _named_counts(self, named_models):
-        return {name: model.objects.count() for name, model in named_models}
-
-    def _print_counts(self, counts):
-        for name, count in counts.items():
-            self.stdout.write(f"- {name}: {count}")
+        Handles missing tables gracefully by returning 0.
+        """
+        counts = {}
+        for label, model in models:
+            try:
+                counts[label] = model.objects.count()
+            except Exception:
+                # Table doesn't exist yet - treat as empty
+                counts[label] = 0
+        return counts
 
     def _media_root(self):
         return Path(settings.MEDIA_ROOT).resolve()
@@ -182,12 +266,20 @@ class Command(BaseCommand):
         backup_dir = Path(settings.BASE_DIR) / "backups" / "operational_reset"
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_file = backup_dir / f"operational_before_reset_{timestamp}.json"
-        manifest_file = backup_dir / f"operational_before_reset_{timestamp}.manifest.json"
-        labels = [model._meta.label for model in OPERATIONAL_MODELS]
+
+        labels = [model._meta.label for _, model in OPERATIONAL_MODELS]
         with backup_file.open("w", encoding="utf-8") as handle:
             call_command("dumpdata", *labels, indent=2, stdout=handle, verbosity=0)
+
+        return backup_file
+
+    def _save_manifest(self, manifest):
+        """Save manifest file for dry-run."""
+        timestamp = timezone.localtime().strftime("%Y%m%d_%H%M%S")
+        manifest_dir = Path(settings.BASE_DIR) / "backups" / "operational_reset"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file = manifest_dir / f"dry_run_manifest_{timestamp}.json"
         manifest_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        return backup_file, manifest_file
 
     def _reset_sequences(self, models):
         statements = connection.ops.sequence_reset_sql(no_style(), models)
