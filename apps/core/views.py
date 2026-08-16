@@ -1046,29 +1046,9 @@ def build_dashboard_summary_rows(scoped_queryset, tahun, bulan, satker_filter=No
     if tahun:
         fa16_query = fa16_query.filter(tahun=tahun)
 
-    # 1. BUILD ALLOWED SATKER CODES FROM PERMISSION SCOPE
-    allowed_satker_codes = None
-    if user and not can_view_all_satker(user):
-        # Gunakan 6-digit official satker_code untuk filtering
-        official_code = get_user_official_satker_code(user)
-        if official_code:
-            allowed_satker_codes = {official_code}
-            fa16_query = fa16_query.filter(satker_code=official_code)
-        else:
-            # Mapping gagal - user tidak punya akses
-            allowed_satker_codes = set()
-            fa16_query = fa16_query.none()
-
-    fa16_satkers = set(
-        fa16_query.exclude(satker_code="").values_list("satker_code", flat=True).distinct()
-    )
-
-    all_potential_satkers = transaction_satkers | fa16_satkers
-
-    if allowed_satker_codes is not None:
-        display_satkers = sorted(all_potential_satkers & allowed_satker_codes)
-    else:
-        display_satkers = sorted(all_potential_satkers)
+    # Cross-satker reporting - show all satkers regardless of user permission
+    # FA16 and transaction data are visible to all users for dashboard chart
+    display_satkers = sorted(all_potential_satkers)
 
     if not display_satkers:
         return []
