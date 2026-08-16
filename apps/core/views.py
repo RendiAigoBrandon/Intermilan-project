@@ -1046,6 +1046,16 @@ def build_dashboard_summary_rows(scoped_queryset, tahun, bulan, satker_filter=No
     if tahun:
         fa16_query = fa16_query.filter(tahun=tahun)
 
+    # Build satker list for cross-satker reporting (no user permission filtering)
+    fa16_satkers = set(
+        fa16_query
+        .exclude(satker_code="")
+        .values_list("satker_code", flat=True)
+        .distinct()
+    )
+
+    all_potential_satkers = transaction_satkers | fa16_satkers
+
     # Cross-satker reporting - show all satkers regardless of user permission
     # FA16 and transaction data are visible to all users for dashboard chart
     display_satkers = sorted(all_potential_satkers)
