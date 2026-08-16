@@ -2,9 +2,9 @@
 
 {% block content %}
 <section class="grid cards-4">
-  <div class="card metric app-card app-card--compact animate-card"><span>Hasil Filter</span><b>{{ summary.hasil|default:5359 }}</b><small>Transaksi tampil</small></div>
+  <div class="card metric app-card app-card--compact animate-card"><span>Hasil Filter</span><b>{{ summary.hasil|default:0 }}</b><small>Transaksi tampil</small></div>
   <div class="card metric app-card app-card--compact animate-card stagger-1"><span>Lengkap</span><b>{{ summary.lengkap|default:0 }}</b><small>Dokumen wajib lengkap</small></div>
-  <div class="card metric warn app-card app-card--compact animate-card stagger-2"><span>Belum Lengkap</span><b>{{ summary.belum|default:5359 }}</b><small>Masih kurang dokumen</small></div>
+  <div class="card metric warn app-card app-card--compact animate-card stagger-2"><span>Belum Lengkap</span><b>{{ summary.belum|default:0 }}</b><small>Masih kurang dokumen</small></div>
   <div class="card metric ok app-card app-card--compact animate-card stagger-3"><span>Persentase</span><b>{{ summary.persen|default:"0.0%" }}</b><small>Kelengkapan hasil filter</small></div>
 </section>
 
