@@ -12,8 +12,9 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.dateparse import parse_date
 
 from apps.accounts.access import (
-    can_upload_document, filter_by_satker, permission_context, can_import_data,
-    can_view_all_satker, get_user_satker_code, can_edit_satker
+    can_upload_document, filter_by_satker, permission_context, can_upload_sp2d,
+    can_view_all_satker, get_user_satker_code, can_edit_satker, is_admin, is_operator_satker,
+    get_satker_from_code
 )
 from apps.core.parsers import parse_decimal, parse_month, parse_sp2d_excel_file
 from apps.core.satker import infer_satker_from_name, resolve_sp2d_satker
@@ -31,7 +32,7 @@ from .services import classify_sp2d_rows, commit_sp2d_rows, prepare_sp2d_rows
 @login_required
 def sp2d_list(request):
     if request.method == "POST":
-        if not can_import_data(request.user):
+        if not can_upload_sp2d(request.user):
             messages.error(request, "Anda tidak memiliki izin untuk mengimport data SP2D.")
             return redirect("sp2d:list")
             
@@ -164,7 +165,7 @@ def sp2d_preview(request):
         messages.error(request, "Sesi upload tidak ditemukan. Silakan upload ulang.")
         return redirect("sp2d:list")
         
-    if import_data.get('uploaded_by_user_id') != request.user.id or not can_import_data(request.user):
+    if import_data.get('uploaded_by_user_id') != request.user.id or not can_upload_sp2d(request.user):
         messages.error(request, "Anda tidak memiliki izin untuk memproses sesi import ini.")
         return redirect("sp2d:list")
         
@@ -264,6 +265,22 @@ def sp2d_preview(request):
                 resolved_satker_code = resolution.satker_code
                 resolved_satker_name = resolution.satker_name
                 resolved_unit_code = resolution.unit_code
+
+                # 4a. OVERRIDE SATKER CODE UNTUK SATKER
+                # Satker TIDAK BOLEH upload data satker lain
+                # satker_code diambil dari PROFILE USER, bukan dari Excel
+                user_satker_code = get_user_satker_code(request.user)
+                if is_operator_satker(request.user) and user_satker_code:
+                    resolved_satker_code = user_satker_code
+                    # Get unit_code dan nama_satker dari SatkerMaster
+                    satker_data = get_satker_from_code(user_satker_code)
+                    if satker_data:
+                        resolved_unit_code = satker_data.get("unit_code", "")
+                        resolved_satker_name = satker_data.get("nama_satker", "")
+                    else:
+                        # Fallback jika SatkerMaster tidak ditemukan
+                        resolved_unit_code = ""
+                        resolved_satker_name = ""
 
                 # 5. Check permission using resolved 6-digit code
                 if not can_edit_satker(request.user, resolved_satker_code):

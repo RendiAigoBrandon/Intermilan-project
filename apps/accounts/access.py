@@ -87,6 +87,37 @@ def can_import_data(user):
     return is_admin(user)
 
 
+def can_upload_sp2d(user):
+    """
+    Permission upload SP2D:
+    - Admin: boleh upload semua satker
+    - Satker: boleh upload satkernya sendiri
+
+    Note: satker_code diambil dari profile user, bukan dari Excel.
+    """
+    if is_admin(user):
+        return True
+    if is_operator_satker(user):
+        return True
+    return False
+
+
+def get_satker_from_code(satker_code):
+    """
+    Ambil data satker dari 6-digit satker_code.
+    Returns dict dengan unit_code dan nama_satker.
+    """
+    from apps.core.models import SatkerMaster
+    try:
+        satker = SatkerMaster.objects.get(satker_code=satker_code)
+        return {
+            "unit_code": satker.unit_code,
+            "nama_satker": satker.nama_satker,
+        }
+    except SatkerMaster.DoesNotExist:
+        return None
+
+
 def can_export_data(user):
     return is_admin(user) or is_operator_satker(user)
 
@@ -127,5 +158,6 @@ def permission_context(user):
         "can_upload_document": can_upload_document(user),
         "can_access_audit_data": can_access_audit_data(user),
         "can_import_data": can_import_data(user),
+        "can_upload_sp2d": can_upload_sp2d(user),
         "can_export_data": can_export_data(user),
     }
