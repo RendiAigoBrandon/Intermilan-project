@@ -86,13 +86,19 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--dry-run", action="store_true", help="Show plan without deleting. This is the default.")
         parser.add_argument("--execute", action="store_true", help="Actually delete data; requires --confirm.")
+        parser.add_argument("--force", action="store_true", help="Shortcut for --execute --confirm RESET_INTERMILAN")
         parser.add_argument("--confirm", default="", help=f"Confirmation token for actual deletion: {CONFIRM_TOKEN}")
         parser.add_argument("--include-files", action="store_true", help="When executing, also delete related media/cache files.")
 
     def handle(self, *args, **options):
-        execute = bool(options["execute"] or options["confirm"])
-        if execute and options["confirm"] != CONFIRM_TOKEN:
-            raise CommandError(f"Actual deletion denied. Token must be exactly: {CONFIRM_TOKEN}")
+        force = bool(options["force"])
+        execute = bool(options["execute"] or force or options["confirm"])
+        if execute:
+            if force:
+                # --force bypasses token requirement
+                pass
+            elif options["confirm"] != CONFIRM_TOKEN:
+                raise CommandError(f"Actual deletion denied. Token must be exactly: {CONFIRM_TOKEN}")
 
         # Gather counts
         operational_counts = self._model_counts(OPERATIONAL_MODELS)
