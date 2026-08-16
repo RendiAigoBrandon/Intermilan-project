@@ -366,7 +366,8 @@ def monitoring(request):
         ] or ["2026"]
         source_label = "MonitoringSummary"
     else:
-        scoped_transactions = filter_by_satker(TransactionDetail.objects.all(), request.user)
+        # Only show data created by users (exclude legacy data from SQLite import)
+        scoped_transactions = filter_by_satker(TransactionDetail.objects.filter(created_by__isnull=False), request.user)
         queryset = scoped_transactions
         if filters["satker"]:
             queryset = queryset.filter(satker_code=filters["satker"])
