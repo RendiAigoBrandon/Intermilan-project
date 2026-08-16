@@ -194,11 +194,18 @@ class Command(BaseCommand):
                 if sync_passwords:
                     # Sync password from Environment Variable
                     existing_user.set_password(user_data["password"])
+                    existing_user.save()
                     password_synced_users.append(username)
                     password_synced_count += 1
                     if not dry_run:
+                        # Verify password was set correctly
+                        existing_user.refresh_from_db()
+                        password_ok = existing_user.check_password(user_data["password"])
                         self.stdout.write(
                             self.style.SUCCESS(f"  [PASSWORD SYNCED] {username}")
+                        )
+                        self.stdout.write(
+                            f"  [VERIFY] {username} active={existing_user.is_active} password_ok={password_ok}"
                         )
 
                 # Update profile
