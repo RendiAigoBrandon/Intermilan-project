@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.db import transaction, IntegrityError
 from django.db.models import Sum
 
-from apps.core.satker import resolve_sp2d_satker, normalize_satker_code
+from apps.core.satker import resolve_sp2d_satker, normalize_satker_code, get_official_satker_code
 
 from apps.sp2d.models import SP2DRaw, SP2DImportBatch
 from apps.dk.models import TransactionDetail, TransactionChangeLog
@@ -436,12 +436,25 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
         else:
             try:
                 with transaction.atomic():
+                    # Normalize satker_code to 6-digit official code
+                    raw_satker_code = row.get("satker_code", "")
+                    satker_code = get_official_satker_code(raw_satker_code)
+                    if not satker_code:
+                        # No fallback - reject invalid codes
+                        logger.error(
+                            "SP2D rejected: invalid satker_code=%s for no_sp2d=%s",
+                            raw_satker_code,
+                            row.get("no_sp2d", ""),
+                        )
+                        failed_count += 1
+                        continue
+
                     record = SP2DRaw(
                         import_batch=batch,
                         last_import_batch=batch,
                         tahun=row["batch_tahun"],
                         identity_key=key,
-                        satker_code=row.get("satker_code", ""),
+                        satker_code=satker_code,  # 6-digit official code
                         satker_name=row.get("satker_name", ""),
                         no_sp2d=row.get("no_sp2d", ""),
                         tanggal_selesai_sp2d=row.get("tanggal_selesai_sp2d"),

@@ -12,6 +12,7 @@ from apps.core.drpp_batch_parser import (
     evaluate_kkp_group_commitability,
 )
 from apps.core.parsers import classify_document, extract_pdf_text, guess_number_from_filename, parse_spm_number_from_pages
+from apps.core.satker import get_official_satker_code
 from apps.dk.services import refresh_transaction_document_status
 from apps.dk.models import TransactionDetail
 from apps.documents.models import DocumentDriveLink
@@ -1207,8 +1208,12 @@ def transaction_identity(row):
 
 
 def transaction_from_values(values, defaults, user=None, sp2d_raw=None, document_status=STATUS_LENGKAP):
+    # Normalize satker_code to 6-digit official code
+    raw_satker_code = defaults.get("satker_code", "")
+    satker_code = get_official_satker_code(raw_satker_code) or raw_satker_code
+
     return TransactionDetail(
-        satker_code=defaults["satker_code"],
+        satker_code=satker_code,
         sp2d_raw=sp2d_raw,
         akun=clean_optional(values.get("akun"))[:32],
         kategori="",
@@ -1382,7 +1387,9 @@ def build_transaction_rows_from_package(parsed, paket, user=None, sp2d_raw=None,
     if spm_table_parser_needs_review(parsed):
         raise ValueError("Parser tabel v2 belum valid; fallback legacy tidak dipakai untuk membuat D_K.")
 
-    satker_code = meta["satker_code"] or paket.satker_code
+    # Normalize to 6-digit official satker_code
+    raw_satker_code = meta["satker_code"] or paket.satker_code
+    satker_code = get_official_satker_code(raw_satker_code) or raw_satker_code
     nomor_spm = meta["nomor_spm"] or paket.nomor_spm
     tanggal_spm = meta.get("tanggal_spm") or paket.tanggal_spm
 

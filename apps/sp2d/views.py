@@ -17,7 +17,7 @@ from apps.accounts.access import (
     get_satker_from_code
 )
 from apps.core.parsers import parse_decimal, parse_month, parse_sp2d_excel_file
-from apps.core.satker import infer_satker_from_name, resolve_sp2d_satker
+from apps.core.satker import get_official_satker_code, infer_satker_from_name, resolve_sp2d_satker
 from apps.core.views import CHECKLIST_ROWS, MONTH_OPTIONS, build_pagination_window, normalize_page_size
 from apps.documents.models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink
 from apps.documents.services.google_drive import archive_file_link
@@ -269,11 +269,17 @@ def sp2d_preview(request):
                 # 4a. OVERRIDE SATKER CODE UNTUK SATKER
                 # Satker TIDAK BOLEH upload data satker lain
                 # satker_code diambil dari PROFILE USER, bukan dari Excel
+                # MUST convert 4-digit unit_code to 6-digit official satker_code
                 user_satker_code = get_user_satker_code(request.user)
                 if is_operator_satker(request.user) and user_satker_code:
-                    resolved_satker_code = user_satker_code
+                    # Convert 4-digit to 6-digit official code
+                    official_code = get_official_satker_code(user_satker_code)
+                    if not official_code:
+                        errors.append(f"Baris {i+1}: Satker {user_satker_code} tidak ditemukan di master satker. Hubungi admin.")
+                        continue
+                    resolved_satker_code = official_code
                     # Get unit_code dan nama_satker dari SatkerMaster
-                    satker_data = get_satker_from_code(user_satker_code)
+                    satker_data = get_satker_from_code(official_code)
                     if satker_data:
                         resolved_unit_code = satker_data.get("unit_code", "")
                         resolved_satker_name = satker_data.get("nama_satker", "")

@@ -11,6 +11,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.core.parsers import normalized_bukti_key, parse_date, parse_paket_spm_zip
+from apps.core.satker import get_official_satker_code
 from apps.dk.models import MasterAkun, TransactionChangeLog, TransactionDetail
 from apps.documents.models import DocumentUpload
 
@@ -515,8 +516,12 @@ def reconcile_drpp_item_to_dk(drpp_item, row, user):
         else:
             outcome = "skipped"
     else:
+        # Normalize satker_code to 6-digit official code
+        raw_satker_code = row.get("satker_code", "")
+        satker_code = get_official_satker_code(raw_satker_code) or raw_satker_code
+
         dk = TransactionDetail.objects.create(
-            satker_code=row["satker_code"],
+            satker_code=satker_code,
             no_kuitansi=row["no_kuitansi"],
             no_drpp=row.get("nomor_drpp", ""),
             akun=row["akun"],
