@@ -1,0 +1,98 @@
+{% extends 'base.html' %}
+
+{% block title %}Maintenance - Clean Test Data{% endblock %}
+
+{% block content %}
+<div class="container mt-5 mb-5">
+    <h2><i class="fas fa-exclamation-triangle text-danger"></i> Maintenance: Clean Production Test Data</h2>
+    <p class="text-muted">Hanya dapat diakses oleh Superuser/Admin.</p>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-{{ message.tags }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    {% if status == 'CLEAN SUCCESS' %}
+        <div class="alert alert-success mt-4">
+            <h4><i class="fas fa-check-circle"></i> CLEAN SUCCESS</h4>
+            <p>Database transaksi telah berhasil dibersihkan dan siap menerima data asli.</p>
+            <hr>
+            <h5>Jumlah Record (Sesudah Dihapus)</h5>
+            <ul class="list-group mb-3">
+                {% for model, count in counts_after.items %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        {{ model }}
+                        <span class="badge bg-success rounded-pill">{{ count }}</span>
+                    </li>
+                {% endfor %}
+            </ul>
+            <p><strong>Total Sisa Data Transaksi: {{ total_after }}</strong></p>
+        </div>
+    {% endif %}
+
+    <div class="card mt-4">
+        <div class="card-header bg-warning text-dark">
+            <strong>Preview Data Transaksi (Sebelum Dihapus)</strong>
+        </div>
+        <div class="card-body">
+            <div class="alert alert-info">
+                <strong>Catatan Aman:</strong> Master data (User, Profile, SatkerMaster, MasterAkun, dll) dijamin <strong>TIDAK AKAN DISENTUH</strong>. Operasi ini murni membersihkan tabel-tabel transaksi saja.
+            </div>
+
+            <ul class="list-group mb-4">
+                {% for model, count in counts_before.items %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        {{ model }}
+                        <span class="badge bg-primary rounded-pill">{{ count }}</span>
+                    </li>
+                {% endfor %}
+            </ul>
+            <p><strong>Total Data Transaksi Tersisa: {{ total_before }}</strong></p>
+
+            {% if total_before > 0 %}
+                <hr>
+                <h5 class="mt-4">Sample Data yang Akan Dihapus</h5>
+                <div class="row">
+                    {% for model, records in previews.items %}
+                        {% if records %}
+                            <div class="col-md-6 mb-3">
+                                <div class="card">
+                                    <div class="card-header bg-secondary text-white">
+                                        {{ model }}
+                                    </div>
+                                    <ul class="list-group list-group-flush">
+                                        {% for rec in records %}
+                                            <li class="list-group-item" style="font-size: 0.9em;">
+                                                ID: {{ rec.id }} | Satker: {{ rec.satker }}
+                                            </li>
+                                        {% endfor %}
+                                    </ul>
+                                </div>
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+
+                <div class="alert alert-danger mt-4">
+                    <form method="POST">
+                        {% csrf_token %}
+                        <div class="mb-3">
+                            <label class="form-label text-danger"><strong>Konfirmasi Penghapusan (DANGER ZONE)</strong></label>
+                            <p class="mb-2">Ketik <code>LANJUT</code> pada kolom di bawah ini untuk menghapus seluruh {{ total_before }} data transaksi secara permanen.</p>
+                            <input type="text" class="form-control" name="confirmation" placeholder="Ketik LANJUT di sini..." required>
+                        </div>
+                        <button type="submit" class="btn btn-danger"><i class="fas fa-trash-alt"></i> Hapus Data Transaksi Sekarang</button>
+                    </form>
+                </div>
+            {% else %}
+                <div class="alert alert-success mt-4">
+                    <strong>TIDAK ADA DATA!</strong> Database transaksi sudah kosong.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

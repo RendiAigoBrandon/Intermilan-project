@@ -1,8 +1,9 @@
-﻿from django.conf import settings
+from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from apps.documents.views import checklist_list
+from apps.core.views_maintenance import clean_test_data_view
 
 
 urlpatterns = [
@@ -16,6 +17,7 @@ urlpatterns = [
     path("drpp/", include("apps.drpp.urls")),
     path("paket-spm/", include("apps.paket_spm.urls")),
     path("reports/", include("apps.reports.urls")),
+    path("maintenance/clean-test-data/", clean_test_data_view, name="clean_test_data"),
 ]
 
 handler403 = "apps.core.views.error_403"
