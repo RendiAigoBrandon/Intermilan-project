@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+import datetime
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.conf import settings
@@ -125,6 +127,40 @@ class Command(BaseCommand):
             return
 
         self.stdout.write(self.style.WARNING("\n[!] PROSES PENGHAPUSAN DIMULAI [!]"))
+        
+        # Ekspor metadata sebelum dihapus
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_filename = f"cleaning_report_{timestamp_str}.json"
+        
+        self.stdout.write(f"Menyimpan audit trail ke {report_filename}...")
+        
+        audit_trail = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "database_host": db_host,
+            "database_name": db_name,
+            "deleted_records": {}
+        }
+        
+        def extract_meta(qs):
+            return [{"id": obj.id, "satker_code": getattr(obj, 'satker_code', 'N/A')} for obj in qs]
+            
+        audit_trail["deleted_records"]["TransactionDetail"] = extract_meta(TransactionDetail.objects.all())
+        audit_trail["deleted_records"]["TransactionPackage"] = extract_meta(TransactionPackage.objects.all())
+        if ActiveParentSession:
+            audit_trail["deleted_records"]["ActiveParentSession"] = extract_meta(ActiveParentSession.objects.all())
+        audit_trail["deleted_records"]["SP2DRaw"] = extract_meta(SP2DRaw.objects.all())
+        audit_trail["deleted_records"]["DRPPUpload"] = extract_meta(DRPPUpload.objects.all())
+        audit_trail["deleted_records"]["PaketSPMUpload"] = extract_meta(PaketSPMUpload.objects.all())
+        audit_trail["deleted_records"]["DocumentUpload"] = extract_meta(DocumentUpload.objects.all())
+        
+        try:
+            with open(report_filename, 'w') as f:
+                json.dump(audit_trail, f, indent=2)
+            self.stdout.write(self.style.SUCCESS(f"[OK] Audit trail berhasil disimpan di {report_filename}"))
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f"[ERROR] Gagal menyimpan audit trail: {e}"))
+            self.stdout.write("Membatalkan proses agar aman.")
+            return
 
         try:
             with transaction.atomic():
