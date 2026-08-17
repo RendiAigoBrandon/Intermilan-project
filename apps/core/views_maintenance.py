@@ -2,6 +2,12 @@ from django.shortcuts import render
 from django.contrib.auth.decorators import user_passes_test
 from django.db import transaction
 from django.contrib import messages
+import logging
+import os
+from django.conf import settings
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 from apps.sp2d.models import SP2DRaw
 from apps.dk.models import TransactionDetail
@@ -66,6 +72,22 @@ def clean_test_data_view(request):
     if request.method == 'POST':
         confirmation = request.POST.get('confirmation', '')
         if confirmation == 'LANJUT':
+            db_url = os.environ.get("DATABASE_URL")
+            db_host = "Unknown"
+            db_name = "Unknown"
+            if db_url:
+                parsed = urlparse(db_url)
+                db_host = parsed.hostname
+                db_name = parsed.path.lstrip("/")
+            else:
+                db_host = settings.DATABASES['default'].get('HOST', 'Unknown')
+                db_name = settings.DATABASES['default'].get('NAME', 'Unknown')
+                
+            logger.warning("=== EXECUTING PRODUCTION CLEANUP ===")
+            logger.warning(f"DATABASE HOST: {db_host}")
+            logger.warning(f"DATABASE NAME: {db_name}")
+            logger.warning(f"Total data before delete: {total_before}")
+            
             try:
                 with transaction.atomic():
                     TransactionDetail.objects.all().delete()
