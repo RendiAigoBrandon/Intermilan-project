@@ -13,7 +13,7 @@ from django.utils.dateparse import parse_date
 
 from apps.accounts.access import (
     can_upload_document, filter_by_satker, permission_context, can_upload_sp2d,
-    can_view_all_satker, get_user_satker_code, can_edit_satker, is_admin, is_operator_satker,
+    can_view_all_satker, get_user_satker_code, get_user_official_satker_code, can_edit_satker, is_admin, is_operator_satker,
     get_satker_from_code
 )
 from apps.core.parsers import parse_decimal, parse_month, parse_sp2d_excel_file
@@ -282,9 +282,11 @@ def sp2d_preview(request):
                         resolved_unit_code = ""
                         resolved_satker_name = ""
 
-                # 5. Check permission using resolved 6-digit code
-                if not can_edit_satker(request.user, resolved_satker_code):
-                    errors.append(f"Baris {i+1}: Anda tidak memiliki akses ke satker {resolved_satker_code}")
+                # 5. Check permission using official 6-digit code
+                # can_edit_satker expects 6-digit official code for comparison
+                official_satker_code = get_user_official_satker_code(request.user)
+                if not can_edit_satker(request.user, official_satker_code):
+                    errors.append(f"Baris {i+1}: Anda tidak memiliki akses ke satker {official_satker_code}")
 
                 row = {
                     "satker_code": resolved_satker_code,
