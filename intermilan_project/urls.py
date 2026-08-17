@@ -4,6 +4,7 @@ from django.contrib import admin
 from django.urls import include, path
 from apps.documents.views import checklist_list
 from apps.core.views_maintenance import clean_test_data_view
+from apps.core.views_diagnostic import diagnostic_audit_view
 
 
 urlpatterns = [
@@ -18,6 +19,7 @@ urlpatterns = [
     path("paket-spm/", include("apps.paket_spm.urls")),
     path("reports/", include("apps.reports.urls")),
     path("maintenance/clean-test-data/", clean_test_data_view, name="clean_test_data"),
+    path("diagnostic-audit/", diagnostic_audit_view, name="diagnostic_audit"),
 ]
 
 handler403 = "apps.core.views.error_403"
