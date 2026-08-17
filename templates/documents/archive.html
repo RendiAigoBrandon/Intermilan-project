@@ -10,6 +10,7 @@
             <label for="archive-q">Cari</label>
             <input id="archive-q" name="q" value="{{ filters.q }}" placeholder="Nomor SPM, kuitansi, DRPP, atau nama file">
           </div>
+          {% if satker_options %}
           <div class="filter-field">
             <label for="archive-satker">Satker</label>
             <select id="archive-satker" name="satker">
@@ -17,6 +18,7 @@
               {% for code in satker_options %}<option value="{{ code }}" {% if filters.satker == code %}selected{% endif %}>{{ code }}</option>{% endfor %}
             </select>
           </div>
+          {% endif %}
           <div class="filter-field">
             <label for="archive-status">Status</label>
             <select id="archive-status" name="status">
@@ -86,7 +88,7 @@
           <td><span class="badge {% if link.archive_status == 'AKTIF' %}green{% elif link.archive_status == 'PERLU_DICEK' %}orange{% endif %}">{{ link.archive_status }}</span></td>
         </tr>
         {% empty %}
-        <tr><td colspan="10" class="empty">Belum ada data arsip yang sesuai. Impor data UPLOAD KK_1300 atau ubah filter pencarian.</td></tr>
+        <tr><td colspan="10" class="empty">Belum ada data arsip yang sesuai. Silakan upload dokumen pendukung atau ubah filter pencarian.</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -521,7 +521,7 @@ def archive(request):
     context.update(
         {
             "page_title": "Arsip",
-            "page_subtitle": "Daftar tautan arsip Google Drive dari data UPLOAD KK_1300.",
+            "page_subtitle": "Daftar tautan arsip Google Drive seluruh satker.",
             "drive_links": page_obj,
             "page_obj": page_obj,
             "paginator": paginator,
