@@ -13,7 +13,7 @@ from apps.dk.models import TransactionDetail
 from apps.drpp.models import DRPPUpload
 from apps.paket_spm.models import PaketSPMUpload
 from apps.core.models import TransactionPackage
-from apps.documents.models import DocumentUpload
+from apps.documents.models import DocumentUpload, DocumentDriveLink
 
 try:
     from apps.core.models import ActiveParentSession
@@ -38,6 +38,7 @@ class Command(BaseCommand):
             "PaketSPMUpload": PaketSPMUpload.objects.count(),
             "TransactionPackage": TransactionPackage.objects.count(),
             "DocumentUpload": DocumentUpload.objects.count(),
+            "DocumentDriveLink": DocumentDriveLink.objects.count(),
         }
         if ActiveParentSession:
             counts["ActiveParentSession"] = ActiveParentSession.objects.count()
@@ -152,6 +153,7 @@ class Command(BaseCommand):
         audit_trail["deleted_records"]["DRPPUpload"] = extract_meta(DRPPUpload.objects.all())
         audit_trail["deleted_records"]["PaketSPMUpload"] = extract_meta(PaketSPMUpload.objects.all())
         audit_trail["deleted_records"]["DocumentUpload"] = extract_meta(DocumentUpload.objects.all())
+        audit_trail["deleted_records"]["DocumentDriveLink"] = extract_meta(DocumentDriveLink.objects.all())
         
         try:
             with open(report_filename, 'w') as f:
@@ -173,6 +175,7 @@ class Command(BaseCommand):
                 DRPPUpload.objects.all().delete()
                 PaketSPMUpload.objects.all().delete()
                 DocumentUpload.objects.all().delete()
+                DocumentDriveLink.objects.all().delete()
                 
             self.stdout.write(self.style.SUCCESS("\n[SUCCESS] Penghapusan data transaksi berhasil dilakukan!"))
         except Exception as e:

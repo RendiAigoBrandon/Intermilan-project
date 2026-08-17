@@ -14,7 +14,7 @@ from apps.dk.models import TransactionDetail
 from apps.drpp.models import DRPPUpload
 from apps.paket_spm.models import PaketSPMUpload
 from apps.core.models import TransactionPackage
-from apps.documents.models import DocumentUpload
+from apps.documents.models import DocumentUpload, DocumentDriveLink
 
 try:
     from apps.core.models import ActiveParentSession
@@ -32,6 +32,7 @@ def get_counts():
         "PaketSPMUpload": PaketSPMUpload.objects.count(),
         "TransactionPackage": TransactionPackage.objects.count(),
         "DocumentUpload": DocumentUpload.objects.count(),
+        "DocumentDriveLink": DocumentDriveLink.objects.count(),
     }
     if ActiveParentSession:
         counts["ActiveParentSession"] = ActiveParentSession.objects.count()
@@ -46,6 +47,7 @@ def get_previews():
     previews['PaketSPMUpload'] = [{"id": s.id, "satker": getattr(s, 'satker_code', 'N/A')} for s in PaketSPMUpload.objects.all()[:5]]
     previews['TransactionPackage'] = [{"id": s.id, "satker": getattr(s, 'satker_code', 'N/A')} for s in TransactionPackage.objects.all()[:5]]
     previews['DocumentUpload'] = [{"id": s.id, "satker": getattr(s, 'satker_code', 'N/A')} for s in DocumentUpload.objects.all()[:5]]
+    previews['DocumentDriveLink'] = [{"id": s.id, "satker": getattr(s, 'satker_code', 'N/A')} for s in DocumentDriveLink.objects.all()[:5]]
     
     if ActiveParentSession:
         previews['ActiveParentSession'] = [{"id": s.id, "satker": "N/A"} for s in ActiveParentSession.objects.all()[:5]]
@@ -98,6 +100,7 @@ def clean_test_data_view(request):
                     DRPPUpload.objects.all().delete()
                     PaketSPMUpload.objects.all().delete()
                     DocumentUpload.objects.all().delete()
+                    DocumentDriveLink.objects.all().delete()
                 
                 context['status'] = 'CLEAN SUCCESS'
                 messages.success(request, "Penghapusan data transaksi berhasil dilakukan!")
