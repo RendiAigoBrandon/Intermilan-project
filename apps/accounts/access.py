@@ -150,12 +150,26 @@ def can_upload_sp2d(user):
 
 def get_satker_from_code(satker_code):
     """
-    Ambil data satker dari 6-digit satker_code.
+    Ambil data satker dari satker_code (6-digit) atau unit_code (4-digit).
     Returns dict dengan unit_code dan nama_satker.
+
+    Lookup order:
+    1. SatkerMaster.satker_code (6-digit official)
+    2. SatkerMaster.unit_code (4-digit legacy)
     """
     from apps.core.models import SatkerMaster
     try:
         satker = SatkerMaster.objects.get(satker_code=satker_code)
+        return {
+            "unit_code": satker.unit_code,
+            "nama_satker": satker.nama_satker,
+        }
+    except SatkerMaster.DoesNotExist:
+        pass
+
+    # Try lookup by unit_code (4-digit)
+    try:
+        satker = SatkerMaster.objects.get(unit_code=satker_code)
         return {
             "unit_code": satker.unit_code,
             "nama_satker": satker.nama_satker,

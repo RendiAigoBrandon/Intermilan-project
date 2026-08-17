@@ -78,69 +78,76 @@ def normalize_satker_code(value):
 
 
 def fallback_satker_name(code):
-    return SATKER_NAME_FALLBACKS.get(normalize_satker_code(code), "")
+    # Convert 6-digit to 4-digit for fallback lookup
+    normalized = normalize_satker_code(code)
+    # Try 4-digit first (direct match in SATKER_NAME_FALLBACKS)
+    if normalized in SATKER_NAME_FALLBACKS:
+        return SATKER_NAME_FALLBACKS[normalized]
+    # Try converting 6-digit to 4-digit
+    unit_code = get_unit_code_from_satker(normalized)
+    if unit_code and unit_code in SATKER_NAME_FALLBACKS:
+        return SATKER_NAME_FALLBACKS[unit_code]
+    return ""
 
 
 def get_satker_name_map(codes=None):
     from apps.accounts.models import Profile
-    from apps.core.models import MonitoringSummary
+    from apps.core.models import MonitoringSummary, SatkerMaster
     from apps.sp2d.models import SP2DRaw
 
     if codes is None:
-        normalized_codes = set(SATKER_NAME_FALLBACKS)
-        normalized_codes.update(
+        # Collect all codes from tables
+        all_codes = set()
+        all_codes.update(
             normalize_satker_code(code)
             for code in SP2DRaw.objects.exclude(satker_code="").values_list("satker_code", flat=True)
         )
-        normalized_codes.update(
+        all_codes.update(
             normalize_satker_code(code)
             for code in Profile.objects.exclude(satker_code="").values_list("satker_code", flat=True)
         )
-        normalized_codes.update(
+        all_codes.update(
             normalize_satker_code(code)
             for code in MonitoringSummary.objects.exclude(satker_code="").values_list("satker_code", flat=True)
         )
+        # Convert 6-digit codes to 4-digit for SATKER_NAME_FALLBACKS lookup
+        normalized_codes = set()
+        for code in all_codes:
+            # Try direct match first
+            if code in SATKER_NAME_FALLBACKS:
+                normalized_codes.add(code)
+            else:
+                # Convert 6-digit to 4-digit
+                unit_code = get_unit_code_from_satker(code)
+                if unit_code:
+                    normalized_codes.add(unit_code)
+                else:
+                    normalized_codes.add(code)  # Keep unknown codes
     else:
-        normalized_codes = {normalize_satker_code(code) for code in codes if normalize_satker_code(code)}
+        normalized_codes = set()
+        for code in codes:
+            normalized = normalize_satker_code(code)
+            if normalized in SATKER_NAME_FALLBACKS:
+                normalized_codes.add(normalized)
+            else:
+                unit_code = get_unit_code_from_satker(normalized)
+                if unit_code:
+                    normalized_codes.add(unit_code)
+                else:
+                    normalized_codes.add(normalized)
 
+    # Build names dict with 4-digit keys
     names = {
         code: SATKER_NAME_FALLBACKS[code]
         for code in sorted(normalized_codes)
         if code in SATKER_NAME_FALLBACKS
     }
 
-    for item in (
-        SP2DRaw.objects.filter(satker_code__in=normalized_codes)
-        .exclude(satker_name="")
-        .values("satker_code", "satker_name")
-        .distinct()
-        .order_by("satker_code", "satker_name")
-    ):
-        code = normalize_satker_code(item["satker_code"])
-        name = normalize_satker_name(item["satker_name"])
-        if code and code not in SATKER_NAME_FALLBACKS and is_better_satker_name(code, name, names.get(code, "")):
-            names[code] = name
-
-    for item in (
-        Profile.objects.filter(satker_code__in=normalized_codes)
-        .exclude(satker_name="")
-        .values("satker_code", "satker_name")
-        .distinct()
-    ):
-        code = normalize_satker_code(item["satker_code"])
-        name = normalize_satker_name(item["satker_name"])
-        if code and code not in SATKER_NAME_FALLBACKS and is_better_satker_name(code, name, names.get(code, "")):
-            names[code] = name
-
-    for item in (
-        MonitoringSummary.objects.filter(satker_code__in=normalized_codes)
-        .exclude(satker_label="")
-        .values("satker_code", "satker_label")
-        .distinct()
-    ):
-        code = normalize_satker_code(item["satker_code"])
-        name = normalize_satker_name(item["satker_label"])
-        if code and code not in SATKER_NAME_FALLBACKS and is_better_satker_name(code, name, names.get(code, "")):
+    # Query SatkerMaster for additional names (6-digit codes in DB)
+    for satker in SatkerMaster.objects.all():
+        code = satker.satker_code  # 6-digit
+        name = satker.nama_satker
+        if code and name:
             names[code] = name
 
     return names
