@@ -71,3 +71,4 @@ test_spm_pdf.py
 test_upload.py
 document-graph.patch
 *.patch
+cleaning_report_*.json
