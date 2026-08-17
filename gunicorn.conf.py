@@ -34,11 +34,10 @@ def on_starting(server):
         django_settings = os.environ.get("DJANGO_SETTINGS_MODULE", "Unknown")
 
         print("\n" + "="*50)
-        print("DATABASE HOST: " + str(db_host))
-        print("DATABASE NAME: " + str(db_name))
-        print("DJANGO SETTINGS: " + str(django_settings))
-        print("\nTRANSACTION COUNTS:")
-
+        print("[AUDIT] DATABASE HOST: " + str(db_host))
+        print("[AUDIT] DATABASE NAME: " + str(db_name))
+        print("[AUDIT] DJANGO SETTINGS: " + str(django_settings))
+        
         # Initialize Django to run ORM
         os.environ.setdefault("DJANGO_SETTINGS_MODULE", "intermilan_project.settings.production")
         import django
@@ -68,33 +67,33 @@ def on_starting(server):
             counts["ActiveParentSession"] = ActiveParentSession.objects.count()
 
         for model_name, count in counts.items():
-            print(f"{model_name} = {count}")
+            print(f"[AUDIT] {model_name} count: {count}")
 
-        print("")
         total = sum(counts.values())
         if total == 0:
-            print("PRODUCTION DATABASE CLEAN")
+            print("[AUDIT] PRODUCTION DATABASE CLEAN")
         else:
-            # Jika ada data tampilkan id dan satker saja untuk menghindari log sensitif
             if counts["SP2DRaw"] > 0:
                 for s in SP2DRaw.objects.all()[:5]:
-                    print(f"- model: SP2DRaw | id: {s.id} | satker_code: {getattr(s, 'satker_code', 'N/A')}")
+                    print(f"[AUDIT] model: SP2DRaw | id: {s.id} | satker_code: {getattr(s, 'satker_code', 'N/A')}")
             if counts["TransactionDetail"] > 0:
                 for td in TransactionDetail.objects.all()[:5]:
-                    print(f"- model: TransactionDetail | id: {td.id} | satker_code: {getattr(td, 'satker_code', 'N/A')}")
+                    print(f"[AUDIT] model: TransactionDetail | id: {td.id} | satker_code: {getattr(td, 'satker_code', 'N/A')}")
             if counts["TransactionPackage"] > 0:
                 for tp in TransactionPackage.objects.all()[:5]:
-                    print(f"- model: TransactionPackage | id: {tp.id} | satker_code: {getattr(tp, 'satker_code', 'N/A')}")
+                    print(f"[AUDIT] model: TransactionPackage | id: {tp.id} | satker_code: {getattr(tp, 'satker_code', 'N/A')}")
             if counts["DRPPUpload"] > 0:
                 for d in DRPPUpload.objects.all()[:5]:
-                    print(f"- model: DRPPUpload | id: {d.id} | satker_code: {getattr(d, 'satker_code', 'N/A')}")
+                    print(f"[AUDIT] model: DRPPUpload | id: {d.id} | satker_code: {getattr(d, 'satker_code', 'N/A')}")
             if counts["PaketSPMUpload"] > 0:
                 for p in PaketSPMUpload.objects.all()[:5]:
-                    print(f"- model: PaketSPMUpload | id: {p.id} | satker_code: {getattr(p, 'satker_code', 'N/A')}")
+                    print(f"[AUDIT] model: PaketSPMUpload | id: {p.id} | satker_code: {getattr(p, 'satker_code', 'N/A')}")
             if counts["DocumentUpload"] > 0:
                 for doc in DocumentUpload.objects.all()[:5]:
-                    print(f"- model: DocumentUpload | id: {doc.id} | satker_code: {getattr(doc, 'satker_code', 'N/A')}")
+                    print(f"[AUDIT] model: DocumentUpload | id: {doc.id} | satker_code: {getattr(doc, 'satker_code', 'N/A')}")
 
         print("="*50 + "\n")
+        sys.stdout.flush()
     except Exception as e:
         print(f"\n[AUDIT ERROR] Gagal menjalankan audit hook: {e}\n")
+        sys.stdout.flush()
