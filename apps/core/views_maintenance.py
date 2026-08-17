@@ -15,14 +15,12 @@ from apps.drpp.models import DRPPUpload
 from apps.paket_spm.models import PaketSPMUpload
 from apps.core.models import TransactionPackage
 from apps.documents.models import DocumentUpload, DocumentDriveLink
+from apps.accounts.access import is_admin
 
 try:
     from apps.core.models import ActiveParentSession
 except ImportError:
     ActiveParentSession = None
-
-def is_superuser(user):
-    return user.is_authenticated and user.is_superuser
 
 def get_counts():
     counts = {
@@ -56,7 +54,7 @@ def get_previews():
         
     return previews
 
-@user_passes_test(is_superuser, login_url='/admin/login/')
+@user_passes_test(is_admin, login_url='/accounts/login/')
 def clean_test_data_view(request):
     counts_before = get_counts()
     total_before = sum(counts_before.values())
