@@ -7,7 +7,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -18,7 +20,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -29,7 +33,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -40,7 +46,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -51,7 +59,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -62,7 +72,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -73,7 +85,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -84,7 +98,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -95,7 +111,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -106,7 +124,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -117,7 +137,9 @@
       "nama_akun": "-",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -128,7 +150,9 @@
       "nama_akun": "Belanja Pegawai",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -139,7 +163,9 @@
       "nama_akun": "Belanja Pegawai",
       "kategori": "Belanja Pegawai",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -150,7 +176,9 @@
       "nama_akun": "Belanja Keperluan Perkantoran",
       "kategori": "Belanja Barang",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -161,7 +189,9 @@
       "nama_akun": "Belanja Honor Operasional",
       "kategori": "Belanja Barang",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -172,7 +202,9 @@
       "nama_akun": "Belanja Barang Operasional",
       "kategori": "Belanja Barang",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -183,7 +215,9 @@
       "nama_akun": "Belanja Bahan",
       "kategori": "Belanja Barang",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -194,7 +228,9 @@
       "nama_akun": "Honor",
       "kategori": "Belanja Barang",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -205,7 +241,9 @@
       "nama_akun": "Belanja Non Operasional/Jasa terkait",
       "kategori": "Belanja Barang",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -216,7 +254,9 @@
       "nama_akun": "Belanja Peralatan dan Mesin",
       "kategori": "Belanja Barang",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -227,7 +267,9 @@
       "nama_akun": "Persediaan",
       "kategori": "Belanja Barang",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -238,7 +280,9 @@
       "nama_akun": "Belanja Langganan Listrik",
       "kategori": "Belanja Jasa",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -249,7 +293,9 @@
       "nama_akun": "Belanja Langganan Telepon",
       "kategori": "Belanja Jasa",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -260,7 +306,9 @@
       "nama_akun": "Belanja Langganan Air",
       "kategori": "Belanja Jasa",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -271,7 +319,9 @@
       "nama_akun": "Belanja Langganan Daya/Jasa Lainnya",
       "kategori": "Belanja Jasa",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -282,7 +332,9 @@
       "nama_akun": "Sewa",
       "kategori": "Belanja Jasa",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -293,7 +345,9 @@
       "nama_akun": "Jasa Profesi",
       "kategori": "Belanja Jasa",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -304,7 +358,9 @@
       "nama_akun": "Jasa Lainnya",
       "kategori": "Belanja Jasa",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -315,7 +371,9 @@
       "nama_akun": "Pemeliharaan Gedung",
       "kategori": "Belanja Pemeliharaan",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -326,7 +384,9 @@
       "nama_akun": "Pemeliharaan Gedung/Jaringan",
       "kategori": "Belanja Pemeliharaan",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -337,7 +397,9 @@
       "nama_akun": "Pemeliharaan Peralatan",
       "kategori": "Belanja Pemeliharaan",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -348,7 +410,9 @@
       "nama_akun": "Barang Persediaan Pemeliharaan",
       "kategori": "Belanja Pemeliharaan",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -359,7 +423,9 @@
       "nama_akun": "Perjalanan Dinas Biasa",
       "kategori": "Perjalanan Dinas",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -370,7 +436,9 @@
       "nama_akun": "Perjalanan Dinas Dalam Kota",
       "kategori": "Perjalanan Dinas",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -381,7 +449,9 @@
       "nama_akun": "Perjalanan Dinas Paket Meeting",
       "kategori": "Perjalanan Dinas",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -392,7 +462,9 @@
       "nama_akun": "Perjalanan Dinas Luar Kota",
       "kategori": "Perjalanan Dinas",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -403,7 +475,9 @@
       "nama_akun": "Belanja Modal Peralatan",
       "kategori": "Belanja Modal",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -414,7 +488,9 @@
       "nama_akun": "-",
       "kategori": "Belum Teridentifikasi",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -425,7 +501,9 @@
       "nama_akun": "UP/Uang Persediaan",
       "kategori": "Transaksi Pembayaran",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -436,7 +514,9 @@
       "nama_akun": "-",
       "kategori": "Transaksi Pembayaran",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   },
   {
@@ -447,7 +527,9 @@
       "nama_akun": "-",
       "kategori": "Transaksi Pembayaran",
       "is_active": true,
-      "source": "Excel Database Awal"
+      "source": "Excel Database Awal",
+      "created_at": "2026-08-18T10:00:00Z",
+      "updated_at": "2026-08-18T10:00:00Z"
     }
   }
 ]
