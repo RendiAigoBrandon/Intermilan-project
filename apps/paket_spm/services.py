@@ -1876,13 +1876,14 @@ def build_drpp_batch_rows(parsed, paket, user=None):
         blank_fields = preview_blank_fields(item)
         item_status = clean_optional(item.get("status_detail") or item.get("status")).upper()
         needs_review = bool(review_fields or item_status in {"PERLU_REVIEW", "GAGAL"})
+        raw_satker_code = clean_optional(
+            item.get("satker_code")
+            or spm_meta.get("satker_app_code")
+            or spm_meta.get("satker_code")
+            or paket.satker_code
+        )
         row = TransactionDetail(
-            satker_code=clean_optional(
-                item.get("satker_code")
-                or spm_meta.get("satker_app_code")
-                or spm_meta.get("satker_code")
-                or paket.satker_code
-            )[:32],
+            satker_code=(get_official_satker_code(raw_satker_code) or raw_satker_code)[:32],
             akun=clean_optional(item.get("akun"))[:32],
             kategori="",
             bulan_sp2d=parse_month_number(item.get("bulan_sp2d") or spm_meta.get("bulan_sp2d")) or paket.bulan,
