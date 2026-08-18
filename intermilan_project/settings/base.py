@@ -32,6 +32,7 @@ def env_int(name, default):
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or os.environ.get("SECRET_KEY", "intermilan-dev-only-change-me")
 DEBUG = env_bool("DJANGO_DEBUG", env_bool("DEBUG", False))
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", env_list("ALLOWED_HOSTS", ["127.0.0.1", "localhost"]))
+ENABLE_MAINTENANCE_ROUTES = env_bool("ENABLE_MAINTENANCE_ROUTES", False)
 
 INSTALLED_APPS = [
     "django.contrib.admin",

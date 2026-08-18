@@ -1,4 +1,5 @@
 from django.shortcuts import render
+from django.http import HttpResponseForbidden
 from django.contrib.auth.decorators import user_passes_test
 from django.db import transaction
 from django.contrib import messages
@@ -56,6 +57,8 @@ def get_previews():
 
 @user_passes_test(is_admin, login_url='/accounts/login/')
 def clean_test_data_view(request):
+    if not getattr(settings, 'ENABLE_MAINTENANCE_ROUTES', False):
+        return HttpResponseForbidden("Maintenance routes are disabled in this environment.")
     counts_before = get_counts()
     total_before = sum(counts_before.values())
     previews = get_previews()
@@ -119,6 +122,8 @@ from apps.dk.models import MasterAkun
 
 @user_passes_test(is_admin, login_url='/accounts/login/')
 def seed_master_akun_view(request):
+    if not getattr(settings, 'ENABLE_MAINTENANCE_ROUTES', False):
+        return HttpResponseForbidden("Maintenance routes are disabled in this environment.")
     counts_before = MasterAkun.objects.count()
     status = None
     counts_after = None
@@ -147,6 +152,8 @@ from django.contrib.auth import get_user_model
 
 @user_passes_test(is_admin, login_url='/accounts/login/')
 def sync_satker_passwords_view(request):
+    if not getattr(settings, 'ENABLE_MAINTENANCE_ROUTES', False):
+        return HttpResponseForbidden("Maintenance routes are disabled in this environment.")
     User = get_user_model()
     users = User.objects.filter(profile__satker_code__isnull=False).exclude(profile__satker_code='')
     
