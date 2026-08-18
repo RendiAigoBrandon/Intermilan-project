@@ -438,7 +438,16 @@ def commit_sp2d_rows(batch, mapped_rows, user, filename=""):
                 with transaction.atomic():
                     # Normalize satker_code to 6-digit official code
                     raw_satker_code = row.get("satker_code", "")
+                    
+                    # Try getting from 4-digit first
                     satker_code = get_official_satker_code(raw_satker_code)
+                    
+                    # If failed, check if it's already a valid 6-digit official code
+                    if not satker_code:
+                        from apps.core.satker import get_unit_code_from_satker
+                        if get_unit_code_from_satker(raw_satker_code):
+                            satker_code = raw_satker_code
+                            
                     if not satker_code:
                         # No fallback - reject invalid codes
                         logger.error(
