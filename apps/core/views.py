@@ -982,6 +982,15 @@ def filter_monitoring_rows(rows, search):
 
 @login_required
 def static_reference(request, kind):
+    if kind == "panduan":
+        context = common_context(request)
+        context.update({
+            "page_title": "Panduan Aplikasi INTERMILAN",
+            "page_subtitle": "Pusat dokumentasi dan petunjuk penggunaan aplikasi INTERMILAN.",
+            "kind": kind,
+        })
+        return render(request, "core/panduan.html", context)
+
     data = REFERENCE_LINKS.get(kind, {})
     titles = {"peraturan": "Peraturan", "template": "Template", "panduan": "Panduan Aplikasi"}
     context = common_context(request)

@@ -1,0 +1,518 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+  .panduan-container {
+    display: flex;
+    gap: 2rem;
+    align-items: flex-start;
+  }
+  .panduan-nav {
+    flex: 0 0 250px;
+    position: sticky;
+    top: 2rem;
+    background: var(--bg-surface);
+    border-radius: var(--radius-md);
+    padding: 1.5rem;
+    box-shadow: var(--shadow-sm);
+  }
+  .panduan-nav ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .panduan-nav a {
+    text-decoration: none;
+    color: var(--text-secondary);
+    font-weight: 500;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-sm);
+    display: block;
+    transition: all 0.2s;
+  }
+  .panduan-nav a:hover, .panduan-nav a.active {
+    background: var(--primary-50);
+    color: var(--primary-600);
+  }
+  
+  .panduan-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+  }
+  
+  .panduan-section {
+    background: var(--bg-surface);
+    border-radius: var(--radius-md);
+    padding: 2rem;
+    box-shadow: var(--shadow-sm);
+  }
+  
+  .panduan-section h2 {
+    margin-top: 0;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 1.5rem;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  
+  .panduan-section h3 {
+    color: var(--primary-700);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+  }
+  
+  .flow-diagram {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    padding: 2rem;
+    background: var(--bg-body);
+    border-radius: var(--radius-md);
+    margin: 1.5rem 0;
+  }
+  .flow-step {
+    background: var(--primary-600);
+    color: white;
+    padding: 1rem 2rem;
+    border-radius: var(--radius-lg);
+    font-weight: 600;
+    text-align: center;
+    width: 250px;
+    box-shadow: var(--shadow-md);
+  }
+  .flow-arrow {
+    color: var(--primary-400);
+    font-size: 1.5rem;
+  }
+
+  .accordion {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    margin-bottom: 1rem;
+    overflow: hidden;
+  }
+  .accordion-header {
+    padding: 1rem 1.5rem;
+    background: var(--bg-body);
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .accordion-header:hover {
+    background: var(--primary-50);
+  }
+  .accordion-body {
+    padding: 1.5rem;
+    border-top: 1px solid var(--border-color);
+    display: none;
+  }
+  .accordion.open .accordion-body {
+    display: block;
+  }
+  
+  .troubleshoot-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+  }
+  .troubleshoot-table th, .troubleshoot-table td {
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    text-align: left;
+    vertical-align: top;
+  }
+  .troubleshoot-table th {
+    background: var(--bg-body);
+    font-weight: 600;
+  }
+  
+  .alert-box {
+    padding: 1rem;
+    border-radius: var(--radius-md);
+    background: var(--warning-50);
+    border: 1px solid var(--warning-200);
+    color: var(--warning-800);
+    margin: 1rem 0;
+    display: flex;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+  .alert-box.info {
+    background: var(--primary-50);
+    border-color: var(--primary-200);
+    color: var(--primary-800);
+  }
+</style>
+
+<div class="panduan-container">
+  <aside class="panduan-nav">
+    <h3 style="margin-top:0; margin-bottom:1rem; font-size:1.1rem;">Daftar Isi</h3>
+    <ul>
+      <li><a href="#pengenalan">A. Pengenalan</a></li>
+      <li><a href="#alur">B. Alur Besar</a></li>
+      <li><a href="#spm">C. Upload SPM</a></li>
+      <li><a href="#parent">D. SPM Parent</a></li>
+      <li><a href="#drpp">E. DRPP &amp; Kuitansi</a></li>
+      <li><a href="#sp2d">F. Upload SP2D</a></li>
+      <li><a href="#dk">G. Database D_K</a></li>
+      <li><a href="#arsip">H. Arsip</a></li>
+      <li><a href="#troubleshooting">I. Troubleshooting</a></li>
+      <li><a href="#faq">J. FAQ</a></li>
+    </ul>
+  </aside>
+
+  <div class="panduan-content">
+    
+    <!-- A. PENGENALAN -->
+    <section id="pengenalan" class="panduan-section">
+      <h2><span class="material-symbols-rounded">info</span> A. Pengenalan INTERMILAN</h2>
+      <p><strong>INTERMILAN (Integrasi Rekonsiliasi Mandiri Laporan Keuangan)</strong> adalah aplikasi berbasis web yang dirancang untuk mempermudah dan mengotomatisasi proses rekonsiliasi dokumen keuangan (SPM, SP2D, DRPP, Kuitansi) pada satker BPS.</p>
+      
+      <h3>Tujuan Aplikasi</h3>
+      <ul>
+        <li>Mengurangi beban pencatatan manual oleh operator keuangan.</li>
+        <li>Menyediakan satu sumber kebenaran (Single Source of Truth) untuk status kelengkapan dokumen pencairan.</li>
+        <li>Menyimpan seluruh arsip dokumen (PDF) yang dapat ditelusuri seketika.</li>
+      </ul>
+      
+      <h3>Fungsi Utama</h3>
+      <ul>
+        <li><strong>Ekstraksi OCR:</strong> Membaca data langsung dari file PDF hasil scan.</li>
+        <li><strong>Matching Otomatis:</strong> Mencocokkan SPM, DRPP, dan SP2D secara cerdas.</li>
+        <li><strong>Monitoring Checklist:</strong> Mengetahui seketika dokumen mana yang belum lengkap.</li>
+      </ul>
+      
+      <h3>Konsep Database D_K (Daftar Kuitansi)</h3>
+      <p>D_K adalah tabel sentral (pusat/induk) dari seluruh transaksi. Setiap kali Anda memproses SPM atau DRPP, sistem akan menciptakan satu baris di D_K. Baris inilah yang kemudian akan "menunggu" dokumen pendukung lainnya (seperti SP2D atau Kuitansi) untuk dihubungkan hingga statusnya menjadi <strong>Lengkap</strong>.</p>
+    </section>
+
+    <!-- B. ALUR BESAR -->
+    <section id="alur" class="panduan-section">
+      <h2><span class="material-symbols-rounded">account_tree</span> B. Alur Besar Penggunaan Sistem</h2>
+      <p>Berikut adalah siklus standar dokumen dari tahap awal hingga pengarsipan akhir.</p>
+      
+      <div class="flow-diagram">
+        <div class="flow-step">1. Upload SPM</div>
+        <div class="flow-arrow"><span class="material-symbols-rounded">arrow_downward</span></div>
+        <div class="flow-step" style="background:var(--secondary-600)">2. Jadikan SPM Parent</div>
+        <div class="flow-arrow"><span class="material-symbols-rounded">arrow_downward</span></div>
+        <div class="flow-step">3. Upload DRPP + Kuitansi<br><small>(Hubungkan ke Parent)</small></div>
+        <div class="flow-arrow"><span class="material-symbols-rounded">arrow_downward</span></div>
+        <div class="flow-step" style="background:var(--success-600)">4. Simpan ke Database D_K</div>
+        <div class="flow-arrow"><span class="material-symbols-rounded">arrow_downward</span></div>
+        <div class="flow-step" style="background:var(--warning-600); color:black;">5. Upload SP2D (Excel)</div>
+        <div class="flow-arrow"><span class="material-symbols-rounded">arrow_downward</span></div>
+        <div class="flow-step" style="background:var(--primary-800)">6. Rekonsiliasi Otomatis & Arsip</div>
+      </div>
+      
+      <div class="alert-box info">
+        <span class="material-symbols-rounded">lightbulb</span>
+        <div>Jika Anda memproses SPM jenis Non-UP/TUP (yang tidak memiliki DRPP), Anda bisa melewati langkah 2 dan 3, dan langsung menyimpan SPM ke D_K.</div>
+      </div>
+    </section>
+
+    <!-- C. UPLOAD SPM -->
+    <section id="spm" class="panduan-section">
+      <h2><span class="material-symbols-rounded">upload_file</span> C. Panduan Upload SPM</h2>
+      
+      <h3>1. Persiapan File</h3>
+      <p>Pastikan dokumen SPM (Surat Perintah Membayar) sudah di-scan dengan rapi dalam format <strong>PDF</strong>. Untuk mempercepat proses sistem, file jangan terlalu buram/gelap.</p>
+      
+      <h3>2. Cara Upload</h3>
+      <ol>
+        <li>Buka menu <strong>Paket SPM & DRPP</strong> di sidebar kiri.</li>
+        <li>Pilih tab <strong>SPM</strong> dan klik area upload (atau drag-and-drop file).</li>
+        <li>Tunggu beberapa saat hingga mesin OCR mengekstrak teks dari PDF.</li>
+      </ol>
+      
+      <h3>3. Cara Membaca Preview & Validasi Data</h3>
+      <p>Setelah diupload, dokumen masuk ke tabel <strong>Preview SPM</strong>. Perhatikan kolom-kolomnya:</p>
+      <ul>
+        <li><strong>Nomor SPM:</strong> Pastikan terbaca benar. Jika salah baca, klik ikon <span class="material-symbols-rounded" style="font-size:1rem;vertical-align:middle;">edit</span> untuk mengedit.</li>
+        <li><strong>Nilai Netto & Bruto:</strong> Sistem akan berusaha memisahkan nilai. Periksa keakuratannya.</li>
+      </ul>
+      
+      <h3>4. Penyimpanan</h3>
+      <p>Jika SPM tersebut berdiri sendiri (contoh: LS Pihak Ketiga) dan <strong>bukan</strong> UP/GUP/TUP, Anda dapat menceklis baris tersebut, memilih aksi <strong>"Simpan ke D_K"</strong> dan menyelesaikannya. Dokumen aslinya akan langsung terlempar ke menu <strong>Arsip</strong>.</p>
+    </section>
+
+    <!-- D. SPM PARENT -->
+    <section id="parent" class="panduan-section">
+      <h2><span class="material-symbols-rounded">account_tree</span> D. Panduan SPM Parent</h2>
+      
+      <h3>Pengertian SPM Parent</h3>
+      <p><strong>SPM Parent</strong> adalah SPM Induk (biasanya jenis GUP, UP, TUP, atau PTUP) yang memiliki dokumen rincian turunan yang disebut DRPP (Daftar Rincian Permintaan Pembayaran).</p>
+      
+      <h3>Fungsi & Kapan Digunakan</h3>
+      <p>Anda <strong>wajib</strong> menjadikan SPM sebagai Parent apabila SPM tersebut dilampiri oleh DRPP dan banyak Kuitansi. Jika langsung disimpan ke D_K tanpa dijadikan Parent, maka DRPP tidak akan bisa ditautkan ke SPM tersebut.</p>
+      
+      <h3>Langkah Menjadikan Parent</h3>
+      <ol>
+        <li>Di tabel <strong>Preview SPM</strong>, ceklis baris SPM yang bersangkutan.</li>
+        <li>Pada menu aksi di atas tabel, pilih <strong>"Simpan sebagai SPM Parent (Untuk DRPP)"</strong>.</li>
+        <li>SPM tersebut akan hilang dari Preview dan muncul di tab <strong>Parent SPM Aktif</strong> di sebelah kanan.</li>
+      </ol>
+    </section>
+
+    <!-- E. DRPP -->
+    <section id="drpp" class="panduan-section">
+      <h2><span class="material-symbols-rounded">receipt_long</span> E. Panduan Upload DRPP dan Kuitansi</h2>
+      
+      <h3>1. Cara Upload DRPP</h3>
+      <ol>
+        <li>Setelah Anda memiliki SPM Parent Aktif, masuk ke tab <strong>DRPP</strong>.</li>
+        <li>Upload file scan PDF DRPP. Mesin akan membaca rincian per baris.</li>
+      </ol>
+      
+      <h3>2. Memeriksa Balance (Keseimbangan)</h3>
+      <p>Setelah DRPP diekstrak, akan muncul tabel rincian transaksi (per Akun/Kuitansi). Di bagian atas tabel DRPP, perhatikan indikator <strong>BALANCE</strong>. Total dari rincian DRPP harus klop/sama dengan total pada SPM Parent. Jika tidak balance, cek apakah ada baris yang nominalnya salah terbaca oleh OCR dan perbaiki.</p>
+      
+      <h3>3. Cara Upload Kuitansi</h3>
+      <p>Pada DRPP yang sedang di-preview, terdapat kolom <strong>File Kuitansi</strong>. Anda bisa mengklik tombol upload kuitansi pada baris masing-masing rincian, atau me-drag banyak file kuitansi sekaligus ke area Dropzone utama.</p>
+      
+      <h3>4. Linking ke SPM Parent & Simpan ke D_K</h3>
+      <ol>
+        <li>Pilih SPM Parent dari dropdown <strong>Pilih Parent SPM</strong>.</li>
+        <li>Klik tombol <strong>Hubungkan</strong> untuk menautkan DRPP ke SPM Parent.</li>
+        <li>Jika sudah terhubung dan DRPP sudah _balance_, klik tombol <strong>Simpan DRPP ke D_K</strong>.</li>
+        <li>Sistem akan menyatukan DRPP, Kuitansi, dan SPM Parent menjadi transaksi D_K yang lengkap dan memasukkan seluruh file fisik ke dalam <strong>Arsip</strong>.</li>
+      </ol>
+    </section>
+
+    <!-- F. UPLOAD SP2D -->
+    <section id="sp2d" class="panduan-section">
+      <h2><span class="material-symbols-rounded">description</span> F. Panduan Upload SP2D</h2>
+      
+      <h3>Fungsi SP2D</h3>
+      <p>SP2D (Surat Perintah Pencairan Dana) digunakan sebagai alat verifikasi final bahwa SPM yang diinput sebelumnya telah disetujui dan dicairkan oleh KPPN. INTERMILAN akan menggunakan data SP2D untuk melengkapi dokumen di D_K.</p>
+      
+      <h3>Proses Import & Format Excel</h3>
+      <ol>
+        <li>Buka menu <strong>Upload SP2D</strong>.</li>
+        <li>Siapkan file SP2D yang diunduh dari aplikasi perbendaharaan dalam format <strong>Excel (.xlsx)</strong> atau <strong>CSV</strong>.</li>
+        <li>Pilih periode Bulan.</li>
+        <li>Upload file tersebut.</li>
+      </ol>
+      
+      <h3>Sistem Matching Cerdas</h3>
+      <ul>
+        <li><strong>Matching Nomor SPM:</strong> Sistem mengabaikan huruf tambahan di belakang nomor (contoh: SP2D bernomor <code>00166T</code> otomatis akan cocok dengan D_K bernomor <code>00166A</code>).</li>
+        <li><strong>Matching Satker:</strong> Sistem secara cerdas akan mencocokkan kode 4-digit satker Anda (misal `1300`) dengan kode resmi Kemenkeu 6-digit (`019937`). Anda tidak perlu mengubah apapun di file Excel.</li>
+      </ul>
+      
+      <h3>Status SP2D pada D_K</h3>
+      <p>Jika SP2D sukses terbaca, maka pada menu D_K, status transaksi akan berubah dari <em>"Belum Ada SP2D"</em> menjadi <em>"Memiliki SP2D Pembanding"</em> atau <strong>Terhubung</strong>.</p>
+    </section>
+
+    <!-- G. DATABASE D_K -->
+    <section id="dk" class="panduan-section">
+      <h2><span class="material-symbols-rounded">table_chart</span> G. Panduan Database D_K</h2>
+      <p>Database D_K adalah jantung pelaporan Anda. Di sini Anda bisa melihat keseluruhan status dokumen secara terpadu.</p>
+      
+      <ul>
+        <li><strong>Pencarian & Filter:</strong> Anda dapat memfilter berdasarkan Bulan, Akun, Satker (untuk role Admin), dan Status Kelengkapan. Ketik kata kunci pada kotak Search untuk mencari nomor SPM spesifik.</li>
+        <li><strong>Checklist:</strong> Setiap baris memiliki kolom SP2D, SPM, Kuitansi, SPP, dll dengan indikator <span class="badge success">ADA</span> atau <span class="badge error">TIDAK</span>.</li>
+        <li><strong>Detail Transaksi:</strong> Klik pada "Nomor SPM" untuk membuka laci geser (Off-canvas) di sebelah kanan. Anda dapat mengedit rincian manual atau menambahkan link dokumen Google Drive pada laci ini.</li>
+        <li><strong>Status Kelengkapan:</strong> Jika semua checklist dokumen wajib terpenuhi, statusnya akan berubah menjadi <strong>LENGKAP</strong> berwarna hijau.</li>
+      </ul>
+    </section>
+
+    <!-- H. ARSIP -->
+    <section id="arsip" class="panduan-section">
+      <h2><span class="material-symbols-rounded">folder_open</span> H. Panduan Arsip</h2>
+      <p>Setiap dokumen PDF/Image yang Anda proses dan simpan ke D_K (baik itu SPM, DRPP, atau Kuitansi) tidak akan hilang. Dokumen tersebut akan bermuara di menu <strong>Arsip / Drive Link</strong>.</p>
+      
+      <ul>
+        <li><strong>Hubungan Arsip dan Transaksi:</strong> Setiap file di Arsip ditautkan langsung ke Nomor SPM/Transaksi spesifik.</li>
+        <li><strong>Pencarian Dokumen:</strong> Anda dapat mengetik nama file atau nomor SPM pada kolom pencarian Arsip untuk mendownload/melihat ulang dokumen kapan saja.</li>
+        <li><strong>Integrasi Cloud:</strong> Sistem secara otomatis mengamankan file Anda dan membuatkan link penyimpanan yang terintegrasi (Google Drive integration).</li>
+      </ul>
+    </section>
+
+    <!-- I. TROUBLESHOOTING -->
+    <section id="troubleshooting" class="panduan-section">
+      <h2><span class="material-symbols-rounded">build</span> I. Troubleshooting</h2>
+      
+      <table class="troubleshoot-table">
+        <thead>
+          <tr>
+            <th>Masalah</th>
+            <th>Penyebab Kemungkinan</th>
+            <th>Solusi</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Data SPM/DRPP tidak masuk ke Menu D_K</td>
+            <td>Anda baru melakukan upload, tetapi belum memilih aksi "Simpan ke D_K".</td>
+            <td>Pilih dokumen di tabel Preview (ceklis), lalu gunakan tombol aksi "Simpan ke D_K".</td>
+          </tr>
+          <tr>
+            <td>Upload file PDF gagal atau Macet</td>
+            <td>File terlalu besar atau berpassword.</td>
+            <td>Pastikan file PDF di bawah 5MB dan tidak dipassword/encrypted. Coba refresh halaman.</td>
+          </tr>
+          <tr>
+            <td>DRPP tidak terbaca / Nominal nol (0)</td>
+            <td>Kualitas scan dokumen sangat buram, miring, atau kotor.</td>
+            <td>Gunakan fitur edit (ikon pensil) pada tabel Preview untuk mengetik angka yang benar secara manual. Pastikan scan berikutnya lebih terang.</td>
+          </tr>
+          <tr>
+            <td>SP2D Excel ditolak dengan pesan error "invalid satker_code"</td>
+            <td>Nomor satker pada Excel tidak dikenali oleh sistem pemetaan.</td>
+            <td>Buka file Excel, pastikan kolom satker terisi dengan kode 4-digit satker (misal 1300) atau 6-digit resmi (019937) Anda secara presisi.</td>
+          </tr>
+          <tr>
+            <td>SP2D tidak cocok / tidak terhubung</td>
+            <td>Nomor SPM di D_K dan SP2D berbeda sepenuhnya.</td>
+            <td>Buka Menu D_K, edit transaksi dan pastikan Nomor SPM angka depannya sama persis (misal 00166) dengan SP2D.</td>
+          </tr>
+          <tr>
+            <td>Nomor SPM berbeda A/T di akhir (contoh: 00166A vs 00166T)</td>
+            <td>Perbedaan format internal BPS dan KPPN.</td>
+            <td>Tidak perlu khawatir, sistem akan otomatis mencocokkan (Smart Suffix Matching) angka 00166 tanpa huruf tambahan.</td>
+          </tr>
+          <tr>
+            <td>Satker berbeda 4 digit (1300) dan 6 digit (019937)</td>
+            <td>Dua format kode satker yang berbeda.</td>
+            <td>Sistem INTERMILAN sudah melakukan mapping otomatis. Anda tidak perlu mengubah 1300 menjadi 019937.</td>
+          </tr>
+          <tr>
+            <td>Data dianggap duplikat (Error Upload)</td>
+            <td>Sistem mendeteksi Nomor SPM yang sama persis sudah pernah disimpan.</td>
+            <td>Jika Anda ingin memperbarui, hapus data D_K yang lama terlebih dahulu, lalu upload ulang. Atau ganti nomor SPM jika memang berbeda.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- J. FAQ -->
+    <section id="faq" class="panduan-section">
+      <h2><span class="material-symbols-rounded">help</span> J. FAQ (Pertanyaan yang Sering Diajukan)</h2>
+      
+      <div id="faq-container">
+        <!-- FAQ ITEMS -->
+        <div class="accordion">
+          <div class="accordion-header">1. Apa yang harus dilakukan jika saya salah upload file? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Jika file masih berada di tabel Preview, Anda cukup menceklisnya lalu klik "Hapus Terpilih". Jika sudah masuk ke D_K, masuk ke menu D_K, hapus transaksinya, lalu hapus dokumennya di menu Arsip.</div>
+        </div>
+
+        <div class="accordion">
+          <div class="accordion-header">2. Apakah INTERMILAN wajib digunakan setiap hari? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Sangat disarankan mengunggah dokumen secara real-time / harian (segera setelah SPM/SP2D terbit) agar mempermudah monitoring dan tidak menumpuk di akhir bulan.</div>
+        </div>
+
+        <div class="accordion">
+          <div class="accordion-header">3. Mengapa tombol "Simpan DRPP ke D_K" dinonaktifkan (disabled)? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Tombol hanya aktif jika Anda telah (1) Menghubungkan DRPP ke Parent SPM, dan (2) Indikator BALANCE di bagian atas tabel bernilai "Match".</div>
+        </div>
+
+        <div class="accordion">
+          <div class="accordion-header">4. SPM saya nomornya '00166A' tetapi SP2D bernomor '00166T'. Apakah akan error? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Tidak. INTERMILAN memiliki teknologi "Smart Suffix Matching". Sistem akan cerdas mengenali bahwa angka intinya (00166) sama dan mengabaikan huruf di belakangnya secara otomatis.</div>
+        </div>
+
+        <div class="accordion">
+          <div class="accordion-header">5. Bolehkah saya langsung menyimpan SPM jenis UP/TUP ke D_K tanpa Parent? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Secara teknis bisa, tetapi sangat tidak disarankan karena Anda akan kehilangan kemampuan melacak dan menautkan rincian kuitansi/DRPP yang akan menyusul kemudian ke SPM tersebut.</div>
+        </div>
+
+        <div class="accordion">
+          <div class="accordion-header">6. Berapa batas ukuran maksimal file PDF? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Batas maksimal per file yang disarankan adalah 5 MB untuk kelancaran ekstraksi sistem.</div>
+        </div>
+        
+        <div class="accordion">
+          <div class="accordion-header">7. Kenapa setelah upload DRPP, beberapa nominal terdeteksi '0'? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Hal ini terjadi bila kolom nominal di kertas PDF tertimpa stempel, coretan pulpen, atau hasil scan terpotong. Silakan ubah angka tersebut manual melalui ikon pensil (edit).</div>
+        </div>
+
+        <div class="accordion">
+          <div class="accordion-header">8. Apakah saya bisa mengupload file gambar Kuitansi (JPG/PNG)? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Ya. Menu Upload DRPP/Kuitansi mendukung file PDF maupun Image (JPG, PNG). Namun PDF lebih disarankan untuk multi-halaman.</div>
+        </div>
+
+        <div class="accordion">
+          <div class="accordion-header">9. Saya mendapat warning "Nomor SPM Duplikat". Apa maksudnya? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">INTERMILAN memproteksi agar satu Satker tidak memasukkan dua SPM dengan nomor yang sama di tahun yang sama. Pastikan Anda tidak mengupload dokumen yang sama dua kali.</div>
+        </div>
+
+        <div class="accordion">
+          <div class="accordion-header">10. Bagaimana cara memperbaiki Nomor SP2D yang salah di D_K? <span class="material-symbols-rounded">expand_more</span></div>
+          <div class="accordion-body">Buka tabel D_K, klik pada Nomor SPM yang bersangkutan, lalu pada laci rincian di sisi kanan, klik tombol "Edit". Perbaiki nomornya lalu Simpan.</div>
+        </div>
+
+        <div class="accordion"><div class="accordion-header">11. Apa bedanya SPM dan DRPP? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">SPM adalah surat perintah pembayaran (induk), DRPP adalah rincian permintaan pembayaran (anak/rincian).</div></div>
+        <div class="accordion"><div class="accordion-header">12. Bagaimana jika saya lupa menghubungkan Parent? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Data DRPP akan tersimpan lepas (yatim piatu) di D_K dan tidak akan masuk hitungan nominal SP2D secara terpadu.</div></div>
+        <div class="accordion"><div class="accordion-header">13. Dimana saya melihat Kuitansi yang sudah diupload? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Bisa melalui laci detail di menu D_K (klik nomor SPM) atau menu Arsip / Drive Link.</div></div>
+        <div class="accordion"><div class="accordion-header">14. Apakah data saya aman? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Ya, dokumen Anda dienkripsi dan diamankan menggunakan integrasi Google Drive yang dilindungi berlapis.</div></div>
+        <div class="accordion"><div class="accordion-header">15. Jika D_K sudah LENGKAP (hijau), apa yang selanjutnya dilakukan? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Anda tidak perlu melakukan apa-apa. Dokumen telah selesai terekonsiliasi dan diarsip permanen.</div></div>
+        <div class="accordion"><div class="accordion-header">16. Bagaimana cara mengganti Password Akun? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Hubungi administrator pusat untuk pengubahan konfigurasi password satker.</div></div>
+        <div class="accordion"><div class="accordion-header">17. Dapatkah saya menghapus SP2D yang salah import? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Bisa. Hubungi Admin (Role Admin) untuk menghapus riwayat import SP2D dari backend.</div></div>
+        <div class="accordion"><div class="accordion-header">18. Apa itu Status "Perlu Review" di D_K? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Artinya masih ada dokumen pendukung (checklist) yang kosong / belum lengkap (misalnya belum ada Kuitansi).</div></div>
+        <div class="accordion"><div class="accordion-header">19. Kenapa menu D_K saya kosong padahal satker lain ada isinya? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Karena sistem menerapkan Isolasi Data (Data Privacy). Anda hanya bisa melihat transaksi milik satker Anda sendiri.</div></div>
+        <div class="accordion"><div class="accordion-header">20. Apakah bisa mencari SPM berdasarkan nominal Uang? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Tentu. Gunakan kotak Search di atas tabel D_K, dan ketikkan nominal yang dicari.</div></div>
+        <div class="accordion"><div class="accordion-header">21. Mengapa nama Satker di Excel saya berubah jadi angka 6 digit di sistem? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Itu adalah konversi ke Kode Resmi Kementerian Keuangan. Aplikasi otomatis merapikannya.</div></div>
+        <div class="accordion"><div class="accordion-header">22. Bisa tidak export D_K ke Excel? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Ya, gunakan tombol "Export" yang disediakan pada menu D_K jika hak akses Anda mencukupi.</div></div>
+        <div class="accordion"><div class="accordion-header">23. Apa arti indikator "Unbalance" warna merah saat upload DRPP? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Total DRPP yang terdeteksi OCR tidak sama dengan total SPM Parent yang Anda pilih.</div></div>
+        <div class="accordion"><div class="accordion-header">24. Jika Uang Bruto dan Netto tertukar saat scan, apa efeknya? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Nantinya akan terjadi ketidaksesuaian saat rekonsiliasi SP2D. Segera edit via ikon pensil di Preview.</div></div>
+        <div class="accordion"><div class="accordion-header">25. SP2D saya CSV bukan Excel, apakah bisa? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Bisa. Sistem mensupport format modern <code>.xlsx</code> maupun <code>.csv</code>.</div></div>
+        <div class="accordion"><div class="accordion-header">26. Bisakah saya membatalkan aksi "Simpan ke D_K"? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Aksi simpan tidak bisa di-Undo, tetapi Anda bisa menghapus datanya di tabel D_K secara manual dan mengulang dari awal.</div></div>
+        <div class="accordion"><div class="accordion-header">27. File PDF saya halamannya terbalik, apakah masih terbaca? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Tergantung kemiringan. Sistem memiliki Auto-Rotation ringan, tapi usahakan scan dokumen dalam posisi tegak lurus.</div></div>
+        <div class="accordion"><div class="accordion-header">28. Apakah aplikasi bisa diakses di Handphone? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Bisa, antarmuka INTERMILAN sudah dirancang responsif, meskipun upload dokumen besar lebih disarankan via PC/Laptop.</div></div>
+        <div class="accordion"><div class="accordion-header">29. Kuitansi saya ada 50 lembar, haruskah upload satu per satu? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Tidak perlu. Jadikan satu file PDF (scan massal), lalu upload ke kolom "File Pendukung Utama" DRPP.</div></div>
+        <div class="accordion"><div class="accordion-header">30. Kemana saya harus melapor jika ada Bug / Error tak terduga? <span class="material-symbols-rounded">expand_more</span></div><div class="accordion-body">Hubungi Administrator BPS Provinsi dengan menyertakan _screenshot_ pesan error dan langkah-langkah yang Anda lakukan.</div></div>
+
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const accordions = document.querySelectorAll('.accordion-header');
+    accordions.forEach(acc => {
+      acc.addEventListener('click', function() {
+        const parent = this.parentElement;
+        const icon = this.querySelector('.material-symbols-rounded');
+        parent.classList.toggle('open');
+        if (parent.classList.contains('open')) {
+          icon.textContent = 'expand_less';
+        } else {
+          icon.textContent = 'expand_more';
+        }
+      });
+    });
+
+    const sections = document.querySelectorAll('.panduan-section');
+    const navLinks = document.querySelectorAll('.panduan-nav a');
+    
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          navLinks.forEach(link => {
+            link.classList.remove('active');
+            if (link.getAttribute('href').substring(1) === entry.target.id) {
+              link.classList.add('active');
+            }
+          });
+        }
+      });
+    }, { threshold: 0.2 });
+
+    sections.forEach(section => observer.observe(section));
+  });
+</script>
+{% endblock %}
