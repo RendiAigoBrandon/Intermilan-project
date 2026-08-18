@@ -13,6 +13,7 @@ from apps.core.drpp_batch_parser import (
 )
 from apps.core.parsers import classify_document, extract_pdf_text, guess_number_from_filename, parse_spm_number_from_pages
 from apps.core.satker import get_official_satker_code
+from apps.core.spm_utils import normalize_nomor_spm, regex_for_nomor_spm
 from apps.dk.services import refresh_transaction_document_status
 from apps.dk.models import TransactionDetail
 from apps.documents.models import DocumentDriveLink
@@ -607,7 +608,7 @@ def analyze_matching_transactions(meta):
     if nomor_candidates:
         nomor_query = Q()
         for nomor in nomor_candidates:
-            nomor_query |= Q(nomor_spm__iexact=nomor)
+            nomor_query |= Q(nomor_spm__iregex=regex_for_nomor_spm(nomor))
         query = query.filter(nomor_query)
         if tahun_spm:
             query = query.filter(Q(tanggal_spm__year=tahun_spm) | Q(tanggal_spm__isnull=True))
@@ -700,7 +701,8 @@ def find_matching_sp2d(meta):
     query = SP2DRaw.objects.all()
     conditions = Q()
     if meta["nomor_spm"]:
-        conditions |= Q(nomor_spm_extracted__iexact=meta["nomor_spm"]) | Q(deskripsi__icontains=meta["nomor_spm"])
+        spm_regex = regex_for_nomor_spm(meta["nomor_spm"])
+        conditions |= Q(nomor_spm_extracted__iregex=spm_regex) | Q(deskripsi__icontains=meta["nomor_spm"])
     if meta["total"]:
         conditions |= Q(nilai_spm=meta["total"]) | Q(nilai_sp2d=meta["total"])
     query = query.filter(conditions)
@@ -723,7 +725,7 @@ def resolve_satker_from_existing_dk(nomor_spm_body, tahun):
         return None
     matches = list(
         TransactionDetail.objects.filter(
-            nomor_spm__istartswith=nomor_spm_body,
+            nomor_spm__iregex=regex_for_nomor_spm(nomor_spm_body),
             tanggal_spm__year=tahun,
         ).values_list("satker_code", flat=True).distinct()
     )

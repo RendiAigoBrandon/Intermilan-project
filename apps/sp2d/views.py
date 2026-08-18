@@ -19,6 +19,7 @@ from apps.accounts.access import (
 from apps.core.parsers import parse_decimal, parse_month, parse_sp2d_excel_file
 from apps.core.satker import get_official_satker_code, infer_satker_from_name, resolve_sp2d_satker
 from apps.core.views import CHECKLIST_ROWS, MONTH_OPTIONS, build_pagination_window, normalize_page_size
+from apps.core.spm_utils import normalize_nomor_spm, regex_for_nomor_spm
 from apps.documents.models import ChecklistStatus, ChecklistTemplate, DocumentDriveLink
 from apps.documents.services.google_drive import archive_file_link
 from apps.drpp.models import DRPPItem, DRPPUpload
@@ -375,7 +376,7 @@ def sp2d_preview(request):
                             # Try exact match by no_sp2d
                             sp2d_raw = next((r for r in raw_records if r.no_sp2d == row["no_sp2d"]), None)
                             if not sp2d_raw:
-                                sp2d_raw = next((r for r in raw_records if r.nomor_spm_extracted == row["nomor_spm"]), None)
+                                sp2d_raw = next((r for r in raw_records if normalize_nomor_spm(r.nomor_spm_extracted) == normalize_nomor_spm(row["nomor_spm"])), None)
                                 
                         if sp2d_raw:
                             if TransactionDetail.objects.filter(sp2d_raw=sp2d_raw).exists():
@@ -566,7 +567,8 @@ def build_completeness_row(row, index):
     spm_number = row.nomor_spm_extracted or (row.nomor_invoice.split("/")[0] if row.nomor_invoice else "")
     base_filter = Q()
     if spm_number:
-        base_filter |= Q(nomor_spm__icontains=spm_number)
+        spm_regex = regex_for_nomor_spm(spm_number)
+        base_filter |= Q(nomor_spm__iregex=spm_regex)
     if row.nomor_invoice:
         base_filter |= Q(no_kuitansi__icontains=row.nomor_invoice) | Q(nama_file__icontains=row.nomor_invoice) | Q(catatan__icontains=row.nomor_invoice)
     if row.no_sp2d:
@@ -578,24 +580,24 @@ def build_completeness_row(row, index):
     spm_exists = (
         bool(spm_number)
         and (
-            PaketSPMUpload.objects.filter(nomor_spm__icontains=spm_number).exists()
-            or PaketSPMPreviewItem.objects.filter(nomor_spm__icontains=spm_number).exists()
-            or DocumentDriveLink.objects.filter(Q(nomor_spm__icontains=spm_number) | Q(nama_file__icontains=spm_number), jenis_dokumen__icontains="SPM").exists()
+            PaketSPMUpload.objects.filter(nomor_spm__iregex=spm_regex).exists()
+            or PaketSPMPreviewItem.objects.filter(nomor_spm__iregex=spm_regex).exists()
+            or DocumentDriveLink.objects.filter(Q(nomor_spm__iregex=spm_regex) | Q(nama_file__icontains=spm_number), jenis_dokumen__icontains="SPM").exists()
         )
     )
     drpp_exists = (
         bool(spm_number)
         and (
-            DRPPUpload.objects.filter(nomor_spm__icontains=spm_number).exists()
-            or DocumentDriveLink.objects.filter(Q(nomor_spm__icontains=spm_number) | Q(nama_file__icontains=spm_number), jenis_dokumen__icontains="DRPP").exists()
+            DRPPUpload.objects.filter(nomor_spm__iregex=spm_regex).exists()
+            or DocumentDriveLink.objects.filter(Q(nomor_spm__iregex=spm_regex) | Q(nama_file__icontains=spm_number), jenis_dokumen__icontains="DRPP").exists()
         )
     )
     kw_exists = (
         bool(spm_number)
         and (
-            PaketSPMPreviewItem.objects.filter(Q(nomor_spm__icontains=spm_number) & ~Q(no_kuitansi="")).exists()
-            or DRPPItem.objects.filter(no_bukti__icontains=spm_number).exists()
-            or DocumentDriveLink.objects.filter(Q(no_kuitansi__icontains=spm_number) | Q(nama_file__icontains=spm_number), jenis_dokumen__icontains="KW").exists()
+            PaketSPMPreviewItem.objects.filter(Q(nomor_spm__iregex=spm_regex) & ~Q(no_kuitansi="")).exists()
+            or DRPPItem.objects.filter(no_bukti__iregex=spm_regex).exists()
+            or DocumentDriveLink.objects.filter(Q(no_kuitansi__iregex=spm_regex) | Q(nama_file__icontains=spm_number), jenis_dokumen__icontains="KW").exists()
         )
     )
     link_exists = drive_links.exists()
