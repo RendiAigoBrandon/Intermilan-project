@@ -72,3 +72,4 @@ test_upload.py
 document-graph.patch
 *.patch
 cleaning_report_*.json
+test_seed_users.py

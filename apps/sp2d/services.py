@@ -5,6 +5,7 @@ from django.db import transaction, IntegrityError
 from django.db.models import Sum
 
 from apps.core.satker import resolve_sp2d_satker, normalize_satker_code, get_official_satker_code
+from apps.core.spm_utils import regex_for_nomor_spm
 
 from apps.sp2d.models import SP2DRaw, SP2DImportBatch
 from apps.dk.models import TransactionDetail, TransactionChangeLog
@@ -544,7 +545,7 @@ def reconcile_sp2d_with_dk(sp2d_record, user):
 
     dk_items = list(TransactionDetail.objects.filter(
         satker_code=sp2d_record.satker_code,
-        nomor_spm=sp2d_record.nomor_spm_extracted,
+        nomor_spm__iregex=regex_for_nomor_spm(sp2d_record.nomor_spm_extracted),
     ).exclude(status_detail=TransactionDetail.StatusDetail.DIARSIPKAN))
 
     # Filter by tahun exact. Include NULL tanggal_spm rows — legacy/local-dev data
