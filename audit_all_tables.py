@@ -1,7 +1,13 @@
+import os
+import django
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'intermilan_project.settings.production')
+django.setup()
+
 from django.db import connection
 
-print('AUDIT ALL MODELS')
-print()
+print('AUDIT ALL MODELS - BEFORE CLEANING')
+print('=' * 60)
 
 with connection.cursor() as cursor:
     cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name")

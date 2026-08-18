@@ -6,7 +6,7 @@ from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.core.import_utils import clean_text, dict_from_headers, parse_date, parse_decimal, parse_month, pick
-from apps.core.models import MonitoringSummary
+from apps.core.models import MonitoringSummary, SatkerMaster
 
 try:
     from openpyxl import load_workbook
@@ -116,8 +116,27 @@ class Command(BaseCommand):
 
 
 def satker_code_from_label(value: str) -> str:
-    text = clean_text(value).lower()
-    return text.removeprefix("bps").strip()
+    """Convert satker label (e.g., 'BPS 1300') to official satker_code (e.g., '019937')."""
+    import re
+    import sys
+
+    text = clean_text(value)
+    # Extract 4-digit unit code from label (e.g., "BPS 1300" -> "1300")
+    match = re.search(r'\b(\d{4})\b', text)
+    if not match:
+        # Fallback to old behavior if no 4-digit code found
+        return text.removeprefix("bps").strip()
+
+    unit_code = match.group(1)
+
+    # Try to find official satker_code from SatkerMaster
+    official_code = SatkerMaster.get_satker_code(unit_code)
+    if official_code:
+        return official_code
+
+    # Mapping not found - warn and fallback to old behavior
+    print(f"WARNING: Satker mapping tidak ditemukan untuk {value} (unit_code={unit_code})", file=sys.stderr)
+    return unit_code
 
 
 def parse_percent(value):

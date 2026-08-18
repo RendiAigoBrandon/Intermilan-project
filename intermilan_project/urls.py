@@ -4,7 +4,6 @@ from django.contrib import admin
 from django.urls import include, path
 from apps.documents.views import checklist_list
 from apps.core.views_maintenance import clean_test_data_view, seed_master_akun_view, sync_satker_passwords_view
-from apps.core.views_diagnostic import diagnostic_audit_view
 
 
 urlpatterns = [
@@ -21,7 +20,7 @@ urlpatterns = [
     path("maintenance/clean-test-data/", clean_test_data_view, name="clean_test_data"),
     path("maintenance/seed-master-akun/", seed_master_akun_view, name="seed_master_akun"),
     path("maintenance/sync-passwords/", sync_satker_passwords_view, name="sync_passwords"),
-    path("diagnostic-audit/", diagnostic_audit_view, name="diagnostic_audit"),
+    # path("diagnostic-audit/", diagnostic_audit_view, name="diagnostic_audit"), # Disabled for production security
 ]
 
 handler403 = "apps.core.views.error_403"
