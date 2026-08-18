@@ -142,3 +142,47 @@ def seed_master_akun_view(request):
         'preview_count': 41,
     }
     return render(request, 'maintenance/seed_master_akun.html', context)
+
+from django.contrib.auth import get_user_model
+
+@user_passes_test(is_admin, login_url='/accounts/login/')
+def sync_satker_passwords_view(request):
+    User = get_user_model()
+    users = User.objects.filter(profile__satker_code__isnull=False).exclude(profile__satker_code='')
+    
+    users_to_update = []
+    for user in users:
+        code = user.profile.satker_code
+        env_key = f"SATKER_{code}_PASSWORD"
+        if os.environ.get(env_key):
+            users_to_update.append({
+                "username": user.username,
+                "satker": code,
+                "env_key": env_key,
+                "user_obj": user
+            })
+
+    status = None
+    updated_count = 0
+
+    if request.method == 'POST':
+        try:
+            with transaction.atomic():
+                for udata in users_to_update:
+                    user_obj = udata["user_obj"]
+                    new_password = os.environ.get(udata["env_key"])
+                    user_obj.set_password(new_password)
+                    user_obj.save()
+                    updated_count += 1
+            status = 'SUCCESS'
+            messages.success(request, f"Berhasil sinkronisasi {updated_count} password satker dari Environment Variables!")
+        except Exception as e:
+            status = 'ERROR'
+            messages.error(request, f"Terjadi kesalahan saat update password: {e}")
+
+    context = {
+        'users_to_update': users_to_update,
+        'status': status,
+        'updated_count': updated_count,
+    }
+    return render(request, 'maintenance/sync_passwords.html', context)
