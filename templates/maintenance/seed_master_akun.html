@@ -1,0 +1,69 @@
+{% extends 'base.html' %}
+
+{% block title %}Maintenance - Seed Master Akun{% endblock %}
+
+{% block content %}
+<div class="container mt-5 mb-5">
+    <h2><i class="fas fa-database text-primary"></i> Maintenance: Seed Master Akun</h2>
+    <p class="text-muted">Hanya dapat diakses oleh Superuser/Admin.</p>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-{{ message.tags }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    {% if status == 'SUCCESS' %}
+        <div class="alert alert-success mt-4">
+            <h4><i class="fas fa-check-circle"></i> IMPORT BERHASIL</h4>
+            <p>Data Master Akun dari Database Awal Excel telah berhasil dimasukkan ke sistem.</p>
+            <hr>
+            <ul class="list-group mb-3">
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    Sebelum Import
+                    <span class="badge bg-secondary rounded-pill">{{ counts_before }} akun</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    Sesudah Import
+                    <span class="badge bg-success rounded-pill">{{ counts_after }} akun</span>
+                </li>
+            </ul>
+        </div>
+    {% endif %}
+
+    <div class="card mt-4">
+        <div class="card-header bg-info text-white">
+            <strong>Preview Import Data Master Akun</strong>
+        </div>
+        <div class="card-body">
+            <div class="alert alert-warning">
+                <strong>Perhatian:</strong> Aksi ini akan memasukkan 41 Master Akun yang merupakan "Source of Truth" dari Database Awal Excel ke dalam database Production.
+            </div>
+
+            <ul class="list-group mb-4">
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    Status MasterAkun Saat Ini (Production)
+                    <span class="badge bg-secondary rounded-pill">{{ counts_before }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                    Jumlah Data yang Akan Dimasukkan (Dari Fixture)
+                    <span class="badge bg-primary rounded-pill">{{ preview_count }}</span>
+                </li>
+            </ul>
+
+            <p class="text-muted">
+                <i class="fas fa-info-circle"></i> Catatan: Proses ini tidak akan menghapus data transaksi yang sudah ada, tidak akan menyentuh User, Profile, atau SatkerMaster. Hanya tabel <code>MasterAkun</code> yang akan diperbarui.
+            </p>
+
+            <div class="mt-4">
+                <form method="POST">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-primary btn-lg"><i class="fas fa-upload"></i> IMPORT MASTER AKUN DATABASE AWAL</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

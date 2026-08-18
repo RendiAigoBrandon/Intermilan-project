@@ -113,3 +113,32 @@ def clean_test_data_view(request):
             messages.error(request, "Kata kunci konfirmasi salah. Penghapusan dibatalkan.")
             
     return render(request, 'maintenance/clean_test_data.html', context)
+
+from django.core.management import call_command
+from apps.dk.models import MasterAkun
+
+@user_passes_test(is_admin, login_url='/accounts/login/')
+def seed_master_akun_view(request):
+    counts_before = MasterAkun.objects.count()
+    status = None
+    counts_after = None
+
+    if request.method == 'POST':
+        try:
+            with transaction.atomic():
+                call_command('loaddata', 'master_akun_database_awal.json')
+            status = 'SUCCESS'
+            messages.success(request, "Import Master Akun berhasil!")
+        except Exception as e:
+            status = 'ERROR'
+            messages.error(request, f"Terjadi kesalahan saat import: {e}")
+        
+        counts_after = MasterAkun.objects.count()
+
+    context = {
+        'counts_before': counts_before,
+        'status': status,
+        'counts_after': counts_after,
+        'preview_count': 41,
+    }
+    return render(request, 'maintenance/seed_master_akun.html', context)

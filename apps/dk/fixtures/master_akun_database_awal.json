@@ -1,0 +1,453 @@
+[
+  {
+    "model": "dk.masterakun",
+    "pk": 1,
+    "fields": {
+      "kode": "511111",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 2,
+    "fields": {
+      "kode": "511112",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 3,
+    "fields": {
+      "kode": "511124",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 4,
+    "fields": {
+      "kode": "511129",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 5,
+    "fields": {
+      "kode": "511611",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 6,
+    "fields": {
+      "kode": "511628",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 7,
+    "fields": {
+      "kode": "512211",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 8,
+    "fields": {
+      "kode": "512212",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 9,
+    "fields": {
+      "kode": "512411",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 10,
+    "fields": {
+      "kode": "512412",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 11,
+    "fields": {
+      "kode": "512414",
+      "nama_akun": "-",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 12,
+    "fields": {
+      "kode": "51XXX",
+      "nama_akun": "Belanja Pegawai",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 13,
+    "fields": {
+      "kode": "51XXXX",
+      "nama_akun": "Belanja Pegawai",
+      "kategori": "Belanja Pegawai",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 14,
+    "fields": {
+      "kode": "521111",
+      "nama_akun": "Belanja Keperluan Perkantoran",
+      "kategori": "Belanja Barang",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 15,
+    "fields": {
+      "kode": "521115",
+      "nama_akun": "Belanja Honor Operasional",
+      "kategori": "Belanja Barang",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 16,
+    "fields": {
+      "kode": "521119",
+      "nama_akun": "Belanja Barang Operasional",
+      "kategori": "Belanja Barang",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 17,
+    "fields": {
+      "kode": "521211",
+      "nama_akun": "Belanja Bahan",
+      "kategori": "Belanja Barang",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 18,
+    "fields": {
+      "kode": "521213",
+      "nama_akun": "Honor",
+      "kategori": "Belanja Barang",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 19,
+    "fields": {
+      "kode": "521219",
+      "nama_akun": "Belanja Non Operasional/Jasa terkait",
+      "kategori": "Belanja Barang",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 20,
+    "fields": {
+      "kode": "521252",
+      "nama_akun": "Belanja Peralatan dan Mesin",
+      "kategori": "Belanja Barang",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 21,
+    "fields": {
+      "kode": "521811",
+      "nama_akun": "Persediaan",
+      "kategori": "Belanja Barang",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 22,
+    "fields": {
+      "kode": "522111",
+      "nama_akun": "Belanja Langganan Listrik",
+      "kategori": "Belanja Jasa",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 23,
+    "fields": {
+      "kode": "522112",
+      "nama_akun": "Belanja Langganan Telepon",
+      "kategori": "Belanja Jasa",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 24,
+    "fields": {
+      "kode": "522113",
+      "nama_akun": "Belanja Langganan Air",
+      "kategori": "Belanja Jasa",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 25,
+    "fields": {
+      "kode": "522119",
+      "nama_akun": "Belanja Langganan Daya/Jasa Lainnya",
+      "kategori": "Belanja Jasa",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 26,
+    "fields": {
+      "kode": "522141",
+      "nama_akun": "Sewa",
+      "kategori": "Belanja Jasa",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 27,
+    "fields": {
+      "kode": "522151",
+      "nama_akun": "Jasa Profesi",
+      "kategori": "Belanja Jasa",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 28,
+    "fields": {
+      "kode": "522191",
+      "nama_akun": "Jasa Lainnya",
+      "kategori": "Belanja Jasa",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 29,
+    "fields": {
+      "kode": "523111",
+      "nama_akun": "Pemeliharaan Gedung",
+      "kategori": "Belanja Pemeliharaan",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 30,
+    "fields": {
+      "kode": "523119",
+      "nama_akun": "Pemeliharaan Gedung/Jaringan",
+      "kategori": "Belanja Pemeliharaan",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 31,
+    "fields": {
+      "kode": "523121",
+      "nama_akun": "Pemeliharaan Peralatan",
+      "kategori": "Belanja Pemeliharaan",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 32,
+    "fields": {
+      "kode": "523123",
+      "nama_akun": "Barang Persediaan Pemeliharaan",
+      "kategori": "Belanja Pemeliharaan",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 33,
+    "fields": {
+      "kode": "524111",
+      "nama_akun": "Perjalanan Dinas Biasa",
+      "kategori": "Perjalanan Dinas",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 34,
+    "fields": {
+      "kode": "524113",
+      "nama_akun": "Perjalanan Dinas Dalam Kota",
+      "kategori": "Perjalanan Dinas",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 35,
+    "fields": {
+      "kode": "524114",
+      "nama_akun": "Perjalanan Dinas Paket Meeting",
+      "kategori": "Perjalanan Dinas",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 36,
+    "fields": {
+      "kode": "524119",
+      "nama_akun": "Perjalanan Dinas Luar Kota",
+      "kategori": "Perjalanan Dinas",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 37,
+    "fields": {
+      "kode": "532111",
+      "nama_akun": "Belanja Modal Peralatan",
+      "kategori": "Belanja Modal",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 38,
+    "fields": {
+      "kode": "5523121",
+      "nama_akun": "-",
+      "kategori": "Belum Teridentifikasi",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 39,
+    "fields": {
+      "kode": "825111",
+      "nama_akun": "UP/Uang Persediaan",
+      "kategori": "Transaksi Pembayaran",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 40,
+    "fields": {
+      "kode": "825511",
+      "nama_akun": "-",
+      "kategori": "Transaksi Pembayaran",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  },
+  {
+    "model": "dk.masterakun",
+    "pk": 41,
+    "fields": {
+      "kode": "825513",
+      "nama_akun": "-",
+      "kategori": "Transaksi Pembayaran",
+      "is_active": true,
+      "source": "Excel Database Awal"
+    }
+  }
+]
